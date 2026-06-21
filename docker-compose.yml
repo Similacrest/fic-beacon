@@ -1,0 +1,22 @@
+services:
+  beacon:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # App state (SQLite DB)
+      - beacon-data:/data
+      # Calibre library: mount your library folder as read-only
+      - /path/to/your/calibre/library:/calibre-library:ro
+    environment:
+      BEACON_BASE_URL: "https://beacon.example.com"  # change to your domain
+      BEACON_CALIBRE_LIBRARY_PATH: "/calibre-library"
+      BEACON_DATABASE_URL: "sqlite:////data/fic-beacon.db"
+      # Generate a secret: python -c "import secrets; print(secrets.token_urlsafe(32))"
+      # BEACON_FEED_SECRET: "your-secret-here"
+    # Single worker — APScheduler must not fork
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+
+volumes:
+  beacon-data:

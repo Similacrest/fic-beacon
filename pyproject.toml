@@ -1,0 +1,14 @@
+[project]
+name = "fic-beacon"
+version = "0.1.0"
+description = "Re-serializes Calibre backlog EPUBs into a paced RSS feed"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

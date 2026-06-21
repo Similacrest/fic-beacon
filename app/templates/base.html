@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Fic Beacon{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 1em 1.5em;
+      color: #222;
+      background: #fafafa;
+    }
+    nav { display: flex; gap: 1.5em; padding: .75em 0; border-bottom: 1px solid #ddd; margin-bottom: 1.5em; }
+    nav a { text-decoration: none; color: #555; font-weight: 500; }
+    nav a:hover { color: #000; }
+    h1 { font-size: 1.5em; margin: 0 0 1em; }
+    h2 { font-size: 1.2em; margin: 1.5em 0 .5em; color: #444; }
+    table { width: 100%; border-collapse: collapse; font-size: .95em; }
+    th, td { text-align: left; padding: .4em .7em; border-bottom: 1px solid #eee; }
+    th { background: #f0f0f0; font-weight: 600; }
+    .badge {
+      display: inline-block;
+      padding: .15em .5em;
+      border-radius: 3px;
+      font-size: .8em;
+      font-weight: 600;
+    }
+    .badge-active   { background: #d4edda; color: #155724; }
+    .badge-queued   { background: #fff3cd; color: #856404; }
+    .badge-completed{ background: #cce5ff; color: #004085; }
+    .badge-dropped  { background: #f8d7da; color: #721c24; }
+    button, .btn {
+      padding: .3em .9em;
+      border: 1px solid #aaa;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+      font-size: .9em;
+    }
+    button:hover, .btn:hover { background: #f0f0f0; }
+    .btn-primary { background: #0d6efd; color: #fff; border-color: #0d6efd; }
+    .btn-primary:hover { background: #0b5ed7; }
+    .btn-danger  { background: #dc3545; color: #fff; border-color: #dc3545; }
+    .btn-danger:hover { background: #bb2d3b; }
+    label { display: block; margin-bottom: .25em; font-weight: 500; }
+    input[type=text], input[type=number], select {
+      width: 100%; padding: .4em .6em; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 1em;
+    }
+    .form-group { margin-bottom: 1em; }
+    .feed-url {
+      font-family: monospace;
+      font-size: .85em;
+      background: #f0f0f0;
+      padding: .4em .6em;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    .progress-bar-wrap { background: #e9ecef; border-radius: 4px; height: 8px; width: 120px; display: inline-block; vertical-align: middle; }
+    .progress-bar-fill { background: #0d6efd; height: 100%; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <nav>
+    <strong>📡 Fic Beacon</strong>
+    <a href="/admin/">Dashboard</a>
+    <a href="/admin/import">Import Books</a>
+    <a href="/admin/config">Settings</a>
+    <span style="margin-left:auto; color:#aaa; font-size:.8em">v{{ version }}</span>
+  </nav>
+  {% block content %}{% endblock %}
+  <footer style="margin-top:2em; padding-top:.75em; border-top:1px solid #eee; color:#aaa; font-size:.8em">
+    Fic Beacon {{ version }}
+  </footer>
+</body>
+</html>

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Settings — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Settings</h1>
+
+<form method="post" action="/admin/config" style="max-width:480px">
+  <div class="form-group">
+    <label for="budget_mode">Budget mode</label>
+    <select name="budget_mode" id="budget_mode" onchange="toggleBudgetMode(this.value)">
+      <option value="words" {% if cfg.budget_mode.value == 'words' %}selected{% endif %}>Words</option>
+      <option value="minutes" {% if cfg.budget_mode.value == 'minutes' %}selected{% endif %}>Minutes (× WPM)</option>
+    </select>
+  </div>
+  <div class="form-group" id="row-budget-words">
+    <label for="global_budget_words">Daily word budget</label>
+    <input type="number" name="global_budget_words" id="global_budget_words"
+           value="{{ cfg.global_budget_words }}" min="100" step="100">
+    <small style="color:#666">Total words across all active books per cycle.</small>
+  </div>
+  <div class="form-group" id="row-budget-minutes" style="display:none">
+    <label for="global_budget_minutes">Daily reading budget (minutes)</label>
+    <input type="number" name="global_budget_minutes" id="global_budget_minutes"
+           value="{{ cfg.global_budget_minutes }}" min="1" step="5">
+    <small style="color:#666">Converted to words as minutes × WPM at cycle time.</small>
+  </div>
+  <div class="form-group">
+    <label for="wpm">Reading speed (WPM)</label>
+    <input type="number" name="wpm" id="wpm" value="{{ cfg.wpm }}" min="50" max="1000">
+    <small style="color:#666">Used for minutes-mode budget and reading-time estimates in the UI.</small>
+  </div>
+  <div class="form-group">
+    <label for="overshoot_tolerance">Overshoot tolerance (words)</label>
+    <input type="number" name="overshoot_tolerance" id="overshoot_tolerance"
+           value="{{ cfg.overshoot_tolerance }}" min="0" step="100">
+    <small style="color:#666">How far over budget the global total can land. Chapters are never split.</small>
+  </div>
+  <div class="form-group">
+    <label for="parallel_slots">Parallel books</label>
+    <input type="number" name="parallel_slots" id="parallel_slots"
+           value="{{ cfg.parallel_slots }}" min="1" max="10">
+  </div>
+  <div class="form-group">
+    <label for="cadence_cron">Drop schedule (cron)</label>
+    <input type="text" name="cadence_cron" id="cadence_cron"
+           value="{{ cfg.cadence_cron }}">
+    <small style="color:#666">e.g. <code>0 8 * * *</code> = 08:00 daily, <code>0 8,20 * * *</code> = twice daily</small>
+  </div>
+  <div class="form-group">
+    <label for="thumbs_down_drop_threshold">👎 threshold to drop a book</label>
+    <input type="number" name="thumbs_down_drop_threshold" id="thumbs_down_drop_threshold"
+           value="{{ cfg.thumbs_down_drop_threshold }}" min="1">
+  </div>
+  <button class="btn btn-primary" type="submit">Save</button>
+</form>
+
+<script>
+function toggleBudgetMode(mode) {
+  document.getElementById('row-budget-words').style.display = mode === 'words' ? '' : 'none';
+  document.getElementById('row-budget-minutes').style.display = mode === 'minutes' ? '' : 'none';
+}
+// Apply on page load to match the saved mode
+toggleBudgetMode(document.getElementById('budget_mode').value);
+</script>
+
+{% endblock %}

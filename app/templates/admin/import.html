@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Import Books — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Import from Calibre</h1>
+
+{% if books %}
+<p>Select books to add to the queue:</p>
+<form method="post" action="/admin/import">
+  <table>
+    <thead><tr><th><input type="checkbox" id="check-all"></th><th>Title</th><th>Author</th><th>Source URL</th></tr></thead>
+    <tbody>
+    {% for book in books %}
+    <tr>
+      <td><input type="checkbox" name="calibre_ids" value="{{ book.calibre_id }}"></td>
+      <td>{{ book.title }}</td>
+      <td>{{ book.author }}</td>
+      <td>{% if book.source_url %}<a href="{{ book.source_url }}" target="_blank">{{ book.source_url[:60] }}…</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <br>
+  <button class="btn btn-primary" type="submit">Add selected to queue</button>
+</form>
+<script>
+  document.getElementById('check-all').addEventListener('change', function() {
+    document.querySelectorAll('input[name=calibre_ids]').forEach(cb => cb.checked = this.checked);
+  });
+</script>
+{% else %}
+<p style="color:#888">All EPUB books in your Calibre library are already imported.</p>
+{% endif %}
+
+{% endblock %}
