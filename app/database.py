@@ -47,6 +47,7 @@ def _ensure_config(session: Session) -> None:
                 cadence_cron=settings.default_cadence_cron,
                 thumbs_down_drop_threshold=settings.default_thumbs_down_drop_threshold,
                 feed_secret=settings.feed_secret or secrets.token_urlsafe(32),
+                target_total_words=settings.default_target_total_words or None,
             )
         )
 

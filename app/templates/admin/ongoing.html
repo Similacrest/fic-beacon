@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Ongoing Feeds — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Ongoing Feeds <span style="font-size:.6em; font-weight:400; color:#888">(v2 balancing)</span></h1>
+
+{% set imported = request.query_params.get('imported') %}
+{% if imported %}
+<p style="background:#d4edda; color:#155724; padding:.6em 1em; border-radius:4px">
+  Imported {{ imported }} new feed(s) from OPML.
+</p>
+{% endif %}
+
+<!-- Budget summary ─────────────────────────────────────────── -->
+<section style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:6px; padding:1em 1.25em; margin-bottom:1.5em">
+  <h2 style="margin:0 0 .75em">Budget balancing</h2>
+  <form method="post" action="/admin/ongoing/set-target" style="display:flex; gap:.75em; align-items:flex-end; flex-wrap:wrap; margin-bottom:1em">
+    <div>
+      <label for="target_total_words" style="font-size:.9em">Daily reading target (words)</label>
+      <input type="number" name="target_total_words" id="target_total_words"
+             value="{{ cfg.target_total_words or 0 }}" min="0" step="500"
+             style="width:130px">
+      <small style="color:#888; display:block">0 = disabled (use fixed budget)</small>
+    </div>
+    <button class="btn btn-primary" type="submit">Set target</button>
+  </form>
+
+  {% if cfg and cfg.target_total_words %}
+  <table style="width:auto; font-size:.95em">
+    <tr><td style="padding:.2em .75em .2em 0; color:#555">Target total</td>
+        <td><strong>{{ "{:,}".format(cfg.target_total_words) }}</strong> words</td></tr>
+    <tr><td style="padding:.2em .75em .2em 0; color:#555">Ongoing fics (est.)</td>
+        <td><strong>{{ "{:,}".format(ongoing_total) }}</strong> words/cycle</td></tr>
+    <tr><td style="padding:.2em .75em .2em 0; color:#555; border-top:1px solid #ddd">Synthetic budget →</td>
+        <td style="border-top:1px solid #ddd"><strong style="color:#0d6efd">{{ "{:,}".format(synthetic_budget) }}</strong> words/cycle</td></tr>
+  </table>
+  {% else %}
+  <p style="color:#888; font-size:.9em; margin:0">
+    Set a target above to enable dynamic budgeting. Currently using the fixed word/minutes budget from <a href="/admin/config">Settings</a>.
+  </p>
+  {% endif %}
+</section>
+
+<!-- Poll now ───────────────────────────────────────────────── -->
+<form method="post" action="/admin/ongoing/poll-now" style="margin-bottom:1.5em">
+  <button class="btn">🔄 Poll all feeds now</button>
+  <small style="color:#888; margin-left:.5em">Auto-polls every 4 hours.</small>
+</form>
+
+<!-- Feed list ──────────────────────────────────────────────── -->
+{% if feeds %}
+<table>
+  <thead><tr>
+    <th>Title</th><th>Feed URL</th><th>Est. words/cycle</th><th>Last polled</th><th>Active</th><th>Actions</th>
+  </tr></thead>
+  <tbody>
+  {% for feed in feeds %}
+  <tr style="{{ 'opacity:.55' if not feed.is_active }}">
+    <td>{{ feed.title }}</td>
+    <td style="font-size:.8em; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+      <a href="{{ feed.feed_url }}" target="_blank">{{ feed.feed_url }}</a>
+    </td>
+    <td>{{ "{:,}".format(feed.estimated_words_per_cycle) }}</td>
+    <td style="font-size:.85em; color:#666">
+      {% if feed.last_polled_at %}{{ feed.last_polled_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}
+    </td>
+    <td>
+      <form method="post" action="/admin/ongoing/{{ feed.id }}/toggle">
+        <button style="font-size:.8em; padding:.15em .5em">
+          {{ "✅" if feed.is_active else "⬜" }}
+        </button>
+      </form>
+    </td>
+    <td>
+      <form method="post" action="/admin/ongoing/{{ feed.id }}/delete"
+            onsubmit="return confirm('Remove this feed?')">
+        <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#888">No ongoing feeds yet. Import an OPML export from your RSS reader or add feeds manually.</p>
+{% endif %}
+
+<!-- Add single feed ────────────────────────────────────────── -->
+<h2>Add a single feed</h2>
+<form method="post" action="/admin/ongoing/add" style="display:flex; gap:.5em; align-items:flex-end; flex-wrap:wrap; max-width:600px">
+  <div style="flex:2; min-width:200px">
+    <label for="feed_url" style="font-size:.9em">Feed URL</label>
+    <input type="url" name="feed_url" id="feed_url" required placeholder="https://example.com/feed.rss">
+  </div>
+  <div style="flex:1; min-width:120px">
+    <label for="title" style="font-size:.9em">Title (optional)</label>
+    <input type="text" name="title" id="title" placeholder="My serial">
+  </div>
+  <button class="btn btn-primary" type="submit">Add</button>
+</form>
+
+<!-- OPML import ────────────────────────────────────────────── -->
+<h2>Import OPML</h2>
+<p style="color:#555; font-size:.9em">
+  Export your subscription list from your RSS reader (InoReader: Preferences → Import/Export → Export OPML).
+</p>
+<form method="post" action="/admin/ongoing/import-opml" enctype="multipart/form-data"
+      style="display:flex; gap:.5em; align-items:center">
+  <input type="file" name="opml_file" accept=".opml,.xml" required>
+  <button class="btn btn-primary" type="submit">Import</button>
+</form>
+
+{% endblock %}

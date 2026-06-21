@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.epub.chapterizer import Chapter, chapterize
-from app.models import Book, BookStatus, BudgetMode, Config, Drop, FeedbackAction, FeedbackEvent
+from app.models import Book, BookStatus, BudgetMode, Config, Drop, FeedbackAction, FeedbackEvent, OngoingFeed
 
 
 @dataclass
@@ -39,7 +39,7 @@ class PlannedDrop:
 def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     """Execute one scheduled drop cycle. Returns the list of created Drop rows."""
     cfg = _get_config(session)
-    budget = _effective_budget(cfg)
+    budget = _compute_budget(session, cfg)
 
     active_books = (
         session.query(Book)
@@ -94,9 +94,29 @@ def _get_config(session: Session) -> Config:
 
 
 def _effective_budget(cfg: Config) -> int:
+    """Base budget from config (words or minutes), before ongoing-feed adjustment."""
     if cfg.budget_mode == BudgetMode.minutes:
         return cfg.global_budget_minutes * cfg.wpm
     return cfg.global_budget_words
+
+
+def _compute_budget(session: Session, cfg: Config) -> int:
+    """Effective drop budget for this cycle.
+
+    v2 balancing: when target_total_words is set, the synthetic budget is
+    target_total_words minus the estimated word volume already arriving from
+    the user's real ongoing fic feeds. This keeps combined reading volume
+    near the configured target regardless of how many ongoing serials are
+    actively updating.
+    """
+    base = _effective_budget(cfg)
+    if not cfg.target_total_words:
+        return base
+    ongoing_words = sum(
+        f.estimated_words_per_cycle
+        for f in session.query(OngoingFeed).filter(OngoingFeed.is_active.is_(True)).all()
+    )
+    return max(0, cfg.target_total_words - ongoing_words)
 
 
 def _plan_drops(

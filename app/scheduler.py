@@ -2,13 +2,17 @@
 
 Runs in-process with the FastAPI app (single worker only — see docker-compose.yml).
 The cron schedule is read from Config at startup and can be updated via the admin UI.
+
+Two recurring jobs:
+  - drop_cycle: fires on cadence_cron to materialise chapter drops.
+  - poll_ongoing: polls ongoing fic feeds every 4 hours to refresh word estimates
+    used by the v2 budget balancing strategy.
 """
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
 from app.database import db_session
-from app.models import Config
 
 _scheduler = BackgroundScheduler()
 
@@ -21,14 +25,29 @@ def _run_cycle() -> None:
     print(f"[beacon] Drop cycle complete — {len(drops)} drop(s) created.")
 
 
+def _run_poll() -> None:
+    from app.ongoing.poller import poll_all_feeds
+    with db_session() as session:
+        poll_all_feeds(session)
+        session.commit()
+    print("[beacon] Ongoing feed poll complete.")
+
+
 def start(cadence_cron: str) -> None:
-    """Start the scheduler with the given cron expression."""
+    """Start the scheduler with the drop-cycle cron and the ongoing-feed poll interval."""
     _scheduler.add_job(
         _run_cycle,
         trigger=CronTrigger.from_crontab(cadence_cron),
         id="drop_cycle",
         replace_existing=True,
         misfire_grace_time=300,
+    )
+    _scheduler.add_job(
+        _run_poll,
+        trigger="interval",
+        hours=4,
+        id="poll_ongoing",
+        replace_existing=True,
     )
     if not _scheduler.running:
         _scheduler.start()

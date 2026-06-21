@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     default_cadence_cron: str = "0 8 * * *"  # 08:00 daily
     default_thumbs_down_drop_threshold: int = 3
 
+    # v2 balancing: set > 0 to enable synthetic budget = target - ongoing_volume
+    default_target_total_words: int = 0  # 0 = disabled
+
     # Misc
     feed_item_limit: int = 50
 
