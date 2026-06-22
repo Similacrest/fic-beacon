@@ -196,8 +196,40 @@ class TestDropCycle:
         in_memory_db.refresh(book)
         assert book.status == BookStatus.completed
 
+    def test_fresh_library_all_queued_still_drops(self, in_memory_db, epub_path):
+        """Regression: a fresh import leaves every book 'queued'. The cycle must
+        promote them into open slots *before* looking for active books, otherwise
+        it bails early and nothing is ever dropped (the deadlock bug)."""
+        # 3 queued books, no active ones — exactly the fresh-deploy scenario.
+        # Small budget so each promoted book takes one chapter and stays active
+        # (rather than exhausting the short 5-chapter mock epub in one cycle).
+        from app.models import Config
+        cfg = in_memory_db.get(Config, 1)
+        cfg.global_budget_words = 100
+        cfg.overshoot_tolerance = 0
+        for i in range(1, 4):
+            _make_book(
+                in_memory_db, calibre_id=i, title=f"Book {i}",
+                status=BookStatus.queued, queue_position=i,
+            )
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+
+        # parallel_slots=2 → 2 books promoted to active and dropped from.
+        assert len(drops) >= 1
+        active = in_memory_db.query(Book).filter(Book.status == BookStatus.active).count()
+        assert active == 2
+
     def test_promotes_queued_book_when_slot_freed(self, in_memory_db, epub_path):
-        # 1 active book that's about to exhaust + 1 queued
+        # 1 active book that's about to exhaust + 1 queued.
+        # Small budget so the promoted book takes one chapter and stays active.
+        from app.models import Config
+        cfg = in_memory_db.get(Config, 1)
+        cfg.global_budget_words = 100
+        cfg.overshoot_tolerance = 0
         book1 = _make_book(in_memory_db, calibre_id=1, status=BookStatus.active)
         book1.cursor_chapter_index = 4  # last chapter
         book2 = _make_book(in_memory_db, calibre_id=2, status=BookStatus.queued, queue_position=2)

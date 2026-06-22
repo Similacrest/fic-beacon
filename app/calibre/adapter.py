@@ -14,6 +14,7 @@ class CalibreBook:
     path: str          # relative dir from library root, e.g. "Author/Book Title (42)"
     epub_name: str     # filename without extension, e.g. "Book Title - Author"
     source_url: str | None
+    last_modified: str | None = None  # Calibre books.last_modified (ISO string)
 
 
 class CalibreAdapter:
@@ -35,13 +36,14 @@ class CalibreAdapter:
                     b.id,
                     b.title,
                     b.path,
+                    b.last_modified,
                     d.name AS epub_name,
                     COALESCE(a.name, 'Unknown') AS author
                 FROM books b
                 JOIN data d ON d.book = b.id AND d.format = 'EPUB'
                 LEFT JOIN books_authors_link bal ON bal.book = b.id
                 LEFT JOIN authors a ON a.id = bal.author
-                ORDER BY b.sort
+                ORDER BY b.last_modified DESC
                 """,
             ).fetchall()
             ids = [r["id"] for r in rows]
@@ -54,6 +56,7 @@ class CalibreAdapter:
                     path=r["path"],
                     epub_name=r["epub_name"],
                     source_url=urls.get(r["id"]),
+                    last_modified=r["last_modified"],
                 )
                 for r in rows
             ]
@@ -67,6 +70,7 @@ class CalibreAdapter:
                     b.id,
                     b.title,
                     b.path,
+                    b.last_modified,
                     d.name AS epub_name,
                     COALESCE(a.name, 'Unknown') AS author
                 FROM books b
@@ -87,6 +91,7 @@ class CalibreAdapter:
                 path=row["path"],
                 epub_name=row["epub_name"],
                 source_url=urls.get(calibre_id),
+                last_modified=row["last_modified"],
             )
 
     def epub_path(self, book: CalibreBook) -> Path:

@@ -18,15 +18,16 @@ def _build_calibre_db(library_path: Path) -> None:
         title TEXT NOT NULL,
         sort TEXT,
         path TEXT NOT NULL,
-        author_sort TEXT
+        author_sort TEXT,
+        last_modified TIMESTAMP
     );
     CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, sort TEXT);
     CREATE TABLE books_authors_link (book INTEGER, author INTEGER);
     CREATE TABLE data (id INTEGER PRIMARY KEY, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);
     CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INTEGER, type TEXT, val TEXT);
 
-    INSERT INTO books VALUES (1, 'Story One', 'story one', 'AuthorA/Story One (1)', 'AuthorA');
-    INSERT INTO books VALUES (2, 'Story Two', 'story two', 'AuthorB/Story Two (2)', 'AuthorB');
+    INSERT INTO books VALUES (1, 'Story One', 'story one', 'AuthorA/Story One (1)', 'AuthorA', '2026-01-01 10:00:00');
+    INSERT INTO books VALUES (2, 'Story Two', 'story two', 'AuthorB/Story Two (2)', 'AuthorB', '2026-06-01 10:00:00');
     INSERT INTO authors VALUES (1, 'Author A', 'A, Author');
     INSERT INTO authors VALUES (2, 'Author B', 'B, Author');
     INSERT INTO books_authors_link VALUES (1, 1);
@@ -70,6 +71,13 @@ class TestListBooks:
         adapter = CalibreAdapter(library_path)
         books = {b.calibre_id: b for b in adapter.list_books()}
         assert books[2].source_url is None
+
+    def test_ordered_by_last_modified_desc(self, library_path):
+        adapter = CalibreAdapter(library_path)
+        books = adapter.list_books()
+        # Story Two (2026-06) is more recently modified than Story One (2026-01)
+        assert [b.calibre_id for b in books] == [2, 1]
+        assert books[0].last_modified.startswith("2026-06")
 
 
 class TestGetBook:

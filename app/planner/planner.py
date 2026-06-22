@@ -17,6 +17,7 @@ Budget model (global round-robin, never pre-slice):
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.epub.chapterizer import Chapter, chapterize
 from app.models import Book, BookStatus, BudgetMode, Config, Drop, FeedbackAction, FeedbackEvent, OngoingFeed
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,6 +43,12 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     """Execute one scheduled drop cycle. Returns the list of created Drop rows."""
     cfg = _get_config(session)
     budget = _compute_budget(session, cfg)
+
+    # Promote queued books into any open slots *first*, so a fresh library
+    # (where every imported book starts 'queued') actually gets activated
+    # before we look for active books to drop from.
+    _fill_empty_slots(session, cfg.parallel_slots)
+    session.flush()
 
     active_books = (
         session.query(Book)
@@ -134,11 +143,21 @@ def _plan_drops(
     for book in ordered:
         calibre_book = adapter.get_book(book.calibre_id)
         if calibre_book is None:
+            logger.warning(
+                "Active book id=%s (calibre_id=%s) not found in metadata.db — skipping",
+                book.id, book.calibre_id,
+            )
             continue
         rem = _get_chapters(calibre_book, adapter, book)
         if rem:
             book_remaining[book.id] = list(rem)
             valid.append(book)
+        else:
+            logger.warning(
+                "Active book '%s' yielded no chapters at cursor %s — EPUB missing at "
+                "%s or already complete; no drop produced",
+                book.title, book.cursor_chapter_index, adapter.epub_path(calibre_book),
+            )
 
     if not valid:
         return []
