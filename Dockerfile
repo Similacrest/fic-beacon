@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install -U uv
 
 COPY pyproject.toml .
-RUN uv sync --frozen
+RUN uv sync --no-dev
 
 COPY app/ ./app/
 
