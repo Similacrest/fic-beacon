@@ -35,6 +35,30 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Channel(Base):
+    """A TV-style channel grouping sources by a Calibre tag prefix.
+
+    Each channel has its own reading budget and parallel slots; the drop cadence is
+    global (Config.cadence_cron). One feed per slot is served from the channel.
+    """
+    __tablename__ = "channel"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Calibre tag (or tag prefix, e.g. "Fantasy") used to suggest membership on import.
+    tag_match: Mapped[str | None] = mapped_column(String, nullable=True)
+    parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    budget_words: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
+    budget_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    budget_mode: Mapped[BudgetMode] = mapped_column(
+        Enum(BudgetMode), nullable=False, default=BudgetMode.words
+    )
+    # Signed carry-over so the stochastic per-cycle mean tracks the budget (Phase D).
+    budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class Book(Base):
     __tablename__ = "book"
 
@@ -48,6 +72,12 @@ class Book(Base):
         Enum(BookStatus), nullable=False, default=BookStatus.queued
     )
     queue_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Channel membership; NULL = the implicit default group (uses Config budget/slots).
+    channel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("channel.id"), nullable=True, index=True
+    )
+    # Stable slot number within the channel (1..parallel_slots), set when active.
+    slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # quota_weight: relative priority; normalized against sum of all active weights
     quota_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     cursor_chapter_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -72,6 +102,11 @@ class Drop(Base):
         DateTime(timezone=True), nullable=False, default=utcnow
     )
     word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Snapshot of the channel + per-slot feed this drop belongs to, so feed filtering
+    # stays stable even after the source completes and the slot is reused.
+    # feed_key is "1".."N" for backlog slots, or "ongoing" for a channel's serial feed.
+    channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    feed_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     chapter_start: Mapped[int] = mapped_column(Integer, nullable=False)
     chapter_end: Mapped[int] = mapped_column(Integer, nullable=False)  # inclusive
     # Titles of chapters included (semicolon-delimited if multiple)

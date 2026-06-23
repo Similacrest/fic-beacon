@@ -337,3 +337,45 @@ class TestFeedback:
             drop_id=drop.id, action=FeedbackAction.up
         ).count()
         assert events == 1
+
+
+class TestChannels:
+    def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
+        from app.models import Channel, Config
+        cfg = in_memory_db.get(Config, 1)
+        cfg.overshoot_tolerance = 0
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget_words=100)
+        in_memory_db.add(ch)
+        in_memory_db.flush()
+        for i in (1, 2, 3):
+            b = _make_book(
+                in_memory_db, calibre_id=i, title=f"B{i}",
+                status=BookStatus.queued, queue_position=i,
+            )
+            b.channel_id = ch.id
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+
+        active = (
+            in_memory_db.query(Book)
+            .filter(Book.status == BookStatus.active, Book.channel_id == ch.id)
+            .all()
+        )
+        assert len(active) == 2                                  # channel's 2 slots filled
+        assert sorted(b.slot_index for b in active) == [1, 2]    # stable slot numbers
+        assert drops and all(d.channel_id == ch.id for d in drops)
+        assert {d.feed_key for d in drops} == {"1", "2"}         # one drop per slot
+
+    def test_default_group_still_works_without_channels(self, in_memory_db, epub_path):
+        # Books with channel_id=None form the implicit default group (Config budget/slots).
+        _make_book(in_memory_db, calibre_id=1, status=BookStatus.queued, queue_position=1)
+        in_memory_db.commit()
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+        assert len(drops) >= 1
+        assert drops[0].channel_id is None
+        assert drops[0].feed_key == "1"

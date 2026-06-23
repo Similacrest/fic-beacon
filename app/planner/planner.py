@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.epub.chapterizer import Chapter, chapterize
-from app.models import Book, BookStatus, BudgetMode, Config, Drop, FeedbackAction, FeedbackEvent, OngoingFeed
+from app.models import (
+    Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction, FeedbackEvent, OngoingFeed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,38 +42,65 @@ class PlannedDrop:
 
 
 def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
-    """Execute one scheduled drop cycle. Returns the list of created Drop rows."""
+    """Execute one scheduled drop cycle across all channels.
+
+    The implicit default group (channel_id IS NULL) uses the Config budget/slots;
+    each Channel uses its own. Cadence is global — every group drops this cycle.
+    """
     cfg = _get_config(session)
-    budget = _compute_budget(session, cfg)
-
-    # Promote queued books into any open slots *first*, so a fresh library
-    # (where every imported book starts 'queued') actually gets activated
-    # before we look for active books to drop from.
-    _fill_empty_slots(session, cfg.parallel_slots)
-    session.flush()
-
-    active_books = (
-        session.query(Book)
-        .filter(Book.status == BookStatus.active)
-        .order_by(Book.queue_position)
-        .all()
-    )
-    if not active_books:
-        return []
-
     adapter = CalibreAdapter(library_path)
-    plans = _plan_drops(active_books, adapter, budget, cfg.overshoot_tolerance)
-
     drops: list[Drop] = []
-    for plan in plans:
-        drop = _materialise(session, plan)
-        if drop:
-            drops.append(drop)
-            _advance_cursor(session, plan, adapter, cfg)
 
-    _fill_empty_slots(session, cfg.parallel_slots)
+    for channel, parallel_slots, budget, tolerance in _drop_groups(session, cfg):
+        channel_id = channel.id if channel else None
+
+        # Promote queued books into open slots *first* (fresh imports start 'queued').
+        _fill_empty_slots(session, parallel_slots, channel_id)
+        session.flush()
+
+        active_books = _active_books_in(session, channel_id)
+        if not active_books:
+            continue
+
+        for plan in _plan_drops(active_books, adapter, budget, tolerance):
+            drop = _materialise(session, plan, channel_id)
+            if drop:
+                drops.append(drop)
+                _advance_cursor(session, plan, adapter, cfg)
+
+        _fill_empty_slots(session, parallel_slots, channel_id)
+
     session.flush()
     return drops
+
+
+def _drop_groups(session: Session, cfg: Config):
+    """Yield (channel|None, parallel_slots, budget, tolerance) for every group.
+
+    The default group (None) covers unchanneled books and uses the Config budget.
+    """
+    yield None, cfg.parallel_slots, _compute_budget(session, cfg), cfg.overshoot_tolerance
+    for channel in session.query(Channel).order_by(Channel.queue_order, Channel.id).all():
+        yield channel, channel.parallel_slots, _channel_budget(channel, cfg), cfg.overshoot_tolerance
+
+
+def _channel_budget(channel: Channel, cfg: Config) -> int:
+    if channel.budget_mode == BudgetMode.minutes:
+        return channel.budget_minutes * cfg.wpm
+    return channel.budget_words
+
+
+def _channel_filter(channel_id: int | None):
+    return Book.channel_id.is_(None) if channel_id is None else Book.channel_id == channel_id
+
+
+def _active_books_in(session: Session, channel_id: int | None) -> list[Book]:
+    return (
+        session.query(Book)
+        .filter(Book.status == BookStatus.active, _channel_filter(channel_id))
+        .order_by(Book.slot_index, Book.queue_position)
+        .all()
+    )
 
 
 def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop | None:
@@ -208,7 +237,7 @@ def _get_chapters(
     return all_chapters[book.cursor_chapter_index:]
 
 
-def _materialise(session: Session, plan: PlannedDrop) -> Drop | None:
+def _materialise(session: Session, plan: PlannedDrop, channel_id: int | None = None) -> Drop | None:
     if not plan.chapters:
         return None
 
@@ -221,6 +250,8 @@ def _materialise(session: Session, plan: PlannedDrop) -> Drop | None:
 
     drop = Drop(
         book_id=plan.book.id,
+        channel_id=channel_id,
+        feed_key=str(plan.book.slot_index or 1),
         word_count=plan.word_count,
         chapter_start=first.index,
         chapter_end=last.index,
@@ -254,29 +285,49 @@ def _advance_cursor(
         book.status = BookStatus.completed
         book.cursor_chapter_index = len(all_chapters)
         book.total_chapters = len(all_chapters)
+        book.slot_index = None  # free the slot for the next queued book
     else:
         book.cursor_chapter_index = new_cursor
         book.total_chapters = len(all_chapters)
 
 
-def _fill_empty_slots(session: Session, parallel_slots: int) -> None:
-    """Promote queued books into any slots freed by completed/dropped books."""
-    active_count = (
-        session.query(Book).filter(Book.status == BookStatus.active).count()
-    )
-    slots_available = parallel_slots - active_count
+def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
+    for i in range(1, parallel_slots + 1):
+        if i not in used:
+            return i
+    return max(used, default=0) + 1  # over-subscribed; keep slots unique anyway
+
+
+def _fill_empty_slots(
+    session: Session, parallel_slots: int, channel_id: int | None = None
+) -> None:
+    """Promote queued books into open slots *within one channel group*.
+
+    Also normalizes slot assignment: any already-active book missing a slot_index
+    gets the lowest free slot. channel_id=None is the implicit default group.
+    """
+    active = _active_books_in(session, channel_id)
+    used = {b.slot_index for b in active if b.slot_index is not None}
+    for book in active:
+        if book.slot_index is None:
+            book.slot_index = _lowest_free_slot(used, parallel_slots)
+            used.add(book.slot_index)
+
+    slots_available = parallel_slots - len(active)
     if slots_available <= 0:
         return
 
     queued = (
         session.query(Book)
-        .filter(Book.status == BookStatus.queued)
+        .filter(Book.status == BookStatus.queued, _channel_filter(channel_id))
         .order_by(Book.queue_position)
         .limit(slots_available)
         .all()
     )
     for book in queued:
         book.status = BookStatus.active
+        book.slot_index = _lowest_free_slot(used, parallel_slots)
+        used.add(book.slot_index)
 
 
 def apply_feedback(
@@ -320,7 +371,8 @@ def apply_feedback(
         book.thumbs_down += 1
         if book.thumbs_down >= cfg.thumbs_down_drop_threshold:
             book.status = BookStatus.dropped
-            _fill_empty_slots(session, cfg.parallel_slots)
+            book.slot_index = None
+            _refill_book_channel(session, book, cfg)
         else:
             # Gently reduce share
             book.quota_weight = max(0.1, book.quota_weight * 0.8)
@@ -334,6 +386,17 @@ def apply_feedback(
     elif action == FeedbackAction.drop:
         # Super-down: drop the source immediately, regardless of threshold.
         book.status = BookStatus.dropped
-        _fill_empty_slots(session, cfg.parallel_slots)
+        book.slot_index = None
+        _refill_book_channel(session, book, cfg)
 
     session.flush()
+
+
+def _refill_book_channel(session: Session, book: Book, cfg: Config) -> None:
+    """Promote the next queued book into the slot freed within this book's channel."""
+    if book.channel_id is None:
+        _fill_empty_slots(session, cfg.parallel_slots, None)
+        return
+    channel = session.get(Channel, book.channel_id)
+    slots = channel.parallel_slots if channel else cfg.parallel_slots
+    _fill_empty_slots(session, slots, book.channel_id)

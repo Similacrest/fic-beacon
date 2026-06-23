@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -15,6 +15,7 @@ class CalibreBook:
     epub_name: str     # filename without extension, e.g. "Book Title - Author"
     source_url: str | None
     last_modified: str | None = None  # Calibre books.last_modified (ISO string)
+    tags: list[str] = field(default_factory=list)  # Calibre tags (for channel matching)
 
 
 class CalibreAdapter:
@@ -48,6 +49,7 @@ class CalibreAdapter:
             ).fetchall()
             ids = [r["id"] for r in rows]
             urls = self._fetch_source_urls(conn, ids)
+            tags = self._fetch_tags(conn, ids)
             return [
                 CalibreBook(
                     calibre_id=r["id"],
@@ -57,6 +59,7 @@ class CalibreAdapter:
                     epub_name=r["epub_name"],
                     source_url=urls.get(r["id"]),
                     last_modified=r["last_modified"],
+                    tags=tags.get(r["id"], []),
                 )
                 for r in rows
             ]
@@ -84,6 +87,7 @@ class CalibreAdapter:
             if row is None:
                 return None
             urls = self._fetch_source_urls(conn, [calibre_id])
+            tags = self._fetch_tags(conn, [calibre_id])
             return CalibreBook(
                 calibre_id=row["id"],
                 title=row["title"],
@@ -92,6 +96,7 @@ class CalibreAdapter:
                 epub_name=row["epub_name"],
                 source_url=urls.get(calibre_id),
                 last_modified=row["last_modified"],
+                tags=tags.get(calibre_id, []),
             )
 
     def epub_path(self, book: CalibreBook) -> Path:
@@ -109,3 +114,28 @@ class CalibreAdapter:
             book_ids,
         ).fetchall()
         return {r["book"]: r["val"] for r in rows}
+
+    def _fetch_tags(
+        self, conn: sqlite3.Connection, book_ids: list[int]
+    ) -> dict[int, list[str]]:
+        """Return {calibre_id: [tag names]} for the given books (ordered by name)."""
+        if not book_ids:
+            return {}
+        placeholders = ",".join("?" * len(book_ids))
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT btl.book AS book, t.name AS name
+                FROM books_tags_link btl
+                JOIN tags t ON t.id = btl.tag
+                WHERE btl.book IN ({placeholders})
+                ORDER BY t.name
+                """,
+                book_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}  # library without tag tables (unusual)
+        result: dict[int, list[str]] = {}
+        for r in rows:
+            result.setdefault(r["book"], []).append(r["name"])
+        return result

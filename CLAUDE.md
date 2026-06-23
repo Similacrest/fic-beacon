@@ -29,7 +29,8 @@ reading budget per channel, and each drop embeds feedback links to steer the rot
 
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
 - **APScheduler** (in-process: drop cycle on `cadence_cron`; hourly ongoing-feed poll)
-- **SQLAlchemy + SQLite** (app state); **Alembic** for migrations
+- **SQLAlchemy + SQLite** (app state; schema built via `create_all`, recreate volume on
+  schema-changing upgrades)
 - **Jinja + HTMX** (server-rendered single-user admin UI)
 - **ebooklib + BeautifulSoup** (EPUB chapterizing + word counts)
 - **feedparser** (poll ongoing serial feeds), **httpx** (WebSub verification + push)

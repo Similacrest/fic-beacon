@@ -109,6 +109,23 @@ class TestFeedParsing:
         parsed = feedparser.parse(atom_xml)
         assert len(parsed.entries) == 5
 
+    def test_feed_declares_websub_hub(self):
+        drop = _make_drop()
+        atom_xml, _ = build_feed([drop])
+        parsed = feedparser.parse(atom_xml)
+        hubs = [l for l in parsed.feed.links if l.get("rel") == "hub"]
+        assert hubs and "/websub/hub" in hubs[0]["href"]
+
+    def test_custom_self_url_and_title(self):
+        drop = _make_drop()
+        atom_xml, _ = build_feed(
+            [drop], self_url="http://x/feed/fantasy/1", title="Fantasy · Slot 1"
+        )
+        parsed = feedparser.parse(atom_xml)
+        assert parsed.feed.title == "Fantasy · Slot 1"
+        selfs = [l for l in parsed.feed.links if l.get("rel") == "self"]
+        assert selfs and selfs[0]["href"] == "http://x/feed/fantasy/1"
+
 
 class TestPermalinks:
     def test_per_chapter_url_preferred(self):

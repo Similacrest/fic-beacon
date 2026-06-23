@@ -1,6 +1,7 @@
 """Admin UI — Jinja + HTMX single-user management interface."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter
 from app.config import settings
 from app.database import get_db
-from app.models import Book, BookStatus, Config, Drop, FeedbackEvent
+from app.models import Book, BookStatus, Channel, Config, Drop, FeedbackEvent
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -46,12 +47,16 @@ def import_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
     calibre_books = adapter.list_books()
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
-    return templates.TemplateResponse(request, "admin/import.html", {"books": importable})
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
+    return templates.TemplateResponse(
+        request, "admin/import.html", {"books": importable, "channels": channels}
+    )
 
 
 @router.post("/import")
 def do_import(
     calibre_ids: list[int] = Form(...),
+    channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     adapter = CalibreAdapter(settings.calibre_library_path)
@@ -68,9 +73,76 @@ def do_import(
             source_url=cbook.source_url,
             status=BookStatus.queued,
             queue_position=max_pos,
+            channel_id=channel_id or None,
         ))
     db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
+
+
+# ── Channels ──────────────────────────────────────────────────────────────────
+
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "channel"
+
+
+@router.get("/channels", response_class=HTMLResponse)
+def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
+    cfg = db.get(Config, 1)
+    token = cfg.feed_secret if cfg else ""
+    # Per-channel slot feed URLs (numbered backlog slots + the shared 'ongoing' feed).
+    feeds = {}
+    for ch in channels:
+        keys = [str(i) for i in range(1, ch.parallel_slots + 1)] + ["ongoing"]
+        feeds[ch.id] = [
+            (k, f"{settings.base_url}/feed/{ch.slug}/{k}?token={token}") for k in keys
+        ]
+    return templates.TemplateResponse(request, "admin/channels.html", {
+        "channels": channels, "feeds": feeds,
+    })
+
+
+@router.post("/channels")
+def create_channel(
+    name: str = Form(...),
+    tag_match: str = Form(""),
+    parallel_slots: int = Form(2),
+    budget_words: int = Form(5000),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    name = name.strip()
+    if name:
+        slug = _slugify(name)
+        # Ensure slug uniqueness with a numeric suffix if needed.
+        base_slug, n = slug, 2
+        while db.query(Channel).filter(Channel.slug == slug).first() is not None:
+            slug = f"{base_slug}-{n}"
+            n += 1
+        max_order = db.query(Channel.queue_order).order_by(Channel.queue_order.desc()).scalar() or 0
+        db.add(Channel(
+            name=name,
+            slug=slug,
+            tag_match=tag_match.strip() or None,
+            parallel_slots=max(1, parallel_slots),
+            budget_words=max(1, budget_words),
+            queue_order=max_order + 1,
+        ))
+        db.commit()
+    return RedirectResponse(url="/admin/channels", status_code=303)
+
+
+@router.post("/channels/{channel_id}/delete")
+def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    channel = db.get(Channel, channel_id)
+    if channel:
+        # Unassign member books (they fall back to the default group).
+        db.query(Book).filter(Book.channel_id == channel_id).update(
+            {Book.channel_id: None, Book.slot_index: None}, synchronize_session=False
+        )
+        db.delete(channel)
+        db.commit()
+    return RedirectResponse(url="/admin/channels", status_code=303)
 
 
 # ── Queue management ──────────────────────────────────────────────────────────

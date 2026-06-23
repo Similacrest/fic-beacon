@@ -26,8 +26,13 @@ the user's real ongoing serials. Landing incrementally:
   `extra`/`drop` use a one-tap confirm page. `extra` appears only when a next unit exists.
 - **Clear dropped** queue (manual button) and optional `dropped_retention_days` auto-purge.
 - **`BEACON_TZ`** setting so drop/poll schedules use a configured timezone (previously UTC).
-- Calibre adapter now reads **tags**.
-- Alembic migrations.
+- Calibre adapter now reads **tags** (used for channel matching).
+
+### Upgrade note
+- This release changes the database schema. The app builds the schema with
+  `create_all`; **recreate the SQLite volume** when upgrading from 0.1.0 (set
+  `BEACON_FEED_SECRET` first so your feed URLs don't change), then re-import books and
+  recreate channels. (No in-place Alembic migration is shipped for this jump.)
 
 ### Changed
 - Documentation (`CLAUDE.md`, `Architecture.md`) rewritten for the channels / ongoing /

@@ -20,16 +20,27 @@ from app.config import settings
 from app.models import Drop
 
 
-def build_feed(drops: list[Drop]) -> tuple[bytes, bytes]:
-    """Return (atom_xml, rss_xml) bytes for the given drops (newest first)."""
+def build_feed(
+    drops: list[Drop],
+    self_url: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> tuple[bytes, bytes]:
+    """Return (atom_xml, rss_xml) bytes for the given drops (newest first).
+
+    self_url is the feed's canonical URL (per-slot for channel feeds); it doubles as
+    the WebSub topic. A hub link is advertised so WebSub readers can get realtime push.
+    """
+    self_url = self_url or f"{settings.base_url}/feed"
     fg = FeedGenerator()
-    fg.id(f"{settings.base_url}/feed")
-    fg.title("Fic Beacon — Backlog Feed")
+    fg.id(self_url)
+    fg.title(title or "Fic Beacon — Backlog Feed")
     fg.author({"name": "Fic Beacon"})
-    fg.link(href=f"{settings.base_url}/feed", rel="self")
+    fg.link(href=self_url, rel="self")
     fg.link(href=settings.base_url, rel="alternate")
+    fg.link(href=f"{settings.base_url}/websub/hub", rel="hub")
     fg.language("en")
-    fg.description("Your Calibre backlog, drip-fed as a serial.")
+    fg.description(description or "Your Calibre backlog, drip-fed as a serial.")
 
     for drop in drops:
         _add_entry(fg, drop)

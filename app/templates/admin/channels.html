@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Channels — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Channels</h1>
+<p style="color:#888">
+  Group sources into TV-style channels. Each channel has its own reading budget and parallel
+  slots; the drop cadence is global (Settings). Subscribe to each per-slot feed URL in your reader.
+</p>
+
+{% if channels %}
+{% for ch in channels %}
+<div style="border:1px solid #e0e0e0; border-radius:6px; padding:1em; margin-bottom:1em">
+  <h2 style="margin-top:0">
+    {{ ch.name }}
+    <span style="color:#999; font-weight:400; font-size:.7em">
+      /{{ ch.slug }} · {{ ch.parallel_slots }} slot(s) · {{ ch.budget_words }} words
+      {% if ch.tag_match %}· tag: {{ ch.tag_match }}{% endif %}
+    </span>
+    <form method="post" action="/admin/channels/{{ ch.id }}/delete" style="display:inline; float:right"
+          onsubmit="return confirm('Delete channel {{ ch.name }}? Its books become unassigned.')">
+      <button class="btn btn-danger" style="font-size:.75em; padding:.1em .5em">Delete</button>
+    </form>
+  </h2>
+  <table>
+    <thead><tr><th>Feed</th><th>URL</th></tr></thead>
+    <tbody>
+    {% for key, url in feeds[ch.id] %}
+      <tr>
+        <td style="white-space:nowrap">{{ "In progress" if key == "ongoing" else "Slot " ~ key }}</td>
+        <td><span class="feed-url">{{ url }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+{% else %}
+<p style="color:#888">No channels yet — create one below.</p>
+{% endif %}
+
+<h2>New channel</h2>
+<form method="post" action="/admin/channels">
+  <div class="form-group">
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" placeholder="Fantasy" required>
+  </div>
+  <div class="form-group">
+    <label for="tag_match">Calibre tag / prefix (optional)</label>
+    <input type="text" id="tag_match" name="tag_match" placeholder="Fantasy">
+  </div>
+  <div class="form-group">
+    <label for="parallel_slots">Parallel slots</label>
+    <input type="number" id="parallel_slots" name="parallel_slots" value="2" min="1">
+  </div>
+  <div class="form-group">
+    <label for="budget_words">Budget (words / cycle)</label>
+    <input type="number" id="budget_words" name="budget_words" value="5000" min="1">
+  </div>
+  <button class="btn btn-primary" type="submit">Create channel</button>
+</form>
+
+{% endblock %}
