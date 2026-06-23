@@ -1,114 +1,148 @@
 # CLAUDE.md — Fic-Beacon
 
-Guidance for working in this repo. See `Architecture.md` for the full concept and C4 diagrams.
+Guidance for working in this repo. See `Architecture.md` for the full concept and C4 diagrams,
+`README.md` for setup/run, and `CHANGELOG.md` for what has actually landed vs. what is planned.
 
 ## What this is
 
-Fic-Beacon re-serializes **complete** books from a **Calibre library** into a synthetic
-*ongoing* RSS feed, so the user reads their backlog the same drip-fed way they follow ongoing
-web serials. A web admin page configures the queue, parallelism, and a per-cycle reading
-budget; each chapter drop embeds feedback links to steer the rotation.
+Fic-Beacon is a single batched, weighted reading queue for **both** a completed backlog
+(**Calibre** EPUBs) **and** the user's real **ongoing web serials** (their RSS feeds). It
+re-serializes everything into synthetic *ongoing* RSS/Atom feeds so the backlog arrives with the
+same drip-fed hook as ongoing fiction — and so ongoing serials stop getting implicit priority
+over the backlog. A web admin page groups sources into **channels** (TV-style), sets a per-cycle
+reading budget per channel, and each drop embeds feedback links to steer the rotation.
 
 ## Non-negotiable constraints
 
-- **Reader-agnostic.** The feed must be standards-compliant **RSS 2.0 + Atom** and work in
-  **any** RSS reader. InoReader is a *reference client only* — no InoReader-specific
-  extensions. All feedback is plain `<a href>` GET hyperlinks inside item HTML.
+- **Reader-agnostic.** Feeds must be standards-compliant **RSS 2.0 + Atom** and work in **any**
+  RSS reader. InoReader is a *reference client only* — no InoReader-specific extensions. All
+  feedback is plain `<a href>` GET hyperlinks inside item HTML. (WebSub is a W3C standard and is
+  fine — it degrades gracefully to polling.)
 - **Calibre is read-only.** Mount the library folder RO; read `metadata.db` (SQLite) and parse
   EPUBs in place. Never write to the Calibre library. All app state lives in Fic-Beacon's own
-  SQLite DB.
-- **Never split a chapter.** Batching packs *whole* chapters up to the budget, allowing
-  overshoot within `overshoot_tolerance`. An oversized chapter is posted whole.
+  SQLite DB. (Any FanFicFare-fetched ongoing EPUBs, if ever added, live in Fic-Beacon's own
+  writable work dir — never in the Calibre library.)
+- **Never split a chapter / unit.** A drop packs *whole* chapters (EPUB) or *whole* entries
+  (ongoing). An oversized unit is posted whole.
 
 ## Stack
 
-- **Python + FastAPI** (web/API + feed + feedback + reader pages)
-- **APScheduler** (in-process, fires the drop cycle on `cadence_cron`)
-- **SQLAlchemy + SQLite** (app state)
+- **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
+- **APScheduler** (in-process: drop cycle on `cadence_cron`; hourly ongoing-feed poll)
+- **SQLAlchemy + SQLite** (app state); **Alembic** for migrations
 - **Jinja + HTMX** (server-rendered single-user admin UI)
 - **ebooklib + BeautifulSoup** (EPUB chapterizing + word counts)
+- **feedparser** (poll ongoing serial feeds), **httpx** (WebSub verification + push)
 - **feedgen** (RSS 2.0 / Atom generation)
 - One **Docker** container; Calibre library mounted read-only; a volume for the app SQLite DB.
-- **RSSHub is not used** — we generate the feed ourselves.
+- **RSSHub is not used** for output — we generate our feeds ourselves. (RSSHub may *optionally*
+  be used later as an *input* to produce RSS for serial sites that lack it.)
 
 ## Repo layout
 
 ```
 fic-beacon/
   app/
-    main.py            # FastAPI app + routes (feed, feedback, reader, admin)
-    calibre/           # Calibre Adapter (metadata.db RO, identifiers, EPUB paths)
+    main.py            # FastAPI app wiring
+    config.py          # pydantic-settings (BEACON_* env, incl. BEACON_TZ)
+    routers/           # feed, feedback, reader, admin, ongoing, websub
+    calibre/           # Calibre Adapter (metadata.db RO, identifiers, tags, EPUB paths)
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
-    planner/           # Budget / Drop Planner
+    planner/           # Drop Planner (per-channel stochastic budget; unit abstraction)
+    ongoing/           # OPML parse + serial feed poller (buffers entries)
     feed/              # Feed Builder (feedgen)
-    scheduler.py       # APScheduler wiring
+    websub/            # WebSub publisher (push to subscribers)
+    scheduler.py       # APScheduler wiring (timezone-aware)
     models.py          # SQLAlchemy models
     templates/         # Jinja + HTMX
   Dockerfile
-  docker-compose.yml   # app + RO mount of Calibre library + volume for app SQLite
-  CLAUDE.md
-  Architecture.md
+  docker-compose.yml
+  CLAUDE.md  Architecture.md  README.md  CHANGELOG.md
 ```
 
-## Key conventions & rules
+## Key concepts & rules
 
-### Batching (Drop Planner)
-- One **global budget per cycle**, split across the N active books weighted by `quota_weight`.
-- For each book, start at `cursor_chapter_index`, pack whole chapters until the book's share is
-  reached (overshoot allowed up to `overshoot_tolerance`); **never split**. Advance the cursor.
-- When a book's cursor passes its last chapter → mark `completed`, promote the next `queued`
-  book into the freed slot.
-- Budget can be expressed in words or reading-time minutes (`budget_mode`, `wpm`).
+### Channels & slots (TV-channels model)
+- A **channel** groups sources by a Calibre **tag prefix** (`tag_match`); Calibre hierarchical
+  tags are flat strings with a `.` separator (e.g. `Fantasy.Epic`).
+- A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron).
+- **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`
+  for backlog EPUB slots, or `"ongoing"` for the channel's shared "In progress" serial feed.
+- A backlog slot shows one book at a time; when it completes, the next queued book inherits the
+  slot and that feed keeps broadcasting. Legacy `GET /feed` is the all-channels union.
 
-### Permalinks (source-aware, per-chapter)
+### Sources & units (EPUB and ongoing unified)
+- A **source** is a `book` row. `kind=epub` (Calibre-backed) or `kind=ongoing` (RSS-backed,
+  carries `feed_url`). Both hold `quota_weight`, votes, `status`, and live in a channel.
+- A **unit** is one drop-able chunk: an EPUB chapter (`chapterize(epub)[cursor]`) or an unreleased
+  `ongoing_entry` (oldest first). The poller buffers ongoing entries hourly; they are *released*
+  only at drop time. Unit shape: `{title, html, word_count, source_url}`.
+
+### Drop Planner — per-channel stochastic budget
+- Runs per channel each cycle. Effective budget `B = channel.budget + channel.budget_credit`
+  (signed carry-over so the long-run mean tracks the budget).
+- Candidates = each active source's next unit, ordered by `quota_weight` (weighted-random).
+  Include a unit of size `w` with probability `p = clamp((B − used)/w, 0, 1)`, biased up by
+  weight/votes. Included → emit + advance cursor; excluded → **roll over** whole to a later cycle.
+- **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
+  defer; a low-weight source may get nothing some cycles. **Never split a unit.**
+- After the pass: `budget_credit += channel.budget − used` (clamped to ±budget).
+- Budget can be words or reading-time minutes (`budget_mode`, `wpm`).
+
+### Permalinks (source-aware, per-chapter) — EPUB
 FanFicFare writes a **per-chapter** canonical URL into each chapter's `<head>`:
-`<meta name="chapterurl" content="...">` (exact AO3 chapter, FFN chapter number, forum
-post, Wattpad part, etc.). The chapterizer reads it from the **raw zip** (ebooklib strips
-`<head>` on parse) keyed by file basename — see `app/epub/chapterizer.py:_chapter_url_map`.
-
-Item link precedence (`app/feed/builder.py:_permalink`):
-1. `drop.source_url` — the exact per-chapter URL of the drop's first chapter (FFF books).
-2. `book.source_url` — the whole-work URL (`url:` identifier in `metadata.db`) as fallback.
-3. `/read/{slug}` — self-hosted reader page (non-FanFicFare books).
-
-**GUID ≠ link.** The item `guid`/`id` is always `urn:fic-beacon:drop:{reader_slug}` (a
-per-drop uuid4) so multiple drops of one FanFicFare book never collide on the shared work
-URL. The reader page always exists as a fallback for readers that clip long items.
-
-For FFF books, "a chapter is real iff it has a `chapterurl`" — this is how front-matter
-(Title Page / metadata) is excluded. Non-FFF books fall back to a word-count floor.
+`<meta name="chapterurl" content="...">`. The chapterizer reads it from the **raw zip** (ebooklib
+strips `<head>`) keyed by file basename — see `app/epub/chapterizer.py:_chapter_url_map`.
+Item link precedence (`app/feed/builder.py:_permalink`): (1) `drop.source_url` (per-chapter),
+(2) `book.source_url` (whole-work `url:` identifier), (3) `/read/{slug}` reader page. For ongoing
+drops the link is the entry's original chapter URL.
+**GUID ≠ link.** The item `guid`/`id` is always `urn:fic-beacon:drop:{reader_slug}` (per-drop
+uuid4) so multiple drops never collide on a shared work URL.
 
 ### Feedback contract (plain hyperlinks, any reader)
-- Each drop embeds three tokenized links: `GET /fb/{token}?action=up|down|extra`.
-- `up` → `thumbs_up++`, raise `quota_weight`.
-- `down` → `thumbs_down++`; at `>= thumbs_down_drop_threshold` the book is `dropped` and the
-  next queued book is promoted.
-- `extra` → inject an immediate out-of-cycle drop for that book.
+Four ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ❌ drop**.
+- `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
+- `down` → `thumbs_down++`, `quota_weight ×= 0.8`; at `>= thumbs_down_drop_threshold` the book is
+  `dropped`. **Instant bare GET.**
+- `extra` (super-up) → `thumbs_up += 3`, strong weight boost, **and** inject an out-of-cycle drop.
+  **Confirm page** (`/fb/confirm/{token}`).
+- `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
+- **Idempotent per `(drop_id, action)`** so reader/proxy prefetch and double-clicks count once.
+- The **🪝 extra link renders only when a next unit exists** (`extra_available`): a buffered
+  ongoing chapter, or a non-last EPUB chapter.
 - Tokens are per-drop and unguessable; a click binds to exactly one book/drop.
 
+### WebSub (realtime push)
+Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<link rel="self">`.
+The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
+pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
+plan; degrades to polling for readers without WebSub.
+
 ### Calibre access
-- Open `metadata.db` read-only. Books, authors, and identifiers come from there; EPUB file
-  paths are derived from the library folder structure. Do not require a running Calibre.
+Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), and **tags** come from
+there; EPUB paths derive from the library folder structure. Do not require a running Calibre.
 
 ## Data model (summary)
 
-`book` (status `queued|active|completed|dropped`, `queue_position`, `quota_weight`,
-`cursor_chapter_index`, `source_url`, thumbs counts) · `drop` (`feedback_token`,
-`reader_slug`, `chapter_start/end`, `word_count`) · `feedback_event` · `config`
-(`global_budget_words`, `budget_mode`, `wpm`, `overshoot_tolerance`, `parallel_slots`,
-`cadence_cron`, `thumbs_down_drop_threshold`, `feed_secret`). See `Architecture.md §5`.
+`channel` (`slug`, `tag_match`, `parallel_slots`, `budget_*`, `budget_credit`, `queue_order`) ·
+`book` (`kind` epub|ongoing, `feed_url?`, `status` queued|active|completed|dropped,
+`channel_id`, `slot_index`, `queue_position`, `quota_weight`, `cursor_chapter_index`, thumbs) ·
+`ongoing_entry` (buffer: `guid`, `content_html`, `word_count`, `published_at`, `released`,
+`drop_id?`) · `drop` (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`,
+`chapter_start/end`, `word_count`, `source_url?`) · `feedback_event` · `websub_subscription`
+(`topic_url`, `callback_url`, `secret?`, `lease_expires_at`, `verified`) · `config`
+(`budget_mode`, `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`, `feed_secret`,
+`dropped_retention_days?`). See `Architecture.md §5`.
 
-## v2 (designed-for, not built)
+## Timezone
 
-Ongoing-feed balancing: import OPML of the user's real ongoing fics, poll them, count recent
-words, and set the synthetic global budget to `target_total − recent_ongoing_volume`. Only the
-`config` target and the Planner's budget computation are affected — don't bake assumptions that
-block this.
+Drop/poll times use `BEACON_TZ` (e.g. `Europe/Tallinn`), passed to APScheduler and
+`CronTrigger`. With no `TZ`/`BEACON_TZ` set, a stock container resolves to **UTC**.
 
 ## Verification
 
-- Generated feed passes the **W3C Feed Validator** and renders in **≥2 readers**
-  (e.g. FreshRSS + InoReader).
-- Feedback links work as plain GET hyperlinks from within a reader.
+- Generated feeds pass the **W3C Feed Validator** and render in **≥2 readers** (FreshRSS + InoReader).
+- Feedback links work as plain GET hyperlinks from within a reader; up/down are instant + idempotent.
 - Calibre volume is never written to; all state is in the app SQLite DB.
-- Batching never splits a chapter; oversized chapters post whole.
+- Batching never splits a unit; oversized units post whole; stochastic mean tracks the budget.
+- Ongoing entries are buffered hourly and released batched at drop time, weighted against EPUBs.
