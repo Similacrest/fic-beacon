@@ -36,9 +36,11 @@ _scheduler = BackgroundScheduler()
 
 def _run_cycle() -> None:
     from app.planner.planner import run_drop_cycle
+    from app.websub.publisher import publish_updates
     with db_session() as session:
         drops = run_drop_cycle(session, settings.calibre_library_path)
         session.commit()
+        publish_updates(session, drops)
     print(f"[beacon] Drop cycle complete — {len(drops)} drop(s) created.")
 
 

@@ -409,7 +409,7 @@ def apply_feedback(
     drop: Drop,
     action: FeedbackAction,
     library_path: Path,
-) -> None:
+) -> Drop | None:
     """Apply a feedback action and record the event.
 
     Idempotent per (drop, action): a reader/proxy prefetching a bare-GET link, or a
@@ -426,8 +426,9 @@ def apply_feedback(
         .first()
     )
     if already is not None:
-        return
+        return None
 
+    extra_drop: Drop | None = None
     session.add(
         FeedbackEvent(
             token=drop.feedback_token,
@@ -455,7 +456,7 @@ def apply_feedback(
         # Super-up: count as three upvotes, boost weight strongly, and inject a drop.
         book.thumbs_up += 3
         book.quota_weight = max(0.1, book.quota_weight * (1.25 ** 3))
-        create_extra_drop(session, book, library_path)
+        extra_drop = create_extra_drop(session, book, library_path)
 
     elif action == FeedbackAction.drop:
         # Super-down: drop the source immediately, regardless of threshold.
@@ -464,6 +465,7 @@ def apply_feedback(
         _refill_book_channel(session, book, cfg)
 
     session.flush()
+    return extra_drop
 
 
 def _refill_book_channel(session: Session, book: Book, cfg: Config) -> None:

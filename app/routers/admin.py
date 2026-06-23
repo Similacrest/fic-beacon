@@ -281,6 +281,8 @@ def save_config(
 @router.post("/trigger-drop")
 def trigger_drop(db: Session = Depends(get_db)) -> RedirectResponse:
     from app.planner.planner import run_drop_cycle
-    run_drop_cycle(db, settings.calibre_library_path)
+    from app.websub.publisher import publish_updates
+    drops = run_drop_cycle(db, settings.calibre_library_path)
     db.commit()
+    publish_updates(db, drops)
     return RedirectResponse(url="/admin/", status_code=303)

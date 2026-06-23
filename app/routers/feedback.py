@@ -76,8 +76,11 @@ def confirm_post(
     if action not in _CONFIRM_LABELS:
         raise HTTPException(status_code=400, detail="Unknown action")
     drop = _get_drop(token, db)
-    apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
+    extra_drop = apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
     db.commit()
+    if extra_drop is not None:
+        from app.websub.publisher import publish_updates
+        publish_updates(db, [extra_drop])
     return RedirectResponse(url="/fb/done", status_code=303)
 
 

@@ -3,7 +3,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Boolean, DateTime, Enum, Float, ForeignKey,
-    Integer, String, Text, func,
+    Integer, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -175,6 +175,22 @@ class Config(Base):
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
     # Signed carry-over for the default group's stochastic budget (mirrors Channel.budget_credit).
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+
+class WebSubSubscription(Base):
+    """A WebSub (PubSubHubbub) subscriber to one of our feeds (realtime push)."""
+    __tablename__ = "websub_subscription"
+    __table_args__ = (UniqueConstraint("topic_url", "callback_url", name="uq_topic_callback"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topic_url: Mapped[str] = mapped_column(String, nullable=False, index=True)  # one of our feed URLs
+    callback_url: Mapped[str] = mapped_column(String, nullable=False)
+    secret: Mapped[str | None] = mapped_column(String, nullable=True)  # for X-Hub-Signature
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class OngoingEntry(Base):

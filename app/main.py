@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from app.config import settings
 from app.database import db_session, init_db
 from app.models import Config
-from app.routers import admin, feed, feedback, ongoing, reader
+from app.routers import admin, feed, feedback, ongoing, reader, websub
 from app import scheduler
 
 
@@ -28,6 +28,7 @@ app.include_router(feedback.router)
 app.include_router(reader.router)
 app.include_router(admin.router)
 app.include_router(ongoing.router)
+app.include_router(websub.router)
 
 
 @app.get("/", include_in_schema=False)
