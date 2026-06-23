@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     feed_secret: str = secrets.token_urlsafe(32)
 
+    # Scheduling timezone for drop/poll cron (e.g. "Europe/Tallinn").
+    # Unset → APScheduler uses the machine local tz, which is UTC in a stock container.
+    tz: str | None = None
+
     # Defaults (overridable from the config table in DB)
     default_global_budget_words: int = 5000
     default_global_budget_minutes: int = 20

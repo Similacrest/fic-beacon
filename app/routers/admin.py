@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter
 from app.config import settings
 from app.database import get_db
-from app.models import Book, BookStatus, Config
+from app.models import Book, BookStatus, Config, Drop, FeedbackEvent
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -131,6 +131,22 @@ def drop_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     if book:
         book.status = BookStatus.dropped
         db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/dropped/clear")
+def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
+    """Permanently remove all dropped sources (and their drops/feedback)."""
+    dropped = db.query(Book).filter(Book.status == BookStatus.dropped).all()
+    for book in dropped:
+        drop_ids = [d.id for d in db.query(Drop.id).filter(Drop.book_id == book.id)]
+        if drop_ids:
+            db.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
+        db.delete(book)
+    db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
 
