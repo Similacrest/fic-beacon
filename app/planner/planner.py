@@ -285,9 +285,23 @@ def apply_feedback(
     action: FeedbackAction,
     library_path: Path,
 ) -> None:
-    """Apply a feedback action and record the event."""
+    """Apply a feedback action and record the event.
+
+    Idempotent per (drop, action): a reader/proxy prefetching a bare-GET link, or a
+    double-click, applies the effect at most once. The four actions form a symmetric
+    strength scale — extra (super-up) · up · down · drop (super-down).
+    """
     cfg = _get_config(session)
     book = drop.book
+
+    # Idempotency guard — skip if this exact (drop, action) was already recorded.
+    already = (
+        session.query(FeedbackEvent)
+        .filter(FeedbackEvent.drop_id == drop.id, FeedbackEvent.action == action)
+        .first()
+    )
+    if already is not None:
+        return
 
     session.add(
         FeedbackEvent(
@@ -312,6 +326,14 @@ def apply_feedback(
             book.quota_weight = max(0.1, book.quota_weight * 0.8)
 
     elif action == FeedbackAction.extra:
+        # Super-up: count as three upvotes, boost weight strongly, and inject a drop.
+        book.thumbs_up += 3
+        book.quota_weight = max(0.1, book.quota_weight * (1.25 ** 3))
         create_extra_drop(session, book, library_path)
+
+    elif action == FeedbackAction.drop:
+        # Super-down: drop the source immediately, regardless of threshold.
+        book.status = BookStatus.dropped
+        _fill_empty_slots(session, cfg.parallel_slots)
 
     session.flush()

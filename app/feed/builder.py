@@ -4,11 +4,11 @@ Each item:
   - <title>: "Book Title — Chapter Title"
   - <link>/<id>: stable permalink (source URL if available, else /read/{slug})
   - Full chapter HTML in <content> (Atom) and <description> (RSS)
-  - Three tokenized feedback hyperlinks appended to content:
-      [👍 More like this] [👎 Drop this book] [➕ Extra chapter now]
-    These are plain <a href> GET links to /fb/confirm/{token}?action=...
-    The /fb/confirm page shows a confirmation form; mutation happens on POST.
-    This guards against reader/proxy link prefetching.
+  - Four tokenized feedback hyperlinks appended to content, in order:
+      [🪝 Extra chapter now] [👍 More like this] [👎 Less like this] [❌ Drop this source]
+    up/down are instant bare-GET links (/fb/{token}); extra/drop route through the
+    confirmation page (/fb/confirm/{token}). 🪝 extra is shown only when a next unit
+    is available. See app/routers/feedback.py for the contract.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _add_entry(fg: FeedGenerator, drop: Drop) -> None:
     title = f"{book.title} — {chapter_label}"
     permalink = _permalink(drop)
 
-    content = drop.content_html + _feedback_html(drop)
+    content = drop.content_html + _feedback_html(drop, _extra_available(drop))
 
     fe = fg.add_entry(order="append")
     # GUID must be unique AND stable per drop, independent of the link target.
@@ -78,16 +78,38 @@ def _permalink(drop: Drop) -> str:
     return f"{settings.base_url}/read/{drop.reader_slug}"
 
 
-def _feedback_html(drop: Drop) -> str:
-    base = f"{settings.base_url}/fb/confirm/{drop.feedback_token}"
-    up_url = f"{base}?action=up"
-    down_url = f"{base}?action=down"
-    extra_url = f"{base}?action=extra"
+def _extra_available(drop: Drop) -> bool:
+    """Whether a 'next unit' exists for this drop's source — drives the 🪝 extra link.
+
+    EPUB source: another chapter remains past the cursor. (Phase E extends this to
+    ongoing sources: an unreleased buffered entry.)
+    """
+    book = drop.book
+    if book.status.value == "completed":
+        return False
+    return book.total_chapters is None or book.cursor_chapter_index < book.total_chapters
+
+
+def _feedback_html(drop: Drop, extra_available: bool) -> str:
+    """Four ordered actions: 🪝 extra · 👍 up · 👎 down · ❌ drop.
+
+    up/down are instant bare-GET links; extra/drop route through the confirm page.
+    The 🪝 extra link is shown only when a next unit is available.
+    """
+    token = drop.feedback_token
+    instant = f"{settings.base_url}/fb/{token}"
+    confirm = f"{settings.base_url}/fb/confirm/{token}"
+
+    links = []
+    if extra_available:
+        links.append(f'<a href="{confirm}?action=extra">🪝 Extra chapter now</a>')
+    links.append(f'<a href="{instant}?action=up">👍 More like this</a>')
+    links.append(f'<a href="{instant}?action=down">👎 Less like this</a>')
+    links.append(f'<a href="{confirm}?action=drop">❌ Drop this source</a>')
+
     return (
-        f'\n<hr/>\n'
-        f'<p class="beacon-feedback" style="font-size:0.9em;color:#666;">'
-        f'<a href="{up_url}">👍 More like this</a> &nbsp;'
-        f'<a href="{down_url}">👎 Drop this book</a> &nbsp;'
-        f'<a href="{extra_url}">➕ Extra chapter now</a>'
-        f'</p>'
+        '\n<hr/>\n'
+        '<p class="beacon-feedback" style="font-size:0.9em;color:#666;">'
+        + ' &nbsp;'.join(links)
+        + '</p>'
     )

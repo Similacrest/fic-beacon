@@ -297,3 +297,43 @@ class TestFeedback:
         event = in_memory_db.query(FeedbackEvent).filter_by(drop_id=drop.id).first()
         assert event is not None
         assert event.action == FeedbackAction.up
+
+    def test_extra_is_super_up_and_injects_drop(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=1.0)
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            apply_feedback(in_memory_db, drop, FeedbackAction.extra, Path("/fake"))
+
+        assert book.thumbs_up == 3
+        assert book.quota_weight > 1.9  # ×1.25**3 ≈ 1.95
+        # An out-of-cycle drop was injected (original + injected = 2 for this book).
+        assert in_memory_db.query(Drop).filter(Drop.book_id == book.id).count() == 2
+
+    def test_drop_action_drops_immediately(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1)
+        assert book.thumbs_down == 0  # no threshold needed
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        apply_feedback(in_memory_db, drop, FeedbackAction.drop, Path("/fake"))
+        assert book.status == BookStatus.dropped
+
+    def test_feedback_idempotent_per_drop_action(self, in_memory_db, epub_path):
+        from app.models import FeedbackEvent
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=1.0)
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        # Two identical up-votes on the same drop (e.g. a prefetch + a real click).
+        apply_feedback(in_memory_db, drop, FeedbackAction.up, Path("/fake"))
+        apply_feedback(in_memory_db, drop, FeedbackAction.up, Path("/fake"))
+
+        assert book.thumbs_up == 1                       # counted once
+        assert book.quota_weight == pytest.approx(1.25)  # not compounded to 1.5625
+        events = in_memory_db.query(FeedbackEvent).filter_by(
+            drop_id=drop.id, action=FeedbackAction.up
+        ).count()
+        assert events == 1

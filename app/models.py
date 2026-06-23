@@ -27,7 +27,8 @@ class BudgetMode(str, PyEnum):
 class FeedbackAction(str, PyEnum):
     up = "up"
     down = "down"
-    extra = "extra"
+    extra = "extra"      # super-up: strong boost + inject an out-of-cycle drop
+    drop = "drop"        # super-down: drop the source immediately
 
 
 def utcnow() -> datetime:
