@@ -1,4 +1,10 @@
-"""Admin routes for managing ongoing fic RSS feeds (v2 balancing strategy)."""
+"""Admin routes for ongoing serial sources.
+
+An ongoing source is a Book with kind=ongoing and an RSS feed_url, living in a channel.
+The poller buffers its new chapters (OngoingEntry, released=False); the planner releases
+them, batched, at drop time — weighted in the channel budget like EPUBs, and votable/
+droppable via the same feedback links. Published to the channel's shared 'ongoing' feed.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,10 +12,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Config, OngoingFeed
+from app.models import Book, BookKind, BookStatus, Channel, Drop, FeedbackEvent, OngoingEntry
 from app.ongoing.opml import parse_opml
 from app.version import __version__
 
@@ -18,25 +25,68 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 templates.env.globals["version"] = __version__
 
 
+def _add_source(db: Session, title: str, feed_url: str, channel_id: int | None) -> bool:
+    """Create an ongoing source if its feed_url isn't already registered."""
+    feed_url = feed_url.strip()
+    if not feed_url:
+        return False
+    exists = db.query(Book).filter(Book.feed_url == feed_url).first()
+    if exists is not None:
+        return False
+    max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
+    db.add(Book(
+        kind=BookKind.ongoing,
+        feed_url=feed_url,
+        title=(title or feed_url).strip(),
+        author="(ongoing)",
+        status=BookStatus.active,  # ongoing sources are always-active (not slot-gated)
+        queue_position=max_pos + 1,
+        channel_id=channel_id or None,
+    ))
+    return True
+
+
 @router.get("/", response_class=HTMLResponse)
 def ongoing_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    feeds = db.query(OngoingFeed).order_by(OngoingFeed.title).all()
-    cfg = db.get(Config, 1)
-    ongoing_total = sum(f.estimated_words_per_cycle for f in feeds if f.is_active)
-    synthetic_budget = None
-    if cfg and cfg.target_total_words:
-        synthetic_budget = max(0, cfg.target_total_words - ongoing_total)
+    sources = (
+        db.query(Book)
+        .filter(Book.kind == BookKind.ongoing)
+        .order_by(Book.title)
+        .all()
+    )
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
+    chan_name = {c.id: c.name for c in channels}
+    # Unreleased (buffered) entry count per source.
+    buffered = dict(
+        db.query(OngoingEntry.source_id, func.count(OngoingEntry.id))
+        .filter(OngoingEntry.released.is_(False))
+        .group_by(OngoingEntry.source_id)
+        .all()
+    )
     return templates.TemplateResponse(request, "admin/ongoing.html", {
-        "feeds": feeds,
-        "cfg": cfg,
-        "ongoing_total": ongoing_total,
-        "synthetic_budget": synthetic_budget,
+        "sources": sources,
+        "channels": channels,
+        "chan_name": chan_name,
+        "buffered": buffered,
     })
+
+
+@router.post("/add")
+def add_feed(
+    feed_url: str = Form(...),
+    title: str = Form(""),
+    channel_id: int | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    _add_source(db, title, feed_url, channel_id)
+    db.commit()
+    return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
 
 @router.post("/import-opml")
 async def import_opml(
     opml_file: UploadFile = File(...),
+    channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     content = await opml_file.read()
@@ -44,46 +94,35 @@ async def import_opml(
         entries = parse_opml(content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    existing_urls = {f.feed_url for f in db.query(OngoingFeed.feed_url).all()}
-    added = 0
-    for title, url in entries:
-        if url not in existing_urls:
-            db.add(OngoingFeed(title=title, feed_url=url))
-            existing_urls.add(url)
-            added += 1
+    added = sum(_add_source(db, title, url, channel_id) for title, url in entries)
     db.commit()
     return RedirectResponse(url=f"/admin/ongoing/?imported={added}", status_code=303)
 
 
-@router.post("/add")
-def add_feed(
-    feed_url: str = Form(...),
-    title: str = Form(""),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    existing = db.query(OngoingFeed).filter(OngoingFeed.feed_url == feed_url).first()
-    if existing is None:
-        db.add(OngoingFeed(title=title.strip() or feed_url, feed_url=feed_url.strip()))
-        db.commit()
-    return RedirectResponse(url="/admin/ongoing/", status_code=303)
-
-
-@router.post("/{feed_id}/toggle")
-def toggle_feed(feed_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
-    feed = db.get(OngoingFeed, feed_id)
-    if feed is None:
+@router.post("/{source_id}/toggle")
+def toggle_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Pause (drop) or resume (activate) an ongoing source."""
+    source = db.get(Book, source_id)
+    if source is None or source.kind != BookKind.ongoing:
         raise HTTPException(status_code=404)
-    feed.is_active = not feed.is_active
+    source.status = (
+        BookStatus.dropped if source.status == BookStatus.active else BookStatus.active
+    )
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
 
-@router.post("/{feed_id}/delete")
-def delete_feed(feed_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
-    feed = db.get(OngoingFeed, feed_id)
-    if feed:
-        db.delete(feed)
+@router.post("/{source_id}/delete")
+def delete_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    source = db.get(Book, source_id)
+    if source and source.kind == BookKind.ongoing:
+        drop_ids = [d.id for d in db.query(Drop.id).filter(Drop.book_id == source.id)]
+        if drop_ids:
+            db.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
+        db.delete(source)  # ongoing_entries cascade-delete with the source
         db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -93,16 +132,4 @@ def poll_now(db: Session = Depends(get_db)) -> RedirectResponse:
     from app.ongoing.poller import poll_all_feeds
     poll_all_feeds(db)
     db.commit()
-    return RedirectResponse(url="/admin/ongoing/", status_code=303)
-
-
-@router.post("/set-target")
-def set_target(
-    target_total_words: int = Form(...),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    cfg = db.get(Config, 1)
-    if cfg:
-        cfg.target_total_words = target_total_words if target_total_words > 0 else None
-        db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)

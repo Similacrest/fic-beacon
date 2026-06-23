@@ -29,17 +29,61 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.epub.chapterizer import Chapter, chapterize
 from app.models import (
-    Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction, FeedbackEvent, OngoingFeed,
+    Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
+    FeedbackEvent, OngoingEntry,
 )
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
+class Unit:
+    """One drop-able chunk — an EPUB chapter or a buffered ongoing entry.
+
+    Field-compatible with Chapter (title/html/word_count/source_url/index) so the
+    planner and feed builder treat both source kinds identically. entry_id is set
+    only for ongoing units, so materialising can mark the buffered entry released.
+    """
+    title: str
+    html: str
+    word_count: int
+    source_url: str | None
+    index: int
+    entry_id: int | None = None
+
+
+@dataclass
 class PlannedDrop:
     book: Book
-    chapters: list[Chapter]
+    chapters: list[Unit]
     word_count: int
+
+
+def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
+    """Remaining units for a source. None = source unresolvable (warned); [] = none now."""
+    if book.kind == BookKind.ongoing:
+        entries = sorted(
+            (e for e in book.ongoing_entries if not e.released),
+            key=lambda e: (e.published_at, e.id),
+        )
+        return [
+            Unit(title=e.title or f"Update {i + 1}", html=e.content_html,
+                 word_count=e.word_count, source_url=e.link, index=i, entry_id=e.id)
+            for i, e in enumerate(entries)
+        ]
+
+    calibre_book = adapter.get_book(book.calibre_id)
+    if calibre_book is None:
+        logger.warning(
+            "Active book id=%s (calibre_id=%s) not found in metadata.db — skipping",
+            book.id, book.calibre_id,
+        )
+        return None
+    return [
+        Unit(title=c.title, html=c.html, word_count=c.word_count,
+             source_url=c.source_url, index=c.index)
+        for c in _get_chapters(calibre_book, adapter, book)
+    ]
 
 
 def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
@@ -122,15 +166,14 @@ def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop 
     """Inject one out-of-cycle drop for the given book (triggered by 'extra' feedback)."""
     cfg = _get_config(session)
     adapter = CalibreAdapter(library_path)
-    calibre_book = adapter.get_book(book.calibre_id)
-    if calibre_book is None:
+    units = _remaining_units(book, adapter)
+    if not units:
         return None
-    chapters = _get_chapters(calibre_book, adapter, book)
-    if not chapters:
-        return None
-    plan = PlannedDrop(book=book, chapters=[chapters[0]], word_count=chapters[0].word_count)
-    drop = _materialise(session, plan)
+    plan = PlannedDrop(book=book, chapters=[units[0]], word_count=units[0].word_count)
+    channel_id = book.channel_id
+    drop = _materialise(session, plan, channel_id)
     if drop:
+        drop.feed_key = "ongoing" if book.kind == BookKind.ongoing else str(book.slot_index or 1)
         _advance_cursor(session, plan, adapter, cfg)
     session.flush()
     return drop
@@ -154,22 +197,12 @@ def _effective_budget(cfg: Config) -> int:
 
 
 def _compute_budget(session: Session, cfg: Config) -> int:
-    """Effective drop budget for this cycle.
+    """Base drop budget for the default (unchanneled) group.
 
-    v2 balancing: when target_total_words is set, the synthetic budget is
-    target_total_words minus the estimated word volume already arriving from
-    the user's real ongoing fic feeds. This keeps combined reading volume
-    near the configured target regardless of how many ongoing serials are
-    actively updating.
+    Ongoing serials are now syndicated as in-budget sources (they compete in the
+    weighted stochastic budget like EPUBs), so there is no word-count subtraction.
     """
-    base = _effective_budget(cfg)
-    if not cfg.target_total_words:
-        return base
-    ongoing_words = sum(
-        f.estimated_words_per_cycle
-        for f in session.query(OngoingFeed).filter(OngoingFeed.is_active.is_(True)).all()
-    )
-    return max(0, cfg.target_total_words - ongoing_words)
+    return _effective_budget(cfg)
 
 
 def _plan_drops(
@@ -187,33 +220,24 @@ def _plan_drops(
     A unit larger than the whole budget is posted whole (once per source per cycle),
     since it could never otherwise fit.
     """
-    # Pre-load remaining chapters for every book (highest quota first for fair ordering).
+    # Pre-load remaining units for every source (highest quota first for fair ordering).
     ordered = sorted(active_books, key=lambda b: -b.quota_weight)
-    book_remaining: dict[int, list[Chapter]] = {}
+    book_remaining: dict[int, list[Unit]] = {}
     valid: list[Book] = []
     for book in ordered:
-        calibre_book = adapter.get_book(book.calibre_id)
-        if calibre_book is None:
-            logger.warning(
-                "Active book id=%s (calibre_id=%s) not found in metadata.db — skipping",
-                book.id, book.calibre_id,
-            )
-            continue
-        rem = _get_chapters(calibre_book, adapter, book)
-        if rem:
-            book_remaining[book.id] = list(rem)
+        units = _remaining_units(book, adapter)
+        if units is None:
+            continue  # unresolvable source — already warned
+        if units:
+            book_remaining[book.id] = list(units)
             valid.append(book)
         else:
-            logger.warning(
-                "Active book '%s' yielded no chapters at cursor %s — EPUB missing at "
-                "%s or already complete; no drop produced",
-                book.title, book.cursor_chapter_index, adapter.epub_path(calibre_book),
-            )
+            logger.info("Active source '%s' has no pending units this cycle", book.title)
 
     if not valid:
         return []
 
-    selected: dict[int, list[Chapter]] = {b.id: [] for b in valid}
+    selected: dict[int, list[Unit]] = {b.id: [] for b in valid}
     used = 0
 
     changed = True
@@ -283,10 +307,11 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int | None = N
     )
     titles = "; ".join(ch.title for ch in plan.chapters)
 
+    feed_key = "ongoing" if plan.book.kind == BookKind.ongoing else str(plan.book.slot_index or 1)
     drop = Drop(
         book_id=plan.book.id,
         channel_id=channel_id,
-        feed_key=str(plan.book.slot_index or 1),
+        feed_key=feed_key,
         word_count=plan.word_count,
         chapter_start=first.index,
         chapter_end=last.index,
@@ -298,6 +323,13 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int | None = N
         reader_slug=str(uuid.uuid4()),
     )
     session.add(drop)
+    # For ongoing sources, mark the buffered entries this drop released.
+    entry_ids = [u.entry_id for u in plan.chapters if u.entry_id is not None]
+    if entry_ids:
+        session.flush()
+        for entry in session.query(OngoingEntry).filter(OngoingEntry.id.in_(entry_ids)):
+            entry.released = True
+            entry.drop_id = drop.id
     return drop
 
 
@@ -308,6 +340,8 @@ def _advance_cursor(
     cfg: Config,
 ) -> None:
     book = plan.book
+    if book.kind == BookKind.ongoing:
+        return  # ongoing sources never "complete"; entries are released in _materialise
     calibre_book = adapter.get_book(book.calibre_id)
     if calibre_book is None:
         return
@@ -336,12 +370,13 @@ def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
 def _fill_empty_slots(
     session: Session, parallel_slots: int, channel_id: int | None = None
 ) -> None:
-    """Promote queued books into open slots *within one channel group*.
+    """Promote queued *EPUB* books into open numbered slots within one channel group.
 
-    Also normalizes slot assignment: any already-active book missing a slot_index
-    gets the lowest free slot. channel_id=None is the implicit default group.
+    Ongoing sources are not slot-gated — they're always-active and share the channel's
+    'ongoing' feed — so slots count and promote backlog (EPUB) books only. Also
+    normalizes slot assignment for active EPUB books missing a slot_index.
     """
-    active = _active_books_in(session, channel_id)
+    active = [b for b in _active_books_in(session, channel_id) if b.kind == BookKind.epub]
     used = {b.slot_index for b in active if b.slot_index is not None}
     for book in active:
         if book.slot_index is None:
@@ -354,7 +389,11 @@ def _fill_empty_slots(
 
     queued = (
         session.query(Book)
-        .filter(Book.status == BookStatus.queued, _channel_filter(channel_id))
+        .filter(
+            Book.status == BookStatus.queued,
+            Book.kind == BookKind.epub,
+            _channel_filter(channel_id),
+        )
         .order_by(Book.queue_position)
         .limit(slots_available)
         .all()

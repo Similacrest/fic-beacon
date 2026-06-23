@@ -17,7 +17,7 @@ from datetime import timezone
 from feedgen.feed import FeedGenerator
 
 from app.config import settings
-from app.models import Drop
+from app.models import BookKind, Drop
 
 
 def build_feed(
@@ -92,10 +92,12 @@ def _permalink(drop: Drop) -> str:
 def _extra_available(drop: Drop) -> bool:
     """Whether a 'next unit' exists for this drop's source — drives the 🪝 extra link.
 
-    EPUB source: another chapter remains past the cursor. (Phase E extends this to
-    ongoing sources: an unreleased buffered entry.)
+    EPUB source: another chapter remains past the cursor.
+    Ongoing source: an unreleased buffered entry exists.
     """
     book = drop.book
+    if getattr(book, "kind", None) == BookKind.ongoing:
+        return any(not e.released for e in book.ongoing_entries)
     if book.status.value == "completed":
         return False
     return book.total_chapters is None or book.cursor_chapter_index < book.total_chapters

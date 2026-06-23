@@ -5,8 +5,8 @@ The cron schedule is read from Config at startup and can be updated via the admi
 
 Two recurring jobs:
   - drop_cycle: fires on cadence_cron to materialise chapter drops.
-  - poll_ongoing: polls ongoing fic feeds every 4 hours to refresh word estimates
-    used by the v2 budget balancing strategy.
+  - poll_ongoing: polls ongoing serial feeds hourly, buffering new chapters for release
+    at the next drop cycle.
 """
 import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -65,7 +65,7 @@ def start(cadence_cron: str) -> None:
     _scheduler.add_job(
         _run_poll,
         trigger="interval",
-        hours=4,
+        hours=1,
         id="poll_ongoing",
         replace_existing=True,
     )
