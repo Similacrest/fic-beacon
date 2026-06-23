@@ -18,6 +18,7 @@ Budget model (global round-robin, never pre-slice):
 from __future__ import annotations
 
 import logging
+import random
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -51,8 +52,9 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
 
-    for channel, parallel_slots, budget, tolerance in _drop_groups(session, cfg):
+    for channel, parallel_slots, base_budget, tolerance in _drop_groups(session, cfg):
         channel_id = channel.id if channel else None
+        credit_holder = channel if channel else cfg
 
         # Promote queued books into open slots *first* (fresh imports start 'queued').
         _fill_empty_slots(session, parallel_slots, channel_id)
@@ -62,11 +64,24 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         if not active_books:
             continue
 
-        for plan in _plan_drops(active_books, adapter, budget, tolerance):
+        # Token-bucket budget: this cycle's allowance is the base budget plus any
+        # signed carry-over from prior cycles, so the long-run mean tracks the base.
+        available = base_budget + credit_holder.budget_credit
+        effective = max(0, int(available))
+
+        plans = _plan_drops(active_books, adapter, effective, tolerance)
+        used = 0
+        for plan in plans:
             drop = _materialise(session, plan, channel_id)
             if drop:
                 drops.append(drop)
+                used += plan.word_count
                 _advance_cursor(session, plan, adapter, cfg)
+
+        # Carry the leftover (can be negative after an oversized post); clamp so a big
+        # overshoot doesn't suppress drops for many cycles.
+        leftover = available - used
+        credit_holder.budget_credit = max(-base_budget, min(base_budget, leftover))
 
         _fill_empty_slots(session, parallel_slots, channel_id)
 
@@ -161,11 +176,18 @@ def _plan_drops(
     active_books: list[Book],
     adapter: CalibreAdapter,
     budget: int,
-    tolerance: int,
+    tolerance: int = 0,  # unused; kept for signature compatibility (stochastic handles overshoot)
 ) -> list[PlannedDrop]:
-    total_quota = sum(b.quota_weight for b in active_books) or 1.0
+    """Pure-stochastic selection over whole units (chapters), never splitting.
 
-    # Pre-load remaining chapters for every book (highest quota first for fair ordering)
+    Repeated weight-ordered passes: a candidate unit of size w is included with
+    probability p that falls as the cycle runs over budget and rises with the
+    source's quota_weight. Excluded units roll over whole to a later cycle. There is
+    *no* guaranteed first chapter — over budget, even a source's first unit can defer.
+    A unit larger than the whole budget is posted whole (once per source per cycle),
+    since it could never otherwise fit.
+    """
+    # Pre-load remaining chapters for every book (highest quota first for fair ordering).
     ordered = sorted(active_books, key=lambda b: -b.quota_weight)
     book_remaining: dict[int, list[Chapter]] = {}
     valid: list[Book] = []
@@ -192,15 +214,8 @@ def _plan_drops(
         return []
 
     selected: dict[int, list[Chapter]] = {b.id: [] for b in valid}
-    global_words = 0
+    used = 0
 
-    # Phase 1: give every book its first chapter unconditionally
-    for book in valid:
-        ch = book_remaining[book.id].pop(0)
-        selected[book.id].append(ch)
-        global_words += ch.word_count
-
-    # Phase 2: round-robin bonus chapters while the global counter has headroom
     changed = True
     while changed:
         changed = False
@@ -208,16 +223,18 @@ def _plan_drops(
             remaining = book_remaining[book.id]
             if not remaining:
                 continue
-            next_ch = remaining[0]
-            per_book_share = int(budget * book.quota_weight / total_quota)
-            book_words = sum(c.word_count for c in selected[book.id])
-            if (
-                book_words + next_ch.word_count <= per_book_share + tolerance
-                and global_words + next_ch.word_count <= budget + tolerance
-            ):
-                selected[book.id].append(next_ch)
-                book_remaining[book.id].pop(0)
-                global_words += next_ch.word_count
+            unit = remaining[0]
+            p = _inclusion_probability(
+                word_count=unit.word_count,
+                used=used,
+                budget=budget,
+                weight=book.quota_weight,
+                first_for_book=not selected[book.id],
+            )
+            if random.random() < p:
+                selected[book.id].append(unit)
+                remaining.pop(0)
+                used += unit.word_count
                 changed = True
 
     return [
@@ -225,6 +242,24 @@ def _plan_drops(
         for book in valid
         if (chs := selected[book.id])
     ]
+
+
+def _inclusion_probability(
+    word_count: int, used: int, budget: int, weight: float, first_for_book: bool
+) -> float:
+    """Probability of including a whole unit this cycle (see _plan_drops)."""
+    if word_count <= 0:
+        return 1.0
+    # Oversized unit: larger than the entire budget → post whole, but only as a
+    # source's first unit this cycle so we don't dump a whole book at a tiny budget.
+    if word_count > budget and first_for_book:
+        return 1.0
+    remaining = budget - used
+    if remaining <= 0:
+        return 0.0
+    base = min(1.0, remaining / word_count)
+    # Weight bias: higher weight pushes p toward 1, lower weight toward 0.
+    return base ** (1.0 / max(weight, 1e-6))
 
 
 def _get_chapters(

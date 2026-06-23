@@ -10,6 +10,7 @@ Global round-robin invariants:
 Uses the in-memory DB fixture and mock EPUB fixtures.
 """
 import os
+import random
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -93,54 +94,49 @@ class TestPlanDrops:
         # Only chapters 4 and 5 remain (indices 3 and 4)
         assert len(plans[0].chapters) == 2
 
-    def test_splits_budget_across_books(self, in_memory_db, epub_path):
+    def test_budget_shared_across_books_is_bounded(self, in_memory_db, epub_path):
+        # Two books share one budget. Pure stochastic does not guarantee each a chapter,
+        # but the cycle total must stay near the budget (not budget-per-book).
         book1 = _make_book(in_memory_db, calibre_id=1, title="Book 1", quota_weight=1.0)
         book2 = _make_book(in_memory_db, calibre_id=2, title="Book 2", quota_weight=1.0)
-        adapter1 = _mock_adapter(1, epub_path)
-        adapter2 = _mock_adapter(2, epub_path)
 
-        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
-            call_count = [0]
-            def side_effect(path):
-                call_count[0] += 1
-                return adapter1 if call_count[0] % 2 == 1 else adapter2
-            MockAdapter.side_effect = side_effect
-            plans = _plan_drops(
-                [book1, book2], adapter1, budget=1000, tolerance=0
-            )
-        # Each book should get at least 1 chapter
-        assert len(plans) == 2
+        from app.calibre.adapter import CalibreBook
+        mock_all = MagicMock()
+        mock_all.get_book.return_value = CalibreBook(
+            calibre_id=1, title="T", author="A", path="A/T (1)", epub_name="T - A", source_url=None,
+        )
+        mock_all.epub_path.return_value = epub_path
+
+        plans = _plan_drops([book1, book2], mock_all, budget=1000)
+        total = sum(p.word_count for p in plans)
+        assert plans                       # at least one source dropped
+        assert total <= 1000 + 502         # bounded by budget + at most one boundary chapter
 
 
 class TestGlobalRoundRobin:
     """Verify the global round-robin budget cap."""
 
-    def test_global_words_bounded_by_budget_plus_tolerance(self, in_memory_db, epub_path):
-        # 4 books, each with ~500-word chapters; budget=1000, tolerance=600
-        # Old per-slice would post 4 × 500 = 2000 words; round-robin must stay ≤ 1600
+    def test_global_words_bounded_by_budget(self, in_memory_db, epub_path):
+        # 4 books, ~500-word chapters; budget=1000. Pure stochastic must keep the
+        # cycle total near the budget — NOT 4 × 500 — and need not give every book a
+        # chapter (no phase-1 guarantee).
         books = [
             _make_book(in_memory_db, calibre_id=i, title=f"Book {i}", queue_position=i)
             for i in range(1, 5)
         ]
-        adapter = _mock_adapter(1, epub_path)
-        # All books resolve to the same epub_path for simplicity
-        mock_all = MagicMock()
         from app.calibre.adapter import CalibreBook
+        mock_all = MagicMock()
         mock_all.get_book.return_value = CalibreBook(
             calibre_id=1, title="T", author="A",
             path="A/T (1)", epub_name="T - A", source_url=None,
         )
         mock_all.epub_path.return_value = epub_path
 
-        plans = _plan_drops(books, mock_all, budget=1000, tolerance=600)
+        plans = _plan_drops(books, mock_all, budget=1000)
         total_words = sum(p.word_count for p in plans)
-        # Phase 1 gives 4 chapters at ~500 words each = ~2000 words forced.
-        # Phase 2 global cap prevents any more.  Total is exactly phase-1 forced.
-        # The important invariant: without the cap it would be even more (old strategy).
-        # Here we just verify every book got at least 1 chapter:
-        assert len(plans) == 4
-        for p in plans:
-            assert len(p.chapters) >= 1
+        # Budget 1000 / 500-word chapters → ~2 chapters; bounded well under 4×500.
+        assert 0 < total_words <= 1500
+        assert sum(len(p.chapters) for p in plans) <= 3
 
     def test_high_budget_allows_extra_chapters(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
@@ -379,3 +375,47 @@ class TestChannels:
         assert len(drops) >= 1
         assert drops[0].channel_id is None
         assert drops[0].feed_key == "1"
+
+
+class TestStochasticBudget:
+    def test_unit_within_budget_always_included(self):
+        from app.planner.planner import _inclusion_probability
+        assert _inclusion_probability(100, used=0, budget=1000, weight=1.0, first_for_book=True) == 1.0
+
+    def test_over_budget_excluded(self):
+        from app.planner.planner import _inclusion_probability
+        assert _inclusion_probability(100, used=1000, budget=1000, weight=1.0, first_for_book=False) == 0.0
+
+    def test_boundary_fraction_at_weight_one(self):
+        from app.planner.planner import _inclusion_probability
+        # 50 words of budget left for a 100-word unit → p = 0.5
+        p = _inclusion_probability(100, used=950, budget=1000, weight=1.0, first_for_book=False)
+        assert p == pytest.approx(0.5)
+
+    def test_higher_weight_raises_probability(self):
+        from app.planner.planner import _inclusion_probability
+        low = _inclusion_probability(100, 950, 1000, weight=0.5, first_for_book=False)
+        high = _inclusion_probability(100, 950, 1000, weight=2.0, first_for_book=False)
+        assert high > 0.5 > low
+
+    def test_oversized_first_unit_posts_whole(self):
+        from app.planner.planner import _inclusion_probability
+        assert _inclusion_probability(5000, used=0, budget=1000, weight=1.0, first_for_book=True) == 1.0
+
+    def test_oversized_defers_when_not_first_and_over(self):
+        from app.planner.planner import _inclusion_probability
+        assert _inclusion_probability(5000, used=1000, budget=1000, weight=1.0, first_for_book=False) == 0.0
+
+    def test_mean_words_tracks_budget(self):
+        # Repeatedly draw same-size units until one is rejected; mean total ≈ budget.
+        from app.planner.planner import _inclusion_probability
+        random.seed(1234)
+        budget, w, trials, totals = 1000, 300, 4000, []
+        for _ in range(trials):
+            used, first = 0, True
+            while random.random() < _inclusion_probability(w, used, budget, 1.0, first):
+                used += w
+                first = False
+            totals.append(used)
+        mean = sum(totals) / trials
+        assert abs(mean - budget) < 120  # tracks budget without even the credit smoothing

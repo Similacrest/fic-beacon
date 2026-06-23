@@ -159,6 +159,8 @@ class Config(Base):
     cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 8 * * *")
     thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # Signed carry-over for the default group's stochastic budget (mirrors Channel.budget_credit).
+    budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # v2 placeholder
     target_total_words: Mapped[int | None] = mapped_column(Integer, nullable=True)
