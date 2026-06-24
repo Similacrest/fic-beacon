@@ -10,34 +10,74 @@
 
 {% if channels %}
 {% for ch in channels %}
-<div style="border:1px solid #e0e0e0; border-radius:6px; padding:1em; margin-bottom:1em">
-  <h2 style="margin-top:0">
-    <form method="post" action="/admin/channels/{{ ch.id }}/rename" style="display:inline"
-          title="Rename (feed URLs / slug stay the same)">
-      <input type="text" name="name" value="{{ ch.name }}"
-             style="font-size:.9em; font-weight:600; width:auto; padding:.1em .3em">
-      <button type="submit" style="font-size:.7em; padding:.1em .4em">Rename</button>
-    </form>
-    <span style="color:#999; font-weight:400; font-size:.7em">
-      /{{ ch.slug }} · {{ ch.parallel_slots }} slot(s) · {{ ch.budget_words }} words
-      {% if ch.genre_match %}· genre: {{ ch.genre_match }}{% endif %}
-    </span>
-    <form method="post" action="/admin/channels/{{ ch.id }}/delete" style="display:inline; float:right"
+<div style="border:1px solid #e0e0e0; border-radius:6px; padding:1em; margin-bottom:1.2em">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:.8em">
+    <div>
+      <strong style="font-size:1.05em">{{ ch.name }}</strong>
+      <span style="color:#999; font-size:.8em; margin-left:.5em">/{{ ch.slug }}</span>
+    </div>
+    <form method="post" action="/admin/channels/{{ ch.id }}/delete" style="display:inline"
           onsubmit="return confirm('Delete channel {{ ch.name }}? Its sources move to another channel.')">
-      <button class="btn btn-danger" style="font-size:.75em; padding:.1em .5em">Delete</button>
+      <button class="btn btn-danger" style="font-size:.75em; padding:.15em .5em">Delete</button>
     </form>
-  </h2>
-  <table>
+  </div>
+
+  <form method="post" action="/admin/channels/{{ ch.id }}/edit">
+    <div style="display:flex; flex-wrap:wrap; gap:.6em .8em; align-items:flex-end">
+      <div style="flex:2; min-width:150px">
+        <label style="font-size:.8em; display:block">Name</label>
+        <input type="text" name="name" value="{{ ch.name }}" required style="width:100%">
+      </div>
+      <div style="flex:2; min-width:150px">
+        <label style="font-size:.8em; display:block">Genre match</label>
+        <input type="text" name="genre_match" value="{{ ch.genre_match or '' }}"
+               placeholder="Fantasy" style="width:100%"
+               title="Calibre #genre_manual prefix — e.g. 'Fantasy' catches 'Fantasy', 'Fantasy.Rational'">
+      </div>
+      <div style="min-width:80px">
+        <label style="font-size:.8em; display:block">Slots</label>
+        <input type="number" name="parallel_slots" value="{{ ch.parallel_slots }}" min="1" style="width:70px">
+      </div>
+      <div style="min-width:90px">
+        <label style="font-size:.8em; display:block">Mode</label>
+        <select name="budget_mode" style="width:auto">
+          <option value="words"{% if ch.budget_mode.value == 'words' %} selected{% endif %}>Words</option>
+          <option value="minutes"{% if ch.budget_mode.value == 'minutes' %} selected{% endif %}>Minutes</option>
+        </select>
+      </div>
+      <div style="min-width:90px">
+        <label style="font-size:.8em; display:block">Budget (words)</label>
+        <input type="number" name="budget_words" value="{{ ch.budget_words }}" min="1" style="width:90px">
+      </div>
+      <div style="min-width:90px">
+        <label style="font-size:.8em; display:block">Budget (min)</label>
+        <input type="number" name="budget_minutes" value="{{ ch.budget_minutes }}" min="1" style="width:70px">
+      </div>
+      <div style="min-width:120px">
+        <label style="font-size:.8em; display:block">
+          <input type="checkbox" name="has_ongoing_feed" value="1"{% if ch.has_ongoing_feed %} checked{% endif %}>
+          In-progress feed
+        </label>
+      </div>
+      <div>
+        <button class="btn btn-primary" type="submit" style="font-size:.85em">Save</button>
+      </div>
+    </div>
+  </form>
+
+  {% if feeds[ch.id] %}
+  <table style="margin-top:.8em; font-size:.85em">
     <thead><tr><th>Feed</th><th>URL</th></tr></thead>
     <tbody>
     {% for key, url in feeds[ch.id] %}
       <tr>
-        <td style="white-space:nowrap">{{ "In progress" if key == "ongoing" else "Slot " ~ key }}</td>
+        <td style="white-space:nowrap; padding-right:.8em">{{ "In progress" if key == "ongoing" else "Slot " ~ key }}</td>
         <td><span class="feed-url">{{ url }}</span></td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
+  {% endif %}
 </div>
 {% endfor %}
 {% else %}
@@ -46,27 +86,49 @@
 
 <h2>New channel</h2>
 <form method="post" action="/admin/channels">
-  <div class="form-group">
-    <label for="name">Name</label>
-    <input type="text" id="name" name="name" placeholder="Fantasy" required>
+  <div style="display:flex; flex-wrap:wrap; gap:.6em .8em; align-items:flex-end; max-width:860px">
+    <div style="flex:2; min-width:150px">
+      <label style="font-size:.8em; display:block">Name</label>
+      <input type="text" name="name" placeholder="Fantasy" required style="width:100%">
+    </div>
+    <div style="flex:2; min-width:150px">
+      <label style="font-size:.8em; display:block">Genre match (optional)</label>
+      <input type="text" name="genre_match" placeholder="Fantasy" style="width:100%"
+             title="Calibre #genre_manual prefix used for auto-routing on import">
+    </div>
+    <div style="min-width:80px">
+      <label style="font-size:.8em; display:block">Slots</label>
+      <input type="number" name="parallel_slots" value="2" min="1" style="width:70px">
+    </div>
+    <div style="min-width:90px">
+      <label style="font-size:.8em; display:block">Mode</label>
+      <select name="budget_mode" style="width:auto">
+        <option value="words">Words</option>
+        <option value="minutes">Minutes</option>
+      </select>
+    </div>
+    <div style="min-width:90px">
+      <label style="font-size:.8em; display:block">Budget (words)</label>
+      <input type="number" name="budget_words" value="5000" min="1" style="width:90px">
+    </div>
+    <div style="min-width:90px">
+      <label style="font-size:.8em; display:block">Budget (min)</label>
+      <input type="number" name="budget_minutes" value="20" min="1" style="width:70px">
+    </div>
+    <div style="min-width:120px">
+      <label style="font-size:.8em; display:block">
+        <input type="checkbox" name="has_ongoing_feed" value="1" checked>
+        In-progress feed
+      </label>
+    </div>
+    <div>
+      <button class="btn btn-primary" type="submit">Create channel</button>
+    </div>
   </div>
-  <div class="form-group">
-    <label for="genre_match">Genre match (optional)</label>
-    <input type="text" id="genre_match" name="genre_match" placeholder="Fantasy">
-    <small style="color:#666">
-      Calibre <code>#genre_manual</code> prefix. "Fantasy" catches "Fantasy", "Fantasy.Rational", …
-      Books are auto-routed here on import when their genre matches.
-    </small>
-  </div>
-  <div class="form-group">
-    <label for="parallel_slots">Parallel slots</label>
-    <input type="number" id="parallel_slots" name="parallel_slots" value="2" min="1">
-  </div>
-  <div class="form-group">
-    <label for="budget_words">Budget (words / cycle)</label>
-    <input type="number" id="budget_words" name="budget_words" value="5000" min="1">
-  </div>
-  <button class="btn btn-primary" type="submit">Create channel</button>
+  <small style="color:#666; display:block; margin-top:.4em">
+    "Genre match" is a Calibre <code>#genre_manual</code> prefix — "Fantasy" catches "Fantasy", "Fantasy.Rational", etc.
+    Budget words/minutes: only the field matching the selected mode is used.
+  </small>
 </form>
 
 {% endblock %}

@@ -36,6 +36,8 @@ def get_feed_slot(
     channel = db.query(Channel).filter(Channel.slug == channel_slug).first()
     if channel is None:
         raise HTTPException(status_code=404, detail="Unknown channel")
+    if feed_key == "ongoing" and not channel.has_ongoing_feed:
+        raise HTTPException(status_code=404, detail="This channel has no ongoing feed")
     drops = (
         db.query(Drop)
         .join(Drop.book)

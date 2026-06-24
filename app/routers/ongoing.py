@@ -86,7 +86,6 @@ def add_feed(
 @router.post("/import-opml")
 async def import_opml(
     opml_file: UploadFile = File(...),
-    channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     content = await opml_file.read()
@@ -94,7 +93,7 @@ async def import_opml(
         entries = parse_opml(content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    target_id = channel_id or ensure_default_channel(db).id
+    target_id = ensure_default_channel(db).id
     added = sum(_add_source(db, title, url, target_id) for title, url in entries)
     db.commit()
     return RedirectResponse(url=f"/admin/ongoing/?imported={added}", status_code=303)

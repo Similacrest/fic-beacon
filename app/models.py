@@ -63,6 +63,8 @@ class Channel(Base):
     # Signed carry-over so the stochastic per-cycle mean tracks the budget (Phase D).
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # When False, the …/ongoing feed is not exposed and the UI hides it (pure-EPUB channels).
+    has_ongoing_feed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class Book(Base):

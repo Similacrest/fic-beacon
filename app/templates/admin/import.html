@@ -35,15 +35,16 @@
   <table>
     <thead><tr>
       <th><input type="checkbox" id="check-all" title="Select all visible"></th>
-      <th>Title</th><th>Author</th><th>Tags</th><th>Last updated</th><th>Source URL</th>
+      <th>Title</th><th>Author</th><th>Genre (manual)</th><th>Last updated</th><th>Source URL</th>
     </tr></thead>
     <tbody id="book-rows">
     {% for book in books %}
-    <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ book.tags|join(' '))|lower }}">
+    {% set genre_display = book.genres if book.genres else book.genre_tags %}
+    <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ genre_display|join(' '))|lower }}">
       <td><input type="checkbox" name="calibre_ids" value="{{ book.calibre_id }}"></td>
       <td>{{ book.title }}</td>
       <td>{{ book.author }}</td>
-      <td style="font-size:.8em; color:#666">{{ book.tags|join(", ") }}</td>
+      <td style="font-size:.8em; color:#666">{{ genre_display|join(", ") }}</td>
       <td style="font-size:.85em; color:#666; white-space:nowrap">
         {% if book.last_modified %}{{ book.last_modified[:10] }}{% else %}—{% endif %}
       </td>

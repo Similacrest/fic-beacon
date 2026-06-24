@@ -7,13 +7,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
 from app.database import ensure_default_channel, get_db
-from app.models import Book, BookStatus, Channel, Config, Drop, FeedbackEvent
+from app.models import Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackEvent
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -106,7 +107,9 @@ def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     # Per-channel slot feed URLs (numbered backlog slots + the shared 'ongoing' feed).
     feeds = {}
     for ch in channels:
-        keys = [str(i) for i in range(1, ch.parallel_slots + 1)] + ["ongoing"]
+        keys = [str(i) for i in range(1, ch.parallel_slots + 1)]
+        if ch.has_ongoing_feed:
+            keys.append("ongoing")
         feeds[ch.id] = [
             (k, f"{settings.base_url}/feed/{ch.slug}/{k}?token={token}") for k in keys
         ]
@@ -120,41 +123,59 @@ def create_channel(
     name: str = Form(...),
     genre_match: str = Form(""),
     parallel_slots: int = Form(2),
+    budget_mode: str = Form("words"),
     budget_words: int = Form(5000),
+    budget_minutes: int = Form(20),
+    has_ongoing_feed: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     name = name.strip()
     if name:
         slug = _slugify(name)
-        # Ensure slug uniqueness with a numeric suffix if needed.
         base_slug, n = slug, 2
         while db.query(Channel).filter(Channel.slug == slug).first() is not None:
             slug = f"{base_slug}-{n}"
             n += 1
-        max_order = db.query(Channel.queue_order).order_by(Channel.queue_order.desc()).scalar() or 0
+        max_order = db.query(func.max(Channel.queue_order)).scalar() or 0
+        mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
         db.add(Channel(
             name=name,
             slug=slug,
             genre_match=genre_match.strip() or None,
             parallel_slots=max(1, parallel_slots),
+            budget_mode=mode,
             budget_words=max(1, budget_words),
+            budget_minutes=max(1, budget_minutes),
+            has_ongoing_feed=bool(has_ongoing_feed),
             queue_order=max_order + 1,
         ))
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
 
 
-@router.post("/channels/{channel_id}/rename")
-def rename_channel(
+@router.post("/channels/{channel_id}/edit")
+def edit_channel(
     channel_id: int,
     name: str = Form(...),
+    genre_match: str = Form(""),
+    parallel_slots: int = Form(1),
+    budget_mode: str = Form("words"),
+    budget_words: int = Form(5000),
+    budget_minutes: int = Form(20),
+    has_ongoing_feed: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    """Rename a channel. The slug (and thus feed URLs) stays fixed."""
+    """Edit channel settings. The slug (and thus feed URLs) stays fixed."""
     channel = db.get(Channel, channel_id)
     name = name.strip()
     if channel and name:
         channel.name = name
+        channel.genre_match = genre_match.strip() or None
+        channel.parallel_slots = max(1, parallel_slots)
+        channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
+        channel.budget_words = max(1, budget_words)
+        channel.budget_minutes = max(1, budget_minutes)
+        channel.has_ongoing_feed = bool(has_ongoing_feed)
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
 

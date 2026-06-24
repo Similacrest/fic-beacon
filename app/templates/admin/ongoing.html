@@ -80,16 +80,13 @@
 
 <h2>Import OPML</h2>
 <p style="color:#555; font-size:.9em">
-  Export your subscriptions (InoReader: Preferences → Import/Export → Export OPML), then add them
-  all into one channel. Note: AO3/FFN have no per-chapter RSS — those aren't supported here yet.
+  Export your subscriptions (InoReader: Preferences → Import/Export → Export OPML). All imported
+  serials land in General — reassign them per-row above afterwards.
+  Note: AO3/FFN have no per-chapter RSS — those aren't supported here yet.
 </p>
 <form method="post" action="/admin/ongoing/import-opml" enctype="multipart/form-data"
       style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap">
   <input type="file" name="opml_file" accept=".opml,.xml" required>
-  <select name="channel_id">
-    <option value="">— General (default) —</option>
-    {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
-  </select>
   <button class="btn btn-primary" type="submit">Import</button>
 </form>
 
