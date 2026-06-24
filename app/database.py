@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Base, BudgetMode, Config
+from app.models import Base, Channel, Config
 
 engine = create_engine(
     settings.database_url,
@@ -25,10 +25,15 @@ def set_sqlite_pragma(dbapi_conn, _connection_record):
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+DEFAULT_CHANNEL_NAME = "General"
+DEFAULT_CHANNEL_SLUG = "general"
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
         _ensure_config(session)
+        ensure_default_channel(session)
         session.commit()
 
 
@@ -38,16 +43,29 @@ def _ensure_config(session: Session) -> None:
         session.add(
             Config(
                 id=1,
-                global_budget_words=settings.default_global_budget_words,
-                global_budget_minutes=settings.default_global_budget_minutes,
-                budget_mode=BudgetMode(settings.default_budget_mode),
                 wpm=settings.default_wpm,
-                parallel_slots=settings.default_parallel_slots,
                 cadence_cron=settings.default_cadence_cron,
                 thumbs_down_drop_threshold=settings.default_thumbs_down_drop_threshold,
                 feed_secret=settings.feed_secret or secrets.token_urlsafe(32),
             )
         )
+
+
+def ensure_default_channel(session: Session) -> Channel:
+    """Return the General channel, creating it if no channels exist yet.
+
+    Every source must belong to a channel, so a fresh install needs at least one. The
+    General channel is the import/fallback home; users can rename it or add more.
+    """
+    channel = (
+        session.query(Channel).filter(Channel.slug == DEFAULT_CHANNEL_SLUG).first()
+        or session.query(Channel).order_by(Channel.queue_order, Channel.id).first()
+    )
+    if channel is None:
+        channel = Channel(name=DEFAULT_CHANNEL_NAME, slug=DEFAULT_CHANNEL_SLUG)
+        session.add(channel)
+        session.flush()
+    return channel
 
 
 def get_db() -> Generator[Session, None, None]:

@@ -12,13 +12,18 @@
 {% for ch in channels %}
 <div style="border:1px solid #e0e0e0; border-radius:6px; padding:1em; margin-bottom:1em">
   <h2 style="margin-top:0">
-    {{ ch.name }}
+    <form method="post" action="/admin/channels/{{ ch.id }}/rename" style="display:inline"
+          title="Rename (feed URLs / slug stay the same)">
+      <input type="text" name="name" value="{{ ch.name }}"
+             style="font-size:.9em; font-weight:600; width:auto; padding:.1em .3em">
+      <button type="submit" style="font-size:.7em; padding:.1em .4em">Rename</button>
+    </form>
     <span style="color:#999; font-weight:400; font-size:.7em">
       /{{ ch.slug }} · {{ ch.parallel_slots }} slot(s) · {{ ch.budget_words }} words
       {% if ch.tag_match %}· tag: {{ ch.tag_match }}{% endif %}
     </span>
     <form method="post" action="/admin/channels/{{ ch.id }}/delete" style="display:inline; float:right"
-          onsubmit="return confirm('Delete channel {{ ch.name }}? Its books become unassigned.')">
+          onsubmit="return confirm('Delete channel {{ ch.name }}? Its sources move to another channel.')">
       <button class="btn btn-danger" style="font-size:.75em; padding:.1em .5em">Delete</button>
     </form>
   </h2>

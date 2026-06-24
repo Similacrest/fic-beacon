@@ -97,9 +97,11 @@ class TestPollerHelpers:
 # ── Buffering ─────────────────────────────────────────────────────────────────
 
 def _ongoing_source(db, feed_url="https://s.example.com/feed"):
+    from app.models import Channel
+    channel_id = db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
     src = Book(
         kind=BookKind.ongoing, feed_url=feed_url, title="Serial", author="(ongoing)",
-        status=BookStatus.active, queue_position=1,
+        status=BookStatus.active, queue_position=1, channel_id=channel_id,
     )
     db.add(src)
     db.flush()
@@ -147,10 +149,11 @@ class TestBuffering:
         assert in_memory_db.query(OngoingEntry).count() == 2
 
     def test_poll_all_skips_epub_and_survives_errors(self, in_memory_db):
-        _ongoing_source(in_memory_db, feed_url="https://ok.example.com/feed")
+        src = _ongoing_source(in_memory_db, feed_url="https://ok.example.com/feed")
         # An epub book must be ignored by the poller.
         in_memory_db.add(Book(calibre_id=1, kind=BookKind.epub, title="E", author="A",
-                              status=BookStatus.active, queue_position=2))
+                              status=BookStatus.active, queue_position=2,
+                              channel_id=src.channel_id))
         in_memory_db.flush()
         with patch("app.ongoing.poller.feedparser.parse", return_value=_mock_feed(_entry("x", 50))):
             new = poll_all_feeds(in_memory_db)
@@ -163,9 +166,9 @@ class TestOngoingDrops:
         from app.models import Drop
         src = _ongoing_source(in_memory_db)
         # Three buffered chapters, ~100 words each; small budget releases a subset.
-        from app.models import Config
-        cfg = in_memory_db.get(Config, 1)
-        cfg.global_budget_words = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
+        from app.models import Channel
+        channel = in_memory_db.get(Channel, src.channel_id)
+        channel.budget_words = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
         for i in range(1, 4):
             in_memory_db.add(OngoingEntry(
                 source_id=src.id, guid=f"c{i}", title=f"Ch {i}",

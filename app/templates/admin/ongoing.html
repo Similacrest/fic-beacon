@@ -71,7 +71,7 @@
   <div style="min-width:140px">
     <label for="channel_id" style="font-size:.9em">Channel</label>
     <select name="channel_id" id="channel_id">
-      <option value="">— Default —</option>
+      <option value="">— General (default) —</option>
       {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
     </select>
   </div>
@@ -87,7 +87,7 @@
       style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap">
   <input type="file" name="opml_file" accept=".opml,.xml" required>
   <select name="channel_id">
-    <option value="">— Default —</option>
+    <option value="">— General (default) —</option>
     {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
   </select>
   <button class="btn btn-primary" type="submit">Import</button>

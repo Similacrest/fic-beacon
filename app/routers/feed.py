@@ -23,24 +23,6 @@ def _render(drops, fmt: str, self_url=None, title=None, description=None) -> Res
     return Response(content=atom_xml, media_type="application/atom+xml; charset=utf-8")
 
 
-@router.get("/feed")
-def get_feed_all(
-    token: str = Query(..., description="Feed secret token"),
-    fmt: str = Query("atom", description="atom or rss"),
-    db: Session = Depends(get_db),
-) -> Response:
-    """All-channels union feed (single-subscription fallback)."""
-    _check_feed_secret(db, token)
-    drops = (
-        db.query(Drop)
-        .join(Drop.book)
-        .order_by(Drop.published_at.desc())
-        .limit(settings.feed_item_limit)
-        .all()
-    )
-    return _render(drops, fmt)
-
-
 @router.get("/feed/{channel_slug}/{feed_key}")
 def get_feed_slot(
     channel_slug: str,

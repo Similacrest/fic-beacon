@@ -23,10 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 def publish_updates(session: Session, drops: list[Drop]) -> None:
-    """Notify subscribers of every feed touched by `drops` (plus the union feed)."""
+    """Notify subscribers of every channel/slot feed touched by `drops`."""
     if not drops:
         return
-    _notify_topic(session, *_union_feed(session))
     seen: set[tuple[int, str]] = set()
     for drop in drops:
         if drop.channel_id is None or drop.feed_key is None:
@@ -45,13 +44,6 @@ def publish_updates(session: Session, drops: list[Drop]) -> None:
 
 def _recent_drops(query):
     return query.order_by(Drop.published_at.desc()).limit(settings.feed_item_limit).all()
-
-
-def _union_feed(session: Session) -> tuple[str, bytes]:
-    topic = f"{settings.base_url}/feed"
-    drops = _recent_drops(session.query(Drop).join(Drop.book))
-    atom, _ = build_feed(drops)
-    return topic, atom
 
 
 def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tuple[str, bytes] | None:

@@ -1,9 +1,9 @@
 """Budget / Drop Planner.
 
 Budget model (per-channel, pure-stochastic, never pre-slice):
-  Each channel (plus the implicit default group) runs independently each cycle with
-  effective budget B = base_budget + budget_credit (signed carry-over so the long-run
-  mean tracks the base budget).
+  Every source belongs to a channel, and each channel runs independently each cycle
+  with effective budget B = base_budget + budget_credit (signed carry-over so the
+  long-run mean tracks the base budget).
 
   Candidates are each active source's next whole unit, taken in weight-ordered passes.
   A unit of size w is *included* this cycle with probability
@@ -88,36 +88,36 @@ def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
 
 
 def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
-    """Execute one scheduled drop cycle across all channels.
+    """Execute one scheduled drop cycle across every channel.
 
-    The implicit default group (channel_id IS NULL) uses the Config budget/slots;
-    each Channel uses its own. Cadence is global — every group drops this cycle.
+    Every source belongs to a channel; each channel drops independently using its own
+    budget and slots. Cadence is global — every channel drops this cycle.
     """
     cfg = _get_config(session)
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
 
-    for channel, parallel_slots, base_budget in _drop_groups(session, cfg):
-        channel_id = channel.id if channel else None
-        credit_holder = channel if channel else cfg
+    channels = session.query(Channel).order_by(Channel.queue_order, Channel.id).all()
+    for channel in channels:
+        base_budget = _channel_budget(channel, cfg)
 
         # Promote queued books into open slots *first* (fresh imports start 'queued').
-        _fill_empty_slots(session, parallel_slots, channel_id)
+        _fill_empty_slots(session, channel.parallel_slots, channel.id)
         session.flush()
 
-        active_books = _active_books_in(session, channel_id)
+        active_books = _active_books_in(session, channel.id)
         if not active_books:
             continue
 
         # Token-bucket budget: this cycle's allowance is the base budget plus any
         # signed carry-over from prior cycles, so the long-run mean tracks the base.
-        available = base_budget + credit_holder.budget_credit
+        available = base_budget + channel.budget_credit
         effective = max(0, int(available))
 
         plans = _plan_drops(active_books, adapter, effective)
         used = 0
         for plan in plans:
-            drop = _materialise(session, plan, channel_id)
+            drop = _materialise(session, plan, channel.id)
             if drop:
                 drops.append(drop)
                 used += plan.word_count
@@ -126,22 +126,12 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         # Carry the leftover (can be negative after an oversized post); clamp so a big
         # overshoot doesn't suppress drops for many cycles.
         leftover = available - used
-        credit_holder.budget_credit = max(-base_budget, min(base_budget, leftover))
+        channel.budget_credit = max(-base_budget, min(base_budget, leftover))
 
-        _fill_empty_slots(session, parallel_slots, channel_id)
+        _fill_empty_slots(session, channel.parallel_slots, channel.id)
 
     session.flush()
     return drops
-
-
-def _drop_groups(session: Session, cfg: Config):
-    """Yield (channel|None, parallel_slots, budget) for every group.
-
-    The default group (None) covers unchanneled books and uses the Config budget.
-    """
-    yield None, cfg.parallel_slots, _effective_budget(cfg)
-    for channel in session.query(Channel).order_by(Channel.queue_order, Channel.id).all():
-        yield channel, channel.parallel_slots, _channel_budget(channel, cfg)
 
 
 def _channel_budget(channel: Channel, cfg: Config) -> int:
@@ -150,14 +140,10 @@ def _channel_budget(channel: Channel, cfg: Config) -> int:
     return channel.budget_words
 
 
-def _channel_filter(channel_id: int | None):
-    return Book.channel_id.is_(None) if channel_id is None else Book.channel_id == channel_id
-
-
-def _active_books_in(session: Session, channel_id: int | None) -> list[Book]:
+def _active_books_in(session: Session, channel_id: int) -> list[Book]:
     return (
         session.query(Book)
-        .filter(Book.status == BookStatus.active, _channel_filter(channel_id))
+        .filter(Book.status == BookStatus.active, Book.channel_id == channel_id)
         .order_by(Book.slot_index, Book.queue_position)
         .all()
     )
@@ -186,17 +172,6 @@ def _get_config(session: Session) -> Config:
     if cfg is None:
         raise RuntimeError("Config row missing — call init_db() first")
     return cfg
-
-
-def _effective_budget(cfg: Config) -> int:
-    """Base drop budget for the default (unchanneled) group, in words.
-
-    Ongoing serials are syndicated as in-budget sources (they compete in the weighted
-    stochastic budget like EPUBs), so there is no word-count subtraction.
-    """
-    if cfg.budget_mode == BudgetMode.minutes:
-        return cfg.global_budget_minutes * cfg.wpm
-    return cfg.global_budget_words
 
 
 def _plan_drops(
@@ -385,7 +360,7 @@ def _fill_empty_slots(
         .filter(
             Book.status == BookStatus.queued,
             Book.kind == BookKind.epub,
-            _channel_filter(channel_id),
+            Book.channel_id == channel_id,
         )
         .order_by(Book.queue_position)
         .limit(slots_available)
@@ -440,7 +415,7 @@ def apply_feedback(
         if book.thumbs_down >= cfg.thumbs_down_drop_threshold:
             book.status = BookStatus.dropped
             book.slot_index = None
-            _refill_book_channel(session, book, cfg)
+            _refill_book_channel(session, book)
         else:
             # Gently reduce share
             book.quota_weight = max(0.1, book.quota_weight * 0.8)
@@ -455,17 +430,14 @@ def apply_feedback(
         # Super-down: drop the source immediately, regardless of threshold.
         book.status = BookStatus.dropped
         book.slot_index = None
-        _refill_book_channel(session, book, cfg)
+        _refill_book_channel(session, book)
 
     session.flush()
     return extra_drop
 
 
-def _refill_book_channel(session: Session, book: Book, cfg: Config) -> None:
+def _refill_book_channel(session: Session, book: Book) -> None:
     """Promote the next queued book into the slot freed within this book's channel."""
-    if book.channel_id is None:
-        _fill_empty_slots(session, cfg.parallel_slots, None)
-        return
     channel = session.get(Channel, book.channel_id)
-    slots = channel.parallel_slots if channel else cfg.parallel_slots
-    _fill_empty_slots(session, slots, book.channel_id)
+    if channel is not None:
+        _fill_empty_slots(session, channel.parallel_slots, book.channel_id)

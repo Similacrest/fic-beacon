@@ -83,9 +83,9 @@ class Book(Base):
         Enum(BookStatus), nullable=False, default=BookStatus.queued
     )
     queue_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Channel membership; NULL = the implicit default group (uses Config budget/slots).
-    channel_id: Mapped[int | None] = mapped_column(
-        ForeignKey("channel.id"), nullable=True, index=True
+    # Channel membership — every source lives in exactly one channel (no default group).
+    channel_id: Mapped[int] = mapped_column(
+        ForeignKey("channel.id"), nullable=False, index=True
     )
     # Stable slot number within the channel (1..parallel_slots), set when active.
     slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -157,23 +157,21 @@ class FeedbackEvent(Base):
 
 
 class Config(Base):
-    """Single-row settings table (id is always 1)."""
+    """Single-row settings table (id is always 1) — true globals only.
+
+    Budget, parallel slots, and budget-mode are per-channel (see Channel); this row
+    holds only settings that are inherently global: reading speed, the drop cadence,
+    the auto-drop threshold, and the feed secret.
+    """
     __tablename__ = "config"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    global_budget_words: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
-    # Used only when budget_mode=minutes; effective_budget = global_budget_minutes * wpm
-    global_budget_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
-    budget_mode: Mapped[BudgetMode] = mapped_column(
-        Enum(BudgetMode), nullable=False, default=BudgetMode.words
-    )
+    # Global reading speed: converts a channel's minutes-mode budget to words; also drives
+    # reading-time estimates in the UI.
     wpm: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
-    parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 8 * * *")
     thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
-    # Signed carry-over for the default group's stochastic budget (mirrors Channel.budget_credit).
-    budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
 class WebSubSubscription(Base):

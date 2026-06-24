@@ -21,14 +21,18 @@ from app.planner.planner import (
     apply_feedback,
     _plan_drops,
     _fill_empty_slots,
-    _effective_budget,
+    _channel_budget,
 )
 from app.epub.chapterizer import Chapter
 from tests.make_epub import make_epub
 
 
 def _make_book(db, calibre_id: int, title: str = "Test Book", status=BookStatus.active,
-               queue_position: int = 1, quota_weight: float = 1.0) -> Book:
+               queue_position: int = 1, quota_weight: float = 1.0,
+               channel_id: int | None = None) -> Book:
+    from app.models import Channel
+    if channel_id is None:  # default to the seeded General channel
+        channel_id = db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
     book = Book(
         calibre_id=calibre_id,
         title=title,
@@ -36,6 +40,7 @@ def _make_book(db, calibre_id: int, title: str = "Test Book", status=BookStatus.
         status=status,
         queue_position=queue_position,
         quota_weight=quota_weight,
+        channel_id=channel_id,
     )
     db.add(book)
     db.flush()
@@ -145,14 +150,15 @@ class TestGlobalRoundRobin:
         assert plans[0].word_count > 500  # more than one chapter's worth
 
     def test_minutes_budget_mode(self, in_memory_db):
-        from app.models import Config
+        # A channel in minutes mode multiplies its budget_minutes by the global wpm.
+        from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
-        cfg.budget_mode = BudgetMode.minutes
-        cfg.global_budget_minutes = 10
         cfg.wpm = 300
+        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
+        channel.budget_mode = BudgetMode.minutes
+        channel.budget_minutes = 10
         in_memory_db.flush()
-        effective = _effective_budget(cfg)
-        assert effective == 3000  # 10 min × 300 wpm
+        assert _channel_budget(channel, cfg) == 3000  # 10 min × 300 wpm
 
 
 class TestDropCycle:
@@ -198,9 +204,9 @@ class TestDropCycle:
         # 3 queued books, no active ones — exactly the fresh-deploy scenario.
         # Small budget so each promoted book takes one chapter and stays active
         # (rather than exhausting the short 5-chapter mock epub in one cycle).
-        from app.models import Config
-        cfg = in_memory_db.get(Config, 1)
-        cfg.global_budget_words = 100
+        from app.models import Channel
+        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
+        channel.budget_words = 100
         for i in range(1, 4):
             _make_book(
                 in_memory_db, calibre_id=i, title=f"Book {i}",
@@ -220,9 +226,9 @@ class TestDropCycle:
     def test_promotes_queued_book_when_slot_freed(self, in_memory_db, epub_path):
         # 1 active book that's about to exhaust + 1 queued.
         # Small budget so the promoted book takes one chapter and stays active.
-        from app.models import Config
-        cfg = in_memory_db.get(Config, 1)
-        cfg.global_budget_words = 100
+        from app.models import Channel
+        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
+        channel.budget_words = 100
         book1 = _make_book(in_memory_db, calibre_id=1, status=BookStatus.active)
         book1.cursor_chapter_index = 4  # last chapter
         book2 = _make_book(in_memory_db, calibre_id=2, status=BookStatus.queued, queue_position=2)
@@ -361,15 +367,18 @@ class TestChannels:
         assert drops and all(d.channel_id == ch.id for d in drops)
         assert {d.feed_key for d in drops} == {"1", "2"}         # one drop per slot
 
-    def test_default_group_still_works_without_channels(self, in_memory_db, epub_path):
-        # Books with channel_id=None form the implicit default group (Config budget/slots).
+    def test_general_channel_cycle(self, in_memory_db, epub_path):
+        # A book imported with no explicit channel lands in the auto-created General
+        # channel and drops from there (no global/default group anymore).
+        from app.models import Channel
+        general = in_memory_db.query(Channel).order_by(Channel.id).first()
         _make_book(in_memory_db, calibre_id=1, status=BookStatus.queued, queue_position=1)
         in_memory_db.commit()
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
             drops = run_drop_cycle(in_memory_db, Path("/fake"))
         assert len(drops) >= 1
-        assert drops[0].channel_id is None
+        assert drops[0].channel_id == general.id
         assert drops[0].feed_key == "1"
 
 

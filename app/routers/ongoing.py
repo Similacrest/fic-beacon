@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import ensure_default_channel, get_db
 from app.models import Book, BookKind, BookStatus, Channel, Drop, FeedbackEvent, OngoingEntry
 from app.ongoing.opml import parse_opml
 from app.version import __version__
@@ -25,7 +25,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 templates.env.globals["version"] = __version__
 
 
-def _add_source(db: Session, title: str, feed_url: str, channel_id: int | None) -> bool:
+def _add_source(db: Session, title: str, feed_url: str, channel_id: int) -> bool:
     """Create an ongoing source if its feed_url isn't already registered."""
     feed_url = feed_url.strip()
     if not feed_url:
@@ -41,7 +41,7 @@ def _add_source(db: Session, title: str, feed_url: str, channel_id: int | None) 
         author="(ongoing)",
         status=BookStatus.active,  # ongoing sources are always-active (not slot-gated)
         queue_position=max_pos + 1,
-        channel_id=channel_id or None,
+        channel_id=channel_id,
     ))
     return True
 
@@ -78,7 +78,7 @@ def add_feed(
     channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    _add_source(db, title, feed_url, channel_id)
+    _add_source(db, title, feed_url, channel_id or ensure_default_channel(db).id)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -94,7 +94,8 @@ async def import_opml(
         entries = parse_opml(content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    added = sum(_add_source(db, title, url, channel_id) for title, url in entries)
+    target_id = channel_id or ensure_default_channel(db).id
+    added = sum(_add_source(db, title, url, target_id) for title, url in entries)
     db.commit()
     return RedirectResponse(url=f"/admin/ongoing/?imported={added}", status_code=303)
 

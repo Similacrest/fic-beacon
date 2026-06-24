@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter
 from app.config import settings
-from app.database import get_db
+from app.database import ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config, Drop, FeedbackEvent
 from app.version import __version__
 
@@ -29,13 +29,14 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     completed = db.query(Book).filter(Book.status == BookStatus.completed).order_by(Book.added_at.desc()).limit(10).all()
     dropped = db.query(Book).filter(Book.status == BookStatus.dropped).order_by(Book.added_at.desc()).limit(10).all()
     cfg = db.get(Config, 1)
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
     return templates.TemplateResponse(request, "admin/index.html", {
         "active": active,
         "queued": queued,
         "completed": completed,
         "dropped": dropped,
         "cfg": cfg,
-        "feed_url": f"{settings.base_url}/feed?token={cfg.feed_secret if cfg else ''}",
+        "channels": channels,
     })
 
 
@@ -60,6 +61,8 @@ def do_import(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     adapter = CalibreAdapter(settings.calibre_library_path)
+    # Every source must live in a channel; fall back to General when none is chosen.
+    default_channel_id = ensure_default_channel(db).id
     max_pos = db.query(Book.queue_position).order_by(Book.queue_position.desc()).scalar() or 0
     for cid in calibre_ids:
         cbook = adapter.get_book(cid)
@@ -73,7 +76,7 @@ def do_import(
             source_url=cbook.source_url,
             status=BookStatus.queued,
             queue_position=max_pos,
-            channel_id=channel_id or None,
+            channel_id=channel_id or default_channel_id,
         ))
     db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
@@ -132,17 +135,61 @@ def create_channel(
     return RedirectResponse(url="/admin/channels", status_code=303)
 
 
+@router.post("/channels/{channel_id}/rename")
+def rename_channel(
+    channel_id: int,
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Rename a channel. The slug (and thus feed URLs) stays fixed."""
+    channel = db.get(Channel, channel_id)
+    name = name.strip()
+    if channel and name:
+        channel.name = name
+        db.commit()
+    return RedirectResponse(url="/admin/channels", status_code=303)
+
+
 @router.post("/channels/{channel_id}/delete")
 def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     channel = db.get(Channel, channel_id)
     if channel:
-        # Unassign member books (they fall back to the default group).
-        db.query(Book).filter(Book.channel_id == channel_id).update(
-            {Book.channel_id: None, Book.slot_index: None}, synchronize_session=False
+        # Every source must live in a channel — reassign members to another channel
+        # rather than orphaning them. The last remaining channel can't be deleted.
+        fallback = (
+            db.query(Channel)
+            .filter(Channel.id != channel_id)
+            .order_by(Channel.queue_order, Channel.id)
+            .first()
         )
-        db.delete(channel)
-        db.commit()
+        if fallback is not None:
+            db.query(Book).filter(Book.channel_id == channel_id).update(
+                {Book.channel_id: fallback.id, Book.slot_index: None},
+                synchronize_session=False,
+            )
+            db.delete(channel)
+            db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
+
+
+@router.post("/books/{book_id}/set-channel")
+def set_book_channel(
+    book_id: int,
+    channel_id: int = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Move a book to another channel without dropping it.
+
+    Clearing slot_index lets the destination channel re-slot it on the next cycle
+    (and frees the slot it vacated in the old channel).
+    """
+    book = db.get(Book, book_id)
+    target = db.get(Channel, channel_id)
+    if book and target and book.channel_id != target.id:
+        book.channel_id = target.id
+        book.slot_index = None
+        db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
 
 
 # ── Queue management ──────────────────────────────────────────────────────────
@@ -245,11 +292,7 @@ def config_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
 
 @router.post("/config")
 def save_config(
-    global_budget_words: int = Form(...),
-    global_budget_minutes: int = Form(...),
-    budget_mode: str = Form(...),
     wpm: int = Form(...),
-    parallel_slots: int = Form(...),
     cadence_cron: str = Form(...),
     thumbs_down_drop_threshold: int = Form(...),
     db: Session = Depends(get_db),
@@ -257,11 +300,7 @@ def save_config(
     cfg = db.get(Config, 1)
     if cfg is None:
         return RedirectResponse(url="/admin/config", status_code=303)
-    cfg.global_budget_words = global_budget_words
-    cfg.global_budget_minutes = global_budget_minutes
-    cfg.budget_mode = budget_mode  # type: ignore[assignment]
     cfg.wpm = wpm
-    cfg.parallel_slots = parallel_slots
     cfg.cadence_cron = cadence_cron
     cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold
     db.commit()

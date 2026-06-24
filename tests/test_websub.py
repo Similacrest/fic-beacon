@@ -49,7 +49,7 @@ class TestHub:
         assert ei.value.status_code == 404
 
     async def test_failed_verification_is_409(self, in_memory_db, monkeypatch):
-        topic = f"{websub.settings.base_url}/feed"
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
         req = _form_request({
             "hub.mode": "subscribe", "hub.topic": topic,
             "hub.callback": "https://reader.example/cb",
@@ -95,30 +95,33 @@ class TestPublisher:
         db.flush()
         return drop
 
-    def test_pushes_to_channel_and_union_subscribers(self, in_memory_db, monkeypatch):
+    def test_pushes_to_channel_slot_subscribers(self, in_memory_db, monkeypatch):
         _FakeClient.posts = []
         drop = self._setup_drop(in_memory_db)
         base = publisher.settings.base_url
         in_memory_db.add(WebSubSubscription(
             topic_url=f"{base}/feed/fantasy/1", callback_url="https://r/cb", verified=True))
+        # A subscriber to a *different* slot must not be notified for this drop.
         in_memory_db.add(WebSubSubscription(
-            topic_url=f"{base}/feed", callback_url="https://r/union", verified=True))
+            topic_url=f"{base}/feed/fantasy/2", callback_url="https://r/other", verified=True))
         in_memory_db.commit()
         monkeypatch.setattr(publisher.httpx, "Client", _FakeClient)
 
         publisher.publish_updates(in_memory_db, [drop])
 
         urls = [u for u, _ in _FakeClient.posts]
-        assert "https://r/cb" in urls and "https://r/union" in urls
+        assert "https://r/cb" in urls
+        assert "https://r/other" not in urls
 
     def test_skips_unverified_and_expired(self, in_memory_db, monkeypatch):
         _FakeClient.posts = []
         drop = self._setup_drop(in_memory_db)
         base = publisher.settings.base_url
+        topic = f"{base}/feed/fantasy/1"
         in_memory_db.add(WebSubSubscription(
-            topic_url=f"{base}/feed", callback_url="https://r/unverified", verified=False))
+            topic_url=topic, callback_url="https://r/unverified", verified=False))
         in_memory_db.add(WebSubSubscription(
-            topic_url=f"{base}/feed", callback_url="https://r/expired", verified=True,
+            topic_url=topic, callback_url="https://r/expired", verified=True,
             lease_expires_at=utcnow() - timedelta(hours=1)))
         in_memory_db.commit()
         monkeypatch.setattr(publisher.httpx, "Client", _FakeClient)
@@ -134,7 +137,8 @@ class TestPublisher:
         drop = self._setup_drop(in_memory_db)
         base = publisher.settings.base_url
         in_memory_db.add(WebSubSubscription(
-            topic_url=f"{base}/feed", callback_url="https://r/signed", verified=True, secret="k"))
+            topic_url=f"{base}/feed/fantasy/1", callback_url="https://r/signed",
+            verified=True, secret="k"))
         in_memory_db.commit()
         monkeypatch.setattr(publisher.httpx, "Client", _FakeClient)
 

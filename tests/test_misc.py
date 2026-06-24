@@ -3,12 +3,14 @@ import secrets
 import uuid
 from zoneinfo import ZoneInfo
 
-from app.models import Book, BookStatus, Drop, FeedbackAction, FeedbackEvent
+from app.models import Book, BookStatus, Channel, Drop, FeedbackAction, FeedbackEvent
 from app.routers.admin import clear_dropped
 
 
 def _book(db, status, cid=1):
-    b = Book(calibre_id=cid, title="T", author="A", status=status, queue_position=cid)
+    channel_id = db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+    b = Book(calibre_id=cid, title="T", author="A", status=status,
+             queue_position=cid, channel_id=channel_id)
     db.add(b)
     db.flush()
     return b

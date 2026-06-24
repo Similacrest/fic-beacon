@@ -21,7 +21,7 @@
   <div style="margin-bottom:1em">
     <label for="channel_id" style="display:inline; font-weight:500">Add to channel:</label>
     <select name="channel_id" id="channel_id" style="width:auto; display:inline-block">
-      <option value="">— Default (unassigned) —</option>
+      <option value="">— General (default) —</option>
       {% for ch in channels %}
       <option value="{{ ch.id }}">{{ ch.name }}{% if ch.tag_match %} (tag: {{ ch.tag_match }}){% endif %}</option>
       {% endfor %}

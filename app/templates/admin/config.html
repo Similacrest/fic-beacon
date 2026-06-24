@@ -5,34 +5,14 @@
 <h1>Settings</h1>
 
 <form method="post" action="/admin/config" style="max-width:480px">
-  <div class="form-group">
-    <label for="budget_mode">Budget mode</label>
-    <select name="budget_mode" id="budget_mode" onchange="toggleBudgetMode(this.value)">
-      <option value="words" {% if cfg.budget_mode.value == 'words' %}selected{% endif %}>Words</option>
-      <option value="minutes" {% if cfg.budget_mode.value == 'minutes' %}selected{% endif %}>Minutes (× WPM)</option>
-    </select>
-  </div>
-  <div class="form-group" id="row-budget-words">
-    <label for="global_budget_words">Daily word budget</label>
-    <input type="number" name="global_budget_words" id="global_budget_words"
-           value="{{ cfg.global_budget_words }}" min="100" step="100">
-    <small style="color:#666">Total words across all active books per cycle.</small>
-  </div>
-  <div class="form-group" id="row-budget-minutes" style="display:none">
-    <label for="global_budget_minutes">Daily reading budget (minutes)</label>
-    <input type="number" name="global_budget_minutes" id="global_budget_minutes"
-           value="{{ cfg.global_budget_minutes }}" min="1" step="5">
-    <small style="color:#666">Converted to words as minutes × WPM at cycle time.</small>
-  </div>
+  <p style="color:#888; font-size:.9em">
+    These are global. <strong>Budget, parallel slots, and budget mode are set per channel</strong>
+    on the <a href="/admin/channels">Channels</a> page.
+  </p>
   <div class="form-group">
     <label for="wpm">Reading speed (WPM)</label>
     <input type="number" name="wpm" id="wpm" value="{{ cfg.wpm }}" min="50" max="1000">
-    <small style="color:#666">Used for minutes-mode budget and reading-time estimates in the UI.</small>
-  </div>
-  <div class="form-group">
-    <label for="parallel_slots">Parallel books</label>
-    <input type="number" name="parallel_slots" id="parallel_slots"
-           value="{{ cfg.parallel_slots }}" min="1" max="10">
+    <small style="color:#666">Used for minutes-mode channel budgets and reading-time estimates.</small>
   </div>
   <div class="form-group">
     <label for="cadence_cron">Drop schedule (cron)</label>
@@ -47,14 +27,5 @@
   </div>
   <button class="btn btn-primary" type="submit">Save</button>
 </form>
-
-<script>
-function toggleBudgetMode(mode) {
-  document.getElementById('row-budget-words').style.display = mode === 'words' ? '' : 'none';
-  document.getElementById('row-budget-minutes').style.display = mode === 'minutes' ? '' : 'none';
-}
-// Apply on page load to match the saved mode
-toggleBudgetMode(document.getElementById('budget_mode').value);
-</script>
 
 {% endblock %}
