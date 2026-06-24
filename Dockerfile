@@ -13,6 +13,10 @@ RUN uv sync --no-dev
 
 COPY app/ ./app/
 
+# Bake the git-tag version so /admin shows the real release string.
+ARG VERSION=dev
+ENV APP_VERSION=${VERSION}
+
 # Data volume will be mounted at /data (app SQLite DB)
 VOLUME ["/data", "/calibre-library"]
 

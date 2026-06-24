@@ -51,20 +51,22 @@ class Channel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    # Calibre #genre_manual prefix (e.g. "Fantasy" matches "Fantasy", "Fantasy.Rational")
-    # used to auto-route books into this channel on import.
+    # Comma-separated Calibre #genre_manual prefixes (e.g. "Fantasy,Sci-Fi" matches either
+    # hierarchy) used to auto-route books into this channel on import.
     genre_match: Mapped[str | None] = mapped_column(String, nullable=True)
     parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
-    budget_words: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
-    budget_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    # Single budget value; budget_mode selects the unit (words or reading-time minutes).
+    budget: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
     budget_mode: Mapped[BudgetMode] = mapped_column(
         Enum(BudgetMode), nullable=False, default=BudgetMode.words
     )
-    # Signed carry-over so the stochastic per-cycle mean tracks the budget (Phase D).
+    # Signed carry-over so the stochastic per-cycle mean tracks the budget.
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # When False, the …/ongoing feed is not exposed and the UI hides it (pure-EPUB channels).
     has_ongoing_feed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # System-managed staging channel; excluded from drops/feeds. Users cannot rename it.
+    is_inbox: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class Book(Base):
@@ -172,7 +174,7 @@ class Config(Base):
     # Global reading speed: converts a channel's minutes-mode budget to words; also drives
     # reading-time estimates in the UI.
     wpm: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
-    cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 8 * * *")
+    cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 7,19 * * *")
     thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
 
@@ -214,5 +216,7 @@ class OngoingEntry(Base):
     )
     released: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     drop_id: Mapped[int | None] = mapped_column(ForeignKey("drops.id"), nullable=True)
+    # Chapter number extracted from the entry title (regex); None = sequential counter used.
+    chapter_num: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     source: Mapped["Book"] = relationship("Book", back_populates="ongoing_entries")

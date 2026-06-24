@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Global defaults seeded into the config table on first run (overridable in-app).
     default_wpm: int = 250
-    default_cadence_cron: str = "0 8 * * *"  # 08:00 daily
+    default_cadence_cron: str = "0 7,19 * * *"  # 07:00 and 19:00 daily
     default_thumbs_down_drop_threshold: int = 3
 
     # Misc
