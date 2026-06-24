@@ -35,10 +35,22 @@ the user's real ongoing serials. Landing incrementally:
   recreate channels. (No in-place Alembic migration is shipped for this jump.)
 
 ### Changed
+- **Every source now belongs to a channel** (`book.channel_id` is NOT NULL). The implicit
+  default/global group is gone; budget and parallel slots live only on channels. A **"General"**
+  channel is auto-created on first run so imports always have a home.
+- **Move books between channels** (without dropping) and **rename channels** (slug and feed URLs
+  stay stable) from the admin dashboard / channels page.
+- Deleting a channel now **reassigns its sources** to another channel instead of orphaning them;
+  the last remaining channel can't be deleted.
 - Documentation (`CLAUDE.md`, `Architecture.md`) rewritten for the channels / ongoing /
   stochastic / WebSub design; added `README.md` and this changelog.
 
 ### Removed
+- **All-channels union feed `GET /feed`** — subscribe to each channel/slot feed instead.
+- **Global budget settings** — `config.global_budget_words`, `global_budget_minutes`,
+  `budget_mode`, `parallel_slots`, and the default-group `budget_credit`. Budget/slots/mode are
+  per-channel; `config` keeps only the true globals (`wpm`, `cadence_cron`,
+  `thumbs_down_drop_threshold`, `feed_secret`).
 - **Superseded v2 "ongoing balancing"** — the `ongoing_feed` table, `target_total_words` config,
   and the budget-subtraction-by-word-count logic. Ongoings are now syndicated as in-budget
   sources instead of merely subtracted.

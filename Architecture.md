@@ -39,8 +39,8 @@ FastAPI + APScheduler + SQLAlchemy + SQLite, Jinja + HTMX.
 | Area | Decision |
 |---|---|
 | Calibre access | Read the library folder directly (mounted **read-only**); parse `metadata.db` (incl. **tags**) + EPUBs in place. No Calibre process. |
-| Channels | Sources are grouped into **channels** by a Calibre **tag prefix**. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). |
-| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered backlog slots + one shared `ongoing` feed per channel. Legacy `/feed` = all-channels union. |
+| Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed (slug stays stable) from the admin UI. |
+| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered backlog slots + one shared `ongoing` feed per channel. No all-channels union feed — subscribe per channel/slot. |
 | Sources | EPUB backlog books and ongoing serials are unified as **sources** (`book.kind`). Both are weighted, votable, droppable, and live in a channel. |
 | Ongoing serials | Polled hourly into a buffer; **released only at drop time**, competing in the channel's weighted budget like EPUBs. Content embedded from the RSS entry as-is (summary-only → "new chapter" notice + link). |
 | Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
@@ -138,8 +138,8 @@ C4Component
   `queue_order`.
 - **`book`** (a *source*) — `calibre_id?`, `kind` (`epub|ongoing`), `feed_url?`, `title`,
   `author`, `source_url?`, `total_chapters?`, `status` (`queued|active|completed|dropped`),
-  `channel_id`, `slot_index?`, `queue_position`, `quota_weight`, `cursor_chapter_index`,
-  `thumbs_up`, `thumbs_down`, `added_at`.
+  `channel_id` (**NOT NULL** — every source lives in a channel), `slot_index?`, `queue_position`,
+  `quota_weight`, `cursor_chapter_index`, `thumbs_up`, `thumbs_down`, `added_at`.
 - **`ongoing_entry`** (buffer) — `id`, `source_id`, `guid` (unique per source), `title`, `link`,
   `content_html`, `word_count`, `published_at`, `released` (bool), `drop_id?`.
 - **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"` | `"ongoing"`),
@@ -149,8 +149,8 @@ C4Component
   (`up|down|extra|drop`), `created_at`.
 - **`websub_subscription`** — `id`, `topic_url`, `callback_url`, `secret?`, `lease_expires_at`,
   `verified`, `created_at`.
-- **`config`** — `budget_mode`, `wpm`, `parallel_slots` (default), `cadence_cron`,
-  `thumbs_down_drop_threshold`, `feed_secret`, `dropped_retention_days?`.
+- **`config`** — single-row globals only: `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`,
+  `feed_secret`. (Budget, slots, and budget-mode live per-channel, not here.)
 
 ## 6. Core Flows
 

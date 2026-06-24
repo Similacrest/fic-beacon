@@ -25,6 +25,8 @@ lets you steer the rotation from inside any RSS reader with plain feedback links
 
 - **Channels** group sources by a Calibre **tag prefix** (e.g. `Fantasy`, `Non-fiction.Self-improvement`).
   Each channel has its own reading budget and parallel **slots**; one global cron sets the cadence.
+  Every source belongs to a channel — a **"General"** channel is created automatically on first run,
+  and you can move books between channels or rename a channel anytime (feed URLs stay stable).
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — each backlog slot shows one book at a
   time and rolls to the next when it finishes; one shared `…/ongoing` feed per channel carries
   that channel's serials.
@@ -44,9 +46,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Then open the admin UI at `http://localhost:8000/admin/`, import books from Calibre, create
-channels, register any ongoing serial feeds, and copy each per-slot feed URL (with its `?token=`)
-into your RSS reader.
+Then open the admin UI at `http://localhost:8000/admin/`, create channels (or use the auto-created
+**General** one), import books from Calibre into a channel, register any ongoing serial feeds, and
+copy each per-slot feed URL (with its `?token=`) into your RSS reader. There is no single "all"
+feed — subscribe to each channel/slot feed you want.
 
 ### Configuration (`.env` / `BEACON_*` env)
 

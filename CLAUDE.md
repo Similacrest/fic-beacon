@@ -66,11 +66,17 @@ fic-beacon/
 ### Channels & slots (TV-channels model)
 - A **channel** groups sources by a Calibre **tag prefix** (`tag_match`); Calibre hierarchical
   tags are flat strings with a `.` separator (e.g. `Fantasy.Epic`).
-- A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron).
+- **Every source belongs to exactly one channel** (`book.channel_id` is NOT NULL). There is no
+  global/default group: budget and slots live only on channels. A **"General" channel** is
+  auto-created on first run so imports always have a home; books can be moved between channels
+  (without dropping) and channels renamed (slug/feed URLs stay stable) from the admin UI.
+- A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
+  as is reading speed (`config.wpm`) and the 👎 drop threshold.
 - **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`
   for backlog EPUB slots, or `"ongoing"` for the channel's shared "In progress" serial feed.
+  There is **no all-channels union feed** — subscribe to each channel/slot feed.
 - A backlog slot shows one book at a time; when it completes, the next queued book inherits the
-  slot and that feed keeps broadcasting. Legacy `GET /feed` is the all-channels union.
+  slot and that feed keeps broadcasting.
 
 ### Sources & units (EPUB and ongoing unified)
 - A **source** is a `book` row. `kind=epub` (Calibre-backed) or `kind=ongoing` (RSS-backed,
@@ -88,7 +94,7 @@ fic-beacon/
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
   defer; a low-weight source may get nothing some cycles. **Never split a unit.**
 - After the pass: `budget_credit += channel.budget − used` (clamped to ±budget).
-- Budget can be words or reading-time minutes (`budget_mode`, `wpm`).
+- Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
 
 ### Permalinks (source-aware, per-chapter) — EPUB
 FanFicFare writes a **per-chapter** canonical URL into each chapter's `<head>`:
@@ -125,15 +131,15 @@ there; EPUB paths derive from the library folder structure. Do not require a run
 
 ## Data model (summary)
 
-`channel` (`slug`, `tag_match`, `parallel_slots`, `budget_*`, `budget_credit`, `queue_order`) ·
-`book` (`kind` epub|ongoing, `feed_url?`, `status` queued|active|completed|dropped,
-`channel_id`, `slot_index`, `queue_position`, `quota_weight`, `cursor_chapter_index`, thumbs) ·
-`ongoing_entry` (buffer: `guid`, `content_html`, `word_count`, `published_at`, `released`,
-`drop_id?`) · `drop` (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`,
-`chapter_start/end`, `word_count`, `source_url?`) · `feedback_event` · `websub_subscription`
-(`topic_url`, `callback_url`, `secret?`, `lease_expires_at`, `verified`) · `config`
-(`budget_mode`, `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`, `feed_secret`,
-`dropped_retention_days?`). See `Architecture.md §5`.
+`channel` (`name`, `slug`, `tag_match`, `parallel_slots`, `budget_*`, `budget_mode`,
+`budget_credit`, `queue_order`) · `book` (`kind` epub|ongoing, `feed_url?`, `status`
+queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
+`quota_weight`, `cursor_chapter_index`, thumbs) · `ongoing_entry` (buffer: `guid`,
+`content_html`, `word_count`, `published_at`, `released`, `drop_id?`) · `drop`
+(`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
+`source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
+`secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
+`thumbs_down_drop_threshold`, `feed_secret`). See `Architecture.md §5`.
 
 ## Timezone
 
