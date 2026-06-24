@@ -122,9 +122,8 @@ class Drop(Base):
         DateTime(timezone=True), nullable=False, default=utcnow
     )
     word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Snapshot of the channel + per-slot feed this drop belongs to, so feed filtering
-    # stays stable even after the source completes and the slot is reused.
-    # feed_key is "1".."N" — the slot this drop belongs to (stable even after source completes).
+    # Snapshot of the channel + per-slot feed this drop belongs to, so feed filtering stays
+    # stable even after the source completes and the slot is reused. feed_key is "1".."N".
     channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     feed_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     chapter_start: Mapped[int] = mapped_column(Integer, nullable=False)

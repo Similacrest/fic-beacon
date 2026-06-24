@@ -30,9 +30,9 @@ lets you steer the rotation from inside any RSS reader with plain feedback links
   own reading budget and parallel **slots**; one global cron sets the cadence. Every source belongs
   to a channel — a **"General"** channel is created automatically and catches anything unmatched,
   and you can move books between channels or rename a channel anytime (feed URLs stay stable).
-- **One feed per slot** — `GET /feed/{channel}/{slot}` — each backlog slot shows one book at a
-  time and rolls to the next when it finishes; one shared `…/ongoing` feed per channel carries
-  that channel's serials.
+- **One feed per slot** — `GET /feed/{channel}/{slot}` — each slot shows one source at a time and
+  rolls to the next when it finishes. Both backlog EPUBs and ongoing serials occupy numbered
+  slots, so there's no separate ongoing feed.
 - **Stochastic budget** packs whole chapters/entries up to a per-channel word (or reading-minute)
   budget; the further over budget, the more likely a unit rolls to the next cycle. Votes bias the
   draw; the long-run mean tracks your budget. Chapters are never split.

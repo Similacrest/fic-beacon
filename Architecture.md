@@ -40,7 +40,7 @@ FastAPI + APScheduler + SQLAlchemy + SQLite, Jinja + HTMX.
 |---|---|
 | Calibre access | Read the library folder directly (mounted **read-only**); parse `metadata.db` (incl. **tags**) + EPUBs in place. No Calibre process. |
 | Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed (slug stays stable) from the admin UI. |
-| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered backlog slots + one shared `ongoing` feed per channel. No all-channels union feed — subscribe per channel/slot. |
+| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`, occupied by both EPUB backlog and ongoing serials. No all-channels union feed — subscribe per channel/slot. |
 | Sources | EPUB backlog books and ongoing serials are unified as **sources** (`book.kind`). Both are weighted, votable, droppable, and live in a channel. |
 | Ongoing serials | Polled hourly into a buffer; **released only at drop time**, competing in the channel's weighted budget like EPUBs. Content embedded from the RSS entry as-is (summary-only → "new chapter" notice + link). |
 | Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |

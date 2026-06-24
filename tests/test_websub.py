@@ -81,7 +81,7 @@ class _FakeClient:
 
 class TestPublisher:
     def _setup_drop(self, db):
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, budget_words=100)
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, budget=100)
         db.add(ch)
         db.flush()
         book = Book(calibre_id=1, title="B", author="A", status=BookStatus.active,

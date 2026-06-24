@@ -31,7 +31,7 @@ def get_feed_slot(
     fmt: str = Query("atom", description="atom or rss"),
     db: Session = Depends(get_db),
 ) -> Response:
-    """One feed per slot: numbered backlog slot, or 'ongoing' serial feed for the channel."""
+    """One feed per numbered slot — both EPUB backlog and ongoing serials occupy slots."""
     _check_feed_secret(db, token)
     channel = db.query(Channel).filter(Channel.slug == channel_slug).first()
     if channel is None:

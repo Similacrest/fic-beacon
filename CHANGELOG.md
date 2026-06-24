@@ -11,8 +11,8 @@ the user's real ongoing serials. Landing incrementally:
 
 ### Added
 - **Channels & per-slot feeds** — group sources by Calibre tag prefix; each channel has its own
-  budget and parallel slots; one feed per slot (`/feed/{channel}/{slot}`), plus a shared
-  `…/ongoing` feed per channel. Legacy `/feed` becomes the all-channels union.
+  budget and parallel slots; one feed per numbered slot (`/feed/{channel}/{slot}`), occupied by
+  both EPUB backlog and ongoing serials. No all-channels union feed.
 - **Ongoing serial syndication** — register a serial's RSS feed into a channel; new chapters are
   buffered hourly and released, batched, at drop time, weighted against the backlog. Votable and
   droppable like any source.

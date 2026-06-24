@@ -1,9 +1,9 @@
 """Push feed updates to WebSub subscribers after new drops.
 
-Called after a drop cycle / extra drop commits. For each affected feed (the union
-feed plus any channel slot feeds that changed) it POSTs the fresh Atom body to every
-verified, unexpired subscriber of that topic. Best-effort: failures are logged, never
-raised, so a slow subscriber can't break the drop cycle.
+Called after a drop cycle / extra drop commits. For each channel slot feed that changed
+it POSTs the fresh Atom body to every verified, unexpired subscriber of that topic.
+Best-effort: failures are logged, never raised, so a slow subscriber can't break the
+drop cycle.
 """
 from __future__ import annotations
 
