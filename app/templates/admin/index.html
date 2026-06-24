@@ -90,33 +90,45 @@
 {% if inbox_books %}
 <h2 style="color:#856404">Inbox — unassigned ({{ inbox_books|length }})</h2>
 <p style="color:#888; font-size:.9em">
-  These sources were imported without a channel assignment. Assign each one before it
-  appears in drops.
+  These sources were imported without a channel assignment. Select and assign before they appear in drops.
 </p>
-<form method="post" action="/admin/books/batch-drop" id="inbox-batch-form">
-<div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+<form method="post" action="/admin/books/batch-set-channel" id="inbox-assign-form">
+<div style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap; margin-bottom:.6em">
   <input type="checkbox" id="inbox-check-all" title="Select all">
-  <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
-          onclick="return batchConfirm('inbox-batch-form', 'Drop selected inbox items?')">
+  <select name="channel_id" style="width:auto">
+    {% for ch in channels %}
+    <option value="{{ ch.id }}">{{ ch.name }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-primary" type="submit" style="font-size:.85em; padding:.2em .6em"
+          onclick="return batchConfirm('inbox-assign-form', 'Assign selected to channel?')">
+    Assign selected
+  </button>
+  <button class="btn btn-danger" type="submit"
+          formaction="/admin/books/batch-drop"
+          style="font-size:.85em; padding:.2em .6em"
+          onclick="return batchConfirm('inbox-assign-form', 'Drop selected inbox items?')">
     Drop selected
   </button>
 </div>
 <table>
   <thead><tr>
-    <th></th><th>Title</th><th>Feed URL</th><th>Assign to channel</th><th>Actions</th>
+    <th></th><th>Title</th><th>Feed URL</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for book in inbox_books %}
   <tr>
-    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="inbox-check"></td>
-    <td>{{ book.title }}</td>
-    <td style="font-size:.8em; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+    <td>
+      <input type="checkbox" name="book_ids" value="{{ book.id }}"
+             class="inbox-check" id="ic-{{ book.id }}">
+    </td>
+    <td><label for="ic-{{ book.id }}" style="cursor:pointer; font-weight:normal">{{ book.title }}</label></td>
+    <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
       {% if book.feed_url %}<a href="{{ book.feed_url }}" target="_blank">{{ book.feed_url }}</a>{% else %}—{% endif %}
     </td>
-    <td>{{ channel_select(book) }}</td>
     <td>
       <form method="post" action="/admin/ongoing/{{ book.id }}/delete" style="display:inline"
-            onsubmit="return confirm('Remove this source and its buffered chapters?')">
+            onsubmit="return confirm('Remove this source?')">
         <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
       </form>
     </td>
