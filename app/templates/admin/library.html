@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Library — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Library</h1>
+
+{% if books %}
+<p>
+  Select books to add to the queue
+  <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
+</p>
+
+<div style="margin-bottom:1em">
+  <input type="text" id="filter" placeholder="🔍 Filter by title or author…"
+         style="max-width:360px" oninput="filterBooks()">
+  <span id="filter-count" style="color:#888; font-size:.85em; margin-left:.5em"></span>
+</div>
+
+<form method="post" action="/admin/import" id="import-form">
+  {# ── Controls at top (sticky while scrolling) ─────────────────────────── #}
+  <div style="position:sticky; top:0; background:#fafafa; z-index:10;
+              padding:.5em 0; border-bottom:1px solid #ddd; margin-bottom:.75em;
+              display:flex; flex-wrap:wrap; gap:.6em; align-items:center">
+    {% if channels %}
+    <label for="channel_id_top" style="font-weight:500; white-space:nowrap">Add to channel:</label>
+    <select name="channel_id" id="channel_id_top" style="width:auto; display:inline-block">
+      <option value="">— Auto (by genre) —</option>
+      {% for ch in channels %}
+      <option value="{{ ch.id }}">{{ ch.name }}{% if ch.genre_match %} ({{ ch.genre_match }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button class="btn btn-primary" type="submit">Add selected to queue</button>
+    <span id="selected-count" style="color:#888; font-size:.85em"></span>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th><input type="checkbox" id="check-all" title="Select all visible"></th>
+      <th>Title</th><th>Author</th><th>Genre (manual)</th><th>Last updated</th><th>Source</th><th>Feed</th>
+    </tr></thead>
+    <tbody id="book-rows">
+    {% for book in books %}
+    {% set genre_display = book.genres if book.genres else book.genre_tags %}
+    {% set feed = inferred_feeds.get(book.calibre_id) %}
+    <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ genre_display|join(' '))|lower }}">
+      <td><input type="checkbox" name="calibre_ids" value="{{ book.calibre_id }}" class="row-check"></td>
+      <td>{{ book.title }}</td>
+      <td>{{ book.author }}</td>
+      <td style="font-size:.8em; color:#666">{{ genre_display|join(", ") }}</td>
+      <td style="font-size:.85em; color:#666; white-space:nowrap">
+        {% if book.last_modified %}{{ book.last_modified[:10] }}{% else %}—{% endif %}
+      </td>
+      <td>
+        {% if book.source_url %}
+        <a href="{{ book.source_url }}" target="_blank" style="font-size:.85em">↗</a>
+        {% endif %}
+      </td>
+      <td style="white-space:nowrap">
+        {% if feed %}
+          {% if feed in existing_feeds %}
+            <span style="color:#888; font-size:.8em">already tracked</span>
+          {% else %}
+            <form method="post" action="/admin/ongoing/add" style="display:inline">
+              <input type="hidden" name="feed_url" value="{{ feed }}">
+              <input type="hidden" name="title" value="{{ book.title }}">
+              <button class="btn" style="font-size:.8em; padding:.15em .5em"
+                      title="{{ feed }}">+ Add ongoing</button>
+            </form>
+          {% endif %}
+        {% else %}
+          <span style="color:#ccc; font-size:.8em">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</form>
+
+<script>
+  function visibleRows() {
+    return Array.from(document.querySelectorAll('.book-row'))
+      .filter(r => r.style.display !== 'none');
+  }
+  function updateSelectedCount() {
+    const n = document.querySelectorAll('.row-check:checked').length;
+    document.getElementById('selected-count').textContent = n ? n + ' selected' : '';
+  }
+  function filterBooks() {
+    const q = document.getElementById('filter').value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('.book-row').forEach(row => {
+      const match = !q || row.dataset.search.includes(q);
+      row.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    document.getElementById('filter-count').textContent =
+      q ? shown + ' match' + (shown === 1 ? '' : 'es') : '';
+  }
+  document.getElementById('check-all').addEventListener('change', function() {
+    visibleRows().forEach(row => {
+      const cb = row.querySelector('input[name=calibre_ids]');
+      if (cb) cb.checked = this.checked;
+    });
+    updateSelectedCount();
+  });
+  document.querySelectorAll('.row-check').forEach(cb =>
+    cb.addEventListener('change', updateSelectedCount)
+  );
+</script>
+{% else %}
+<p style="color:#888">All EPUB books in your Calibre library are already imported.</p>
+{% endif %}
+
+{% endblock %}
