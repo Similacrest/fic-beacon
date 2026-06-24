@@ -144,6 +144,7 @@ def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
         ]
     return templates.TemplateResponse(request, "admin/channels.html", {
         "channels": channels, "feeds": feeds,
+        "wpm": cfg.wpm if cfg else 250,
     })
 
 

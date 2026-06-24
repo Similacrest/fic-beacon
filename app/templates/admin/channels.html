@@ -40,14 +40,14 @@
       </div>
       <div style="min-width:90px">
         <label style="font-size:.8em; display:block">Budget mode</label>
-        <select name="budget_mode" style="width:auto">
+        <select name="budget_mode" class="budget-mode" style="width:auto">
           <option value="words"{% if ch.budget_mode.value == 'words' %} selected{% endif %}>Words</option>
           <option value="minutes"{% if ch.budget_mode.value == 'minutes' %} selected{% endif %}>Minutes</option>
         </select>
       </div>
       <div style="min-width:90px">
         <label style="font-size:.8em; display:block">Budget</label>
-        <input type="number" name="budget" value="{{ ch.budget }}" min="1" style="width:90px">
+        <input type="number" name="budget" value="{{ ch.budget }}" min="1" class="budget-input" style="width:90px">
       </div>
       <div>
         <button class="btn btn-primary" type="submit" style="font-size:.85em">Save</button>
@@ -99,7 +99,7 @@
     </div>
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget</label>
-      <input type="number" name="budget" value="5000" min="1" style="width:90px">
+      <input type="number" name="budget" value="5000" min="1" class="budget-input" style="width:90px">
     </div>
     <div>
       <button class="btn btn-primary" type="submit">Create channel</button>
@@ -110,5 +110,27 @@
     Multiple prefixes can be comma-separated. Budget is in words or minutes depending on the mode.
   </small>
 </form>
+
+<script>
+// Re-express the budget value when the mode toggles, using the global reading speed
+// (words ↔ minutes via wpm), so the number stays meaningful instead of being read as
+// the other unit. Purely cosmetic on the client — the server still stores what's submitted.
+(function () {
+  const wpm = {{ wpm }};
+  document.querySelectorAll('select.budget-mode').forEach(function (sel) {
+    sel.dataset.prev = sel.value;
+    sel.addEventListener('change', function () {
+      const input = sel.closest('form').querySelector('input.budget-input');
+      const val = input ? parseFloat(input.value) : NaN;
+      if (input && !isNaN(val) && sel.value !== sel.dataset.prev) {
+        input.value = sel.value === 'minutes'
+          ? Math.max(1, Math.round(val / wpm))
+          : Math.max(1, Math.round(val * wpm));
+      }
+      sel.dataset.prev = sel.value;
+    });
+  });
+})();
+</script>
 
 {% endblock %}
