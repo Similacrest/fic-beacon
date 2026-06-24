@@ -280,7 +280,7 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int) -> Drop |
     )
     titles = "; ".join(ch.title for ch in plan.chapters)
 
-    feed_key = "ongoing" if plan.book.kind == BookKind.ongoing else str(plan.book.slot_index or 1)
+    feed_key = str(plan.book.slot_index or 1)
     drop = Drop(
         book_id=plan.book.id,
         channel_id=channel_id,
@@ -343,13 +343,13 @@ def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
 def _fill_empty_slots(
     session: Session, parallel_slots: int, channel_id: int
 ) -> None:
-    """Promote queued *EPUB* books into open numbered slots within one channel group.
+    """Promote queued books (EPUB or ongoing) into open numbered slots within one channel.
 
-    Ongoing sources are not slot-gated — they're always-active and share the channel's
-    'ongoing' feed — so slots count and promote backlog (EPUB) books only. Also
-    normalizes slot assignment for active EPUB books missing a slot_index.
+    All sources share the same pool of numbered slots; ongoing serials occupy slots
+    just like EPUB books and their drops land in /feed/{slug}/{slot}. Also normalizes
+    slot assignment for active books that are missing a slot_index.
     """
-    active = [b for b in _active_books_in(session, channel_id) if b.kind == BookKind.epub]
+    active = _active_books_in(session, channel_id)
     used = {b.slot_index for b in active if b.slot_index is not None}
     for book in active:
         if book.slot_index is None:
@@ -364,7 +364,6 @@ def _fill_empty_slots(
         session.query(Book)
         .filter(
             Book.status == BookStatus.queued,
-            Book.kind == BookKind.epub,
             Book.channel_id == channel_id,
         )
         .order_by(Book.queue_position)

@@ -139,8 +139,6 @@ def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     feeds = {}
     for ch in channels:
         keys = [str(i) for i in range(1, ch.parallel_slots + 1)]
-        if ch.has_ongoing_feed:
-            keys.append("ongoing")
         feeds[ch.id] = [
             (k, f"{settings.base_url}/feed/{ch.slug}/{k}?token={token}") for k in keys
         ]
@@ -156,7 +154,6 @@ def create_channel(
     parallel_slots: int = Form(2),
     budget_mode: str = Form("words"),
     budget: int = Form(5000),
-    has_ongoing_feed: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     name = name.strip()
@@ -179,7 +176,6 @@ def create_channel(
         parallel_slots=max(1, parallel_slots),
         budget_mode=mode,
         budget=max(1, budget),
-        has_ongoing_feed=bool(has_ongoing_feed),
         queue_order=max_order + 1,
     ))
     db.commit()
@@ -194,7 +190,6 @@ def edit_channel(
     parallel_slots: int = Form(1),
     budget_mode: str = Form("words"),
     budget: int = Form(5000),
-    has_ongoing_feed: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Edit channel settings. The slug (and thus feed URLs) stays fixed."""
@@ -206,7 +201,6 @@ def edit_channel(
         channel.parallel_slots = max(1, parallel_slots)
         channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
         channel.budget = max(1, budget)
-        channel.has_ongoing_feed = bool(has_ongoing_feed)
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
 

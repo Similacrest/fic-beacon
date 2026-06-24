@@ -55,7 +55,7 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
         .join(Drop.book)
         .filter(Drop.channel_id == channel_id, Drop.feed_key == feed_key)
     )
-    slot_label = "In progress" if feed_key == "ongoing" else f"Slot {feed_key}"
+    slot_label = f"Slot {feed_key}"
     topic = f"{settings.base_url}/feed/{channel.slug}/{feed_key}"
     atom, _ = build_feed(drops, self_url=topic, title=f"Fic Beacon — {channel.name} · {slot_label}")
     return topic, atom

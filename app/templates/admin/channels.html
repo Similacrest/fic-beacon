@@ -49,12 +49,6 @@
         <label style="font-size:.8em; display:block">Budget</label>
         <input type="number" name="budget" value="{{ ch.budget }}" min="1" style="width:90px">
       </div>
-      <div style="min-width:120px">
-        <label style="font-size:.8em; display:block">
-          <input type="checkbox" name="has_ongoing_feed" value="1"{% if ch.has_ongoing_feed %} checked{% endif %}>
-          In-progress feed
-        </label>
-      </div>
       <div>
         <button class="btn btn-primary" type="submit" style="font-size:.85em">Save</button>
       </div>
@@ -67,7 +61,7 @@
     <tbody>
     {% for key, url in feeds[ch.id] %}
       <tr>
-        <td style="white-space:nowrap; padding-right:.8em">{{ "In progress" if key == "ongoing" else "Slot " ~ key }}</td>
+        <td style="white-space:nowrap; padding-right:.8em">Slot {{ key }}</td>
         <td><span class="feed-url">{{ url }}</span></td>
       </tr>
     {% endfor %}
@@ -106,12 +100,6 @@
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget</label>
       <input type="number" name="budget" value="5000" min="1" style="width:90px">
-    </div>
-    <div style="min-width:120px">
-      <label style="font-size:.8em; display:block">
-        <input type="checkbox" name="has_ongoing_feed" value="1" checked>
-        In-progress feed
-      </label>
     </div>
     <div>
       <button class="btn btn-primary" type="submit">Create channel</button>

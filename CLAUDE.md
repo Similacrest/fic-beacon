@@ -76,11 +76,11 @@ fic-beacon/
   (without dropping) and channels renamed (slug/feed URLs stay stable) from the admin UI.
 - A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
   as is reading speed (`config.wpm`) and the 👎 drop threshold.
-- **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`
-  for backlog EPUB slots, or `"ongoing"` for the channel's shared "In progress" serial feed.
-  There is **no all-channels union feed** — subscribe to each channel/slot feed.
-- A backlog slot shows one book at a time; when it completes, the next queued book inherits the
-  slot and that feed keeps broadcasting.
+- **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`.
+  Both EPUB backlog books and ongoing serials occupy numbered slots — there is no separate
+  "ongoing" feed. There is **no all-channels union feed** — subscribe to each channel/slot feed.
+- A slot shows one book at a time; when it completes (EPUB) or is dropped, the next queued book
+  inherits the slot and that feed keeps broadcasting.
 
 ### Sources & units (EPUB and ongoing unified)
 - A **source** is a `book` row. `kind=epub` (Calibre-backed) or `kind=ongoing` (RSS-backed,
@@ -136,7 +136,7 @@ there; EPUB paths derive from the library folder structure. Do not require a run
 ## Data model (summary)
 
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
-`budget_credit`, `queue_order`) · `book` (`kind` epub|ongoing, `feed_url?`, `status`
+`budget_credit`, `queue_order`, `is_inbox`) · `book` (`kind` epub|ongoing, `feed_url?`, `status`
 queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, thumbs) · `ongoing_entry` (buffer: `guid`,
 `content_html`, `word_count`, `published_at`, `released`, `drop_id?`) · `drop`

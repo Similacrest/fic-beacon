@@ -83,7 +83,6 @@ def ensure_inbox_channel(session: Session) -> Channel:
             name=INBOX_CHANNEL_NAME,
             slug=INBOX_CHANNEL_SLUG,
             is_inbox=True,
-            has_ongoing_feed=False,
         )
         session.add(channel)
         session.flush()

@@ -36,8 +36,6 @@ def get_feed_slot(
     channel = db.query(Channel).filter(Channel.slug == channel_slug).first()
     if channel is None:
         raise HTTPException(status_code=404, detail="Unknown channel")
-    if feed_key == "ongoing" and not channel.has_ongoing_feed:
-        raise HTTPException(status_code=404, detail="This channel has no ongoing feed")
     drops = (
         db.query(Drop)
         .join(Drop.book)
@@ -46,7 +44,7 @@ def get_feed_slot(
         .limit(settings.feed_item_limit)
         .all()
     )
-    slot_label = "In progress" if feed_key == "ongoing" else f"Slot {feed_key}"
+    slot_label = f"Slot {feed_key}"
     self_url = f"{settings.base_url}/feed/{channel_slug}/{feed_key}"
     title = f"Fic Beacon — {channel.name} · {slot_label}"
     return _render(drops, fmt, self_url=self_url, title=title,

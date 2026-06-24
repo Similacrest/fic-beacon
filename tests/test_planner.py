@@ -150,13 +150,13 @@ class TestGlobalRoundRobin:
         assert plans[0].word_count > 500  # more than one chapter's worth
 
     def test_minutes_budget_mode(self, in_memory_db):
-        # A channel in minutes mode multiplies its budget_minutes by the global wpm.
+        # A channel in minutes mode multiplies its budget by the global wpm.
         from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
         cfg.wpm = 300
         channel = in_memory_db.query(Channel).order_by(Channel.id).first()
         channel.budget_mode = BudgetMode.minutes
-        channel.budget_minutes = 10
+        channel.budget = 10
         in_memory_db.flush()
         assert _channel_budget(channel, cfg) == 3000  # 10 min × 300 wpm
 
@@ -206,7 +206,7 @@ class TestDropCycle:
         # (rather than exhausting the short 5-chapter mock epub in one cycle).
         from app.models import Channel
         channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget_words = 100
+        channel.budget = 100
         for i in range(1, 4):
             _make_book(
                 in_memory_db, calibre_id=i, title=f"Book {i}",
@@ -228,7 +228,7 @@ class TestDropCycle:
         # Small budget so the promoted book takes one chapter and stays active.
         from app.models import Channel
         channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget_words = 100
+        channel.budget = 100
         book1 = _make_book(in_memory_db, calibre_id=1, status=BookStatus.active)
         book1.cursor_chapter_index = 4  # last chapter
         book2 = _make_book(in_memory_db, calibre_id=2, status=BookStatus.queued, queue_position=2)
@@ -342,7 +342,7 @@ class TestChannels:
     def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
         from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget_words=100)
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget=100)
         in_memory_db.add(ch)
         in_memory_db.flush()
         for i in (1, 2, 3):

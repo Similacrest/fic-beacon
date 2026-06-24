@@ -63,8 +63,6 @@ class Channel(Base):
     # Signed carry-over so the stochastic per-cycle mean tracks the budget.
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # When False, the …/ongoing feed is not exposed and the UI hides it (pure-EPUB channels).
-    has_ongoing_feed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # System-managed staging channel; excluded from drops/feeds. Users cannot rename it.
     is_inbox: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -126,7 +124,7 @@ class Drop(Base):
     word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Snapshot of the channel + per-slot feed this drop belongs to, so feed filtering
     # stays stable even after the source completes and the slot is reused.
-    # feed_key is "1".."N" for backlog slots, or "ongoing" for a channel's serial feed.
+    # feed_key is "1".."N" — the slot this drop belongs to (stable even after source completes).
     channel_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     feed_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     chapter_start: Mapped[int] = mapped_column(Integer, nullable=False)

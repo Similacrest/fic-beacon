@@ -150,6 +150,13 @@ class TestBuffering:
 
     def test_poll_all_skips_epub_and_survives_errors(self, in_memory_db):
         src = _ongoing_source(in_memory_db, feed_url="https://ok.example.com/feed")
+        # Pre-seed one entry so the source is not "never polled"; poll_all_feeds then
+        # calls poll_source (not seed_source_as_read) and the new entry counts.
+        in_memory_db.add(OngoingEntry(
+            source_id=src.id, guid="existing", title="Old",
+            content_html="", word_count=0,
+            published_at=datetime(2025, 1, 1, tzinfo=timezone.utc), released=True,
+        ))
         # An epub book must be ignored by the poller.
         in_memory_db.add(Book(calibre_id=1, kind=BookKind.epub, title="E", author="A",
                               status=BookStatus.active, queue_position=2,
@@ -168,7 +175,7 @@ class TestOngoingDrops:
         # Three buffered chapters, ~100 words each; small budget releases a subset.
         from app.models import Channel
         channel = in_memory_db.get(Channel, src.channel_id)
-        channel.budget_words = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
+        channel.budget = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
         for i in range(1, 4):
             in_memory_db.add(OngoingEntry(
                 source_id=src.id, guid=f"c{i}", title=f"Ch {i}",
@@ -180,7 +187,7 @@ class TestOngoingDrops:
         drops = run_drop_cycle(in_memory_db, Path("/fake"))
 
         assert drops, "expected at least one ongoing drop"
-        assert all(d.feed_key == "ongoing" for d in drops)
+        assert all(d.feed_key is not None and d.feed_key != "ongoing" for d in drops)
         released = in_memory_db.query(OngoingEntry).filter_by(released=True).count()
         unreleased = in_memory_db.query(OngoingEntry).filter_by(released=False).count()
         assert released == 2 and unreleased == 1  # batched: 2 fit the budget, 1 rolls over
