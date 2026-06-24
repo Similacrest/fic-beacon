@@ -17,10 +17,9 @@
 </p>
 {% endif %}
 
-<form method="post" action="/admin/ongoing/poll-now" style="margin-bottom:1.5em">
-  <button class="btn">🔄 Poll all feeds now</button>
-  <small style="color:#888; margin-left:.5em">Auto-polls hourly to buffer new chapters.</small>
-</form>
+<p style="color:#888; font-size:.9em">
+  Feeds are polled hourly automatically. Use the <a href="/admin/">Dashboard</a> 🔄 button to poll now.
+</p>
 
 {% if sources %}
 <table>
@@ -75,6 +74,9 @@
       {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
     </select>
   </div>
+  <div style="align-self:flex-end">
+    <small style="color:#666; display:block; margin-bottom:.3em">New feeds assume you've already read everything in the current archive.</small>
+  </div>
   <button class="btn btn-primary" type="submit">Add</button>
 </form>
 
@@ -83,6 +85,8 @@
   Export your subscriptions (InoReader: Preferences → Import/Export → Export OPML). All imported
   serials land in General — reassign them per-row above afterwards.
   Note: AO3/FFN have no per-chapter RSS — those aren't supported here yet.
+  Alternatively, use the <a href="/admin/library">Library</a> page to add feeds inferred from
+  your Calibre source URLs (RoyalRoad, SpaceBattles, SufficientVelocity).
 </p>
 <form method="post" action="/admin/ongoing/import-opml" enctype="multipart/form-data"
       style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap">

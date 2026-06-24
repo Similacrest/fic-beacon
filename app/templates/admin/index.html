@@ -13,14 +13,109 @@
 </form>
 {% endmacro %}
 
+{# Progress cell — works for both EPUB and ongoing sources #}
+{% macro progress_cell(book) %}
+{% if book.kind.value == 'ongoing' %}
+  <span style="white-space:nowrap">
+    <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
+          style="display:inline; margin-right:.4em"
+          title="Set chapter cursor (rewind to re-read)">
+      <input type="number" name="chapter_index"
+             value="{{ book.cursor_chapter_index }}"
+             min="0"
+             style="width:52px; padding:.2em .3em; font-size:.85em">
+      <span style="color:#888; font-size:.85em">
+        {% set buf = buffered.get(book.id, 0) %}
+        {% if buf %} +{{ buf }} buffered{% endif %}
+      </span>
+      <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
+    </form>
+  </span>
+{% elif book.total_chapters %}
+  <span style="white-space:nowrap">
+    <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
+          style="display:inline; margin-right:.4em"
+          title="Set chapter cursor (rewind/skip ahead)">
+      <input type="number" name="chapter_index"
+             value="{{ book.cursor_chapter_index }}"
+             min="0" max="{{ book.total_chapters }}"
+             style="width:52px; padding:.2em .3em; font-size:.85em">
+      <span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>
+      <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
+    </form>
+    <span class="progress-bar-wrap">
+      <span class="progress-bar-fill"
+        style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%">
+      </span>
+    </span>
+  </span>
+{% else %}
+  <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
+        style="display:inline"
+        title="Set chapter cursor">
+    <input type="number" name="chapter_index"
+           value="{{ book.cursor_chapter_index }}"
+           min="0"
+           style="width:52px; padding:.2em .3em; font-size:.85em">
+    <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
+  </form>
+{% endif %}
+{% endmacro %}
+
+{# Inline weight adjustment #}
+{% macro weight_cell(book) %}
+<form method="post" action="/admin/books/{{ book.id }}/set-weight" style="display:inline">
+  <input type="number" name="weight"
+         value="{{ '%.2f'|format(book.quota_weight) }}"
+         min="0.1" max="10" step="0.05"
+         style="width:60px; padding:.2em .3em; font-size:.85em">
+  <button type="submit" style="padding:.15em .4em; font-size:.8em" title="Apply weight">↩</button>
+</form>
+{% endmacro %}
+
 <h1>📡 Dashboard</h1>
 
 <p style="color:#888">
   Per-channel feed URLs live on the <a href="/admin/channels">Channels</a> page.
 </p>
-<form method="post" action="/admin/trigger-drop" style="display:inline">
-  <button class="btn btn-primary">▶ Run drop cycle now</button>
-</form>
+<div style="display:flex; gap:.6em; flex-wrap:wrap; margin-bottom:1.5em">
+  <form method="post" action="/admin/trigger-drop">
+    <button class="btn btn-primary">▶ Run drop cycle now</button>
+  </form>
+  <form method="post" action="/admin/poll-now">
+    <button class="btn">🔄 Poll feeds now</button>
+  </form>
+</div>
+
+{% if inbox_books %}
+<h2 style="color:#856404">Inbox — unassigned ({{ inbox_books|length }})</h2>
+<p style="color:#888; font-size:.9em">
+  These sources were imported without a channel assignment. Assign each one before it
+  appears in drops.
+</p>
+<table>
+  <thead><tr>
+    <th>Title</th><th>Feed URL</th><th>Assign to channel</th><th>Actions</th>
+  </tr></thead>
+  <tbody>
+  {% for book in inbox_books %}
+  <tr>
+    <td>{{ book.title }}</td>
+    <td style="font-size:.8em; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+      {% if book.feed_url %}<a href="{{ book.feed_url }}" target="_blank">{{ book.feed_url }}</a>{% else %}—{% endif %}
+    </td>
+    <td>{{ channel_select(book) }}</td>
+    <td>
+      <form method="post" action="/admin/ongoing/{{ book.id }}/delete" style="display:inline"
+            onsubmit="return confirm('Remove this source and its buffered chapters?')">
+        <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 
 <h2>Active ({{ active|length }})</h2>
 {% if active %}
@@ -31,35 +126,16 @@
   <tbody>
   {% for book in active %}
   <tr>
-    <td>{{ book.title }}</td>
-    <td>{{ book.author }}</td>
-    <td>{{ channel_select(book) }}</td>
     <td>
-      {% if book.total_chapters %}
-        <span style="white-space:nowrap">
-          <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
-                style="display:inline; margin-right:.4em"
-                title="Set chapter cursor (rewind/skip ahead)">
-            <input type="number" name="chapter_index"
-                   value="{{ book.cursor_chapter_index }}"
-                   min="0" max="{{ book.total_chapters }}"
-                   style="width:52px; padding:.2em .3em; font-size:.85em">
-            <span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>
-            <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
-          </form>
-          <span class="progress-bar-wrap">
-            <span class="progress-bar-fill"
-              style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%">
-            </span>
-          </span>
-        </span>
-      {% else %}
-        ch.{{ book.cursor_chapter_index }}
-      {% endif %}
+      {{ book.title }}
+      {% if book.kind.value == 'ongoing' %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em">ongoing</span>{% endif %}
     </td>
+    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
+    <td>{{ channel_select(book) }}</td>
+    <td>{{ progress_cell(book) }}</td>
     <td>{{ book.thumbs_up }}</td>
     <td>{{ book.thumbs_down }}</td>
-    <td>{{ "%.2f"|format(book.quota_weight) }}</td>
+    <td>{{ weight_cell(book) }}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
@@ -77,15 +153,20 @@
 {% if queued %}
 <table>
   <thead><tr>
-    <th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Source</th><th>Actions</th>
+    <th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>Weight</th><th>Source</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for book in queued %}
   <tr>
     <td>{{ loop.index }}</td>
-    <td>{{ book.title }}</td>
-    <td>{{ book.author }}</td>
+    <td>
+      {{ book.title }}
+      {% if book.kind.value == 'ongoing' %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em">ongoing</span>{% endif %}
+    </td>
+    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ channel_select(book) }}</td>
+    <td>{{ progress_cell(book) }}</td>
+    <td>{{ weight_cell(book) }}</td>
     <td>{% if book.source_url %}<a href="{{ book.source_url }}" target="_blank">↗</a>{% endif %}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/move" style="display:inline">
@@ -116,7 +197,7 @@
   {% for book in completed %}
   <tr>
     <td>{{ book.title }}</td>
-    <td>{{ book.author }}</td>
+    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/requeue" style="display:inline">
         <button>Re-queue</button>
@@ -142,7 +223,7 @@
   {% for book in dropped %}
   <tr>
     <td>{{ book.title }}</td>
-    <td>{{ book.author }}</td>
+    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ book.thumbs_down }}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/requeue" style="display:inline">
