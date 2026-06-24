@@ -55,13 +55,24 @@ def classify_genre(genre_tags: list[str]) -> str | None:
     return None
 
 
-def effective_genres(genres: list[str], genre_tags: list[str]) -> list[str]:
+def effective_genres(
+    genres: list[str], genre_tags: list[str], source_url: str | None = None
+) -> list[str]:
     """The genres used for channel matching: the manual #genre_manual values if any,
-    else a single auto-classified bucket (or [] when even that fails)."""
+    else a single auto-classified bucket (or [] when even that fails).
+
+    When a book has a source URL (i.e. it's a web serial), the Fantasy bucket is
+    promoted to ``Webfic.Fantasy`` so it can be routed to a web-fiction channel that
+    would otherwise conflict with a broader 'Fantasy' channel for offline books.
+    """
     if genres:
         return genres
     bucket = classify_genre(genre_tags)
-    return [bucket] if bucket else []
+    if bucket is None:
+        return []
+    if bucket == FANTASY and source_url:
+        bucket = "Webfic.Fantasy"
+    return [bucket]
 
 
 def _matches(genre: str, prefix: str) -> bool:
@@ -72,11 +83,16 @@ def _matches(genre: str, prefix: str) -> bool:
 def pick_channel_id(book_genres: list[str], channels, default_id: int) -> int:
     """Return the id of the first channel whose genre_match matches a book genre.
 
-    ``channels`` is any iterable of objects with ``.id`` and ``.genre_match``. Channels are
-    tried in their given order; the first prefix hit wins. Falls back to ``default_id``.
+    ``channels`` is any iterable of objects with ``.id`` and ``.genre_match``.
+    ``genre_match`` is a comma-separated list of prefixes; any hit wins.
+    Channels are tried in their given order; the first prefix hit wins.
+    Falls back to ``default_id``.
     """
     for genre in book_genres:
         for channel in channels:
-            if channel.genre_match and _matches(genre, channel.genre_match):
+            if not channel.genre_match:
+                continue
+            prefixes = [p.strip() for p in channel.genre_match.split(",") if p.strip()]
+            if any(_matches(genre, p) for p in prefixes):
                 return channel.id
     return default_id

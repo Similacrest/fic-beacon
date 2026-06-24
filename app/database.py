@@ -27,6 +27,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 DEFAULT_CHANNEL_NAME = "General"
 DEFAULT_CHANNEL_SLUG = "general"
+INBOX_CHANNEL_NAME = "Inbox"
+INBOX_CHANNEL_SLUG = "inbox"
 
 
 def init_db() -> None:
@@ -34,6 +36,7 @@ def init_db() -> None:
     with SessionLocal() as session:
         _ensure_config(session)
         ensure_default_channel(session)
+        ensure_inbox_channel(session)
         session.commit()
 
 
@@ -63,6 +66,25 @@ def ensure_default_channel(session: Session) -> Channel:
     )
     if channel is None:
         channel = Channel(name=DEFAULT_CHANNEL_NAME, slug=DEFAULT_CHANNEL_SLUG)
+        session.add(channel)
+        session.flush()
+    return channel
+
+
+def ensure_inbox_channel(session: Session) -> Channel:
+    """Return the hidden Inbox channel, creating it if absent.
+
+    OPML imports land here until the user manually assigns them to a real channel.
+    The Inbox is excluded from drop cycles and feed generation; its slug is reserved.
+    """
+    channel = session.query(Channel).filter(Channel.slug == INBOX_CHANNEL_SLUG).first()
+    if channel is None:
+        channel = Channel(
+            name=INBOX_CHANNEL_NAME,
+            slug=INBOX_CHANNEL_SLUG,
+            is_inbox=True,
+            has_ongoing_feed=False,
+        )
         session.add(channel)
         session.flush()
     return channel

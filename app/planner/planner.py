@@ -97,7 +97,12 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
 
-    channels = session.query(Channel).order_by(Channel.queue_order, Channel.id).all()
+    channels = (
+        session.query(Channel)
+        .filter(Channel.is_inbox.is_(False))
+        .order_by(Channel.queue_order, Channel.id)
+        .all()
+    )
     for channel in channels:
         base_budget = _channel_budget(channel, cfg)
 
@@ -136,8 +141,8 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
 
 def _channel_budget(channel: Channel, cfg: Config) -> int:
     if channel.budget_mode == BudgetMode.minutes:
-        return channel.budget_minutes * cfg.wpm
-    return channel.budget_words
+        return channel.budget * cfg.wpm
+    return channel.budget
 
 
 def _active_books_in(session: Session, channel_id: int) -> list[Book]:
