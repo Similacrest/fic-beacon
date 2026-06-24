@@ -20,7 +20,7 @@
     </form>
     <span style="color:#999; font-weight:400; font-size:.7em">
       /{{ ch.slug }} · {{ ch.parallel_slots }} slot(s) · {{ ch.budget_words }} words
-      {% if ch.tag_match %}· tag: {{ ch.tag_match }}{% endif %}
+      {% if ch.genre_match %}· genre: {{ ch.genre_match }}{% endif %}
     </span>
     <form method="post" action="/admin/channels/{{ ch.id }}/delete" style="display:inline; float:right"
           onsubmit="return confirm('Delete channel {{ ch.name }}? Its sources move to another channel.')">
@@ -51,8 +51,12 @@
     <input type="text" id="name" name="name" placeholder="Fantasy" required>
   </div>
   <div class="form-group">
-    <label for="tag_match">Calibre tag / prefix (optional)</label>
-    <input type="text" id="tag_match" name="tag_match" placeholder="Fantasy">
+    <label for="genre_match">Genre match (optional)</label>
+    <input type="text" id="genre_match" name="genre_match" placeholder="Fantasy">
+    <small style="color:#666">
+      Calibre <code>#genre_manual</code> prefix. "Fantasy" catches "Fantasy", "Fantasy.Rational", …
+      Books are auto-routed here on import when their genre matches.
+    </small>
   </div>
   <div class="form-group">
     <label for="parallel_slots">Parallel slots</label>

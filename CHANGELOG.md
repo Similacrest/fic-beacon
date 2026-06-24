@@ -35,6 +35,13 @@ the user's real ongoing serials. Landing incrementally:
   recreate channels. (No in-place Alembic migration is shipped for this jump.)
 
 ### Changed
+- **Genre-based channel routing** — channels match on the Calibre custom column
+  `#genre_manual` (hierarchical, e.g. `Fantasy.Rational`) via a per-channel `genre_match`
+  prefix (replaces the old `tag_match`). On import, books auto-route to the first matching
+  channel; when `#genre_manual` is blank, a genre is derived by keyword-grepping the raw
+  `#genre` column into Fanfiction / Sci-Fi / Fantasy / Classical / Non-fiction (popular
+  science "Sci-pop" classifies as Non-fiction, not Sci-Fi). Unmatched → General. Choosing a
+  channel explicitly on the import page still forces all selected books there.
 - **Every source now belongs to a channel** (`book.channel_id` is NOT NULL). The implicit
   default/global group is gone; budget and parallel slots live only on channels. A **"General"**
   channel is auto-created on first run so imports always have a home.

@@ -28,6 +28,20 @@ def _build_calibre_db(library_path: Path) -> None:
     CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
 
+    -- Custom columns: #genre_manual (id 1) and #genre (id 4), both multi-value text.
+    CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple BOOL);
+    INSERT INTO custom_columns VALUES (1, 'genre_manual', 'Genre (manual)', 'text', 1);
+    INSERT INTO custom_columns VALUES (4, 'genre', 'Genre', 'text', 1);
+    CREATE TABLE custom_column_1 (id INTEGER PRIMARY KEY, value TEXT);
+    CREATE TABLE books_custom_column_1_link (id INTEGER PRIMARY KEY, book INTEGER, value INTEGER);
+    CREATE TABLE custom_column_4 (id INTEGER PRIMARY KEY, value TEXT);
+    CREATE TABLE books_custom_column_4_link (id INTEGER PRIMARY KEY, book INTEGER, value INTEGER);
+    -- Book 1: #genre_manual = Fantasy.Rational ; Book 2: blank manual, #genre = LitRPG
+    INSERT INTO custom_column_1 VALUES (1, 'Fantasy.Rational');
+    INSERT INTO books_custom_column_1_link VALUES (1, 1, 1);
+    INSERT INTO custom_column_4 VALUES (1, 'LitRPG');
+    INSERT INTO books_custom_column_4_link VALUES (1, 2, 1);
+
     INSERT INTO books VALUES (1, 'Story One', 'story one', 'AuthorA/Story One (1)', 'AuthorA', '2026-01-01 10:00:00');
     INSERT INTO books VALUES (2, 'Story Two', 'story two', 'AuthorB/Story Two (2)', 'AuthorB', '2026-06-01 10:00:00');
     INSERT INTO authors VALUES (1, 'Author A', 'A, Author');
@@ -84,6 +98,15 @@ class TestListBooks:
         books = {b.calibre_id: b for b in adapter.list_books()}
         assert books[1].tags == ["Complete", "Fantasy.Epic"]  # ordered by name
         assert books[2].tags == []
+
+    def test_custom_genre_columns(self, library_path):
+        adapter = CalibreAdapter(library_path)
+        books = {b.calibre_id: b for b in adapter.list_books()}
+        # Book 1 has a curated #genre_manual; book 2 has only a raw #genre tag.
+        assert books[1].genres == ["Fantasy.Rational"]
+        assert books[1].genre_tags == []
+        assert books[2].genres == []
+        assert books[2].genre_tags == ["LitRPG"]
 
     def test_ordered_by_last_modified_desc(self, library_path):
         adapter = CalibreAdapter(library_path)

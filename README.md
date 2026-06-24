@@ -23,9 +23,12 @@ lets you steer the rotation from inside any RSS reader with plain feedback links
 
 ## How it works
 
-- **Channels** group sources by a Calibre **tag prefix** (e.g. `Fantasy`, `Non-fiction.Self-improvement`).
-  Each channel has its own reading budget and parallel **slots**; one global cron sets the cadence.
-  Every source belongs to a channel — a **"General"** channel is created automatically on first run,
+- **Channels** group sources by a Calibre **genre prefix** — the `#genre_manual` custom column
+  (e.g. `Fantasy`, `Non-fiction.Self-improvement`). On import each book is auto-routed to the
+  matching channel; if `#genre_manual` is blank, a genre is derived by grepping the raw `#genre`
+  column into one of Fanfiction / Sci-Fi / Fantasy / Classical / Non-fiction. Each channel has its
+  own reading budget and parallel **slots**; one global cron sets the cadence. Every source belongs
+  to a channel — a **"General"** channel is created automatically and catches anything unmatched,
   and you can move books between channels or rename a channel anytime (feed URLs stay stable).
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — each backlog slot shows one book at a
   time and rolls to the next when it finishes; one shared `…/ongoing` feed per channel carries

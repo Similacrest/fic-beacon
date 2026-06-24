@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter
+from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
 from app.database import ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config, Drop, FeedbackEvent
@@ -63,11 +64,19 @@ def do_import(
     adapter = CalibreAdapter(settings.calibre_library_path)
     # Every source must live in a channel; fall back to General when none is chosen.
     default_channel_id = ensure_default_channel(db).id
+    # When no channel is forced, auto-route each book by genre (#genre_manual, else a
+    # bucket derived from #genre) into the first channel whose genre_match prefix-matches.
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
     max_pos = db.query(Book.queue_position).order_by(Book.queue_position.desc()).scalar() or 0
     for cid in calibre_ids:
         cbook = adapter.get_book(cid)
         if cbook is None:
             continue
+        if channel_id:
+            target_id = channel_id
+        else:
+            genres = effective_genres(cbook.genres, cbook.genre_tags)
+            target_id = pick_channel_id(genres, channels, default_channel_id)
         max_pos += 1
         db.add(Book(
             calibre_id=cid,
@@ -76,7 +85,7 @@ def do_import(
             source_url=cbook.source_url,
             status=BookStatus.queued,
             queue_position=max_pos,
-            channel_id=channel_id or default_channel_id,
+            channel_id=target_id,
         ))
     db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
@@ -109,7 +118,7 @@ def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
 @router.post("/channels")
 def create_channel(
     name: str = Form(...),
-    tag_match: str = Form(""),
+    genre_match: str = Form(""),
     parallel_slots: int = Form(2),
     budget_words: int = Form(5000),
     db: Session = Depends(get_db),
@@ -126,7 +135,7 @@ def create_channel(
         db.add(Channel(
             name=name,
             slug=slug,
-            tag_match=tag_match.strip() or None,
+            genre_match=genre_match.strip() or None,
             parallel_slots=max(1, parallel_slots),
             budget_words=max(1, budget_words),
             queue_order=max_order + 1,

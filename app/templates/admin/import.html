@@ -21,11 +21,15 @@
   <div style="margin-bottom:1em">
     <label for="channel_id" style="display:inline; font-weight:500">Add to channel:</label>
     <select name="channel_id" id="channel_id" style="width:auto; display:inline-block">
-      <option value="">— General (default) —</option>
+      <option value="">— Auto (by genre) —</option>
       {% for ch in channels %}
-      <option value="{{ ch.id }}">{{ ch.name }}{% if ch.tag_match %} (tag: {{ ch.tag_match }}){% endif %}</option>
+      <option value="{{ ch.id }}">{{ ch.name }}{% if ch.genre_match %} (genre: {{ ch.genre_match }}){% endif %}</option>
       {% endfor %}
     </select>
+    <small style="color:#666; display:block; margin-top:.3em">
+      Auto routes each book by its Calibre genre (#genre_manual, else derived from #genre);
+      unmatched books land in General. Pick a channel to force all selected books there.
+    </small>
   </div>
   {% endif %}
   <table>

@@ -15,7 +15,9 @@ class CalibreBook:
     epub_name: str     # filename without extension, e.g. "Book Title - Author"
     source_url: str | None
     last_modified: str | None = None  # Calibre books.last_modified (ISO string)
-    tags: list[str] = field(default_factory=list)  # Calibre tags (for channel matching)
+    tags: list[str] = field(default_factory=list)          # Calibre tags
+    genres: list[str] = field(default_factory=list)        # #genre_manual (curated, hierarchical)
+    genre_tags: list[str] = field(default_factory=list)    # #genre (raw, for auto-classification)
 
 
 class CalibreAdapter:
@@ -50,6 +52,8 @@ class CalibreAdapter:
             ids = [r["id"] for r in rows]
             urls = self._fetch_source_urls(conn, ids)
             tags = self._fetch_tags(conn, ids)
+            genres = self._fetch_custom_text(conn, "genre_manual", ids)
+            genre_tags = self._fetch_custom_text(conn, "genre", ids)
             return [
                 CalibreBook(
                     calibre_id=r["id"],
@@ -60,6 +64,8 @@ class CalibreAdapter:
                     source_url=urls.get(r["id"]),
                     last_modified=r["last_modified"],
                     tags=tags.get(r["id"], []),
+                    genres=genres.get(r["id"], []),
+                    genre_tags=genre_tags.get(r["id"], []),
                 )
                 for r in rows
             ]
@@ -88,6 +94,8 @@ class CalibreAdapter:
                 return None
             urls = self._fetch_source_urls(conn, [calibre_id])
             tags = self._fetch_tags(conn, [calibre_id])
+            genres = self._fetch_custom_text(conn, "genre_manual", [calibre_id])
+            genre_tags = self._fetch_custom_text(conn, "genre", [calibre_id])
             return CalibreBook(
                 calibre_id=row["id"],
                 title=row["title"],
@@ -97,6 +105,8 @@ class CalibreAdapter:
                 source_url=urls.get(calibre_id),
                 last_modified=row["last_modified"],
                 tags=tags.get(calibre_id, []),
+                genres=genres.get(calibre_id, []),
+                genre_tags=genre_tags.get(calibre_id, []),
             )
 
     def epub_path(self, book: CalibreBook) -> Path:
@@ -114,6 +124,52 @@ class CalibreAdapter:
             book_ids,
         ).fetchall()
         return {r["book"]: r["val"] for r in rows}
+
+    def _fetch_custom_text(
+        self, conn: sqlite3.Connection, label: str, book_ids: list[int]
+    ) -> dict[int, list[str]]:
+        """Return {calibre_id: [values]} for a custom text column by its lookup label.
+
+        Resolves the column id from `custom_columns`, then reads either the multi-value
+        link layout (`books_custom_column_N_link` → `custom_column_N`) or the single-value
+        layout (`custom_column_N(book, value)`). Missing column / tables → empty (a library
+        without these custom columns just yields no genres).
+        """
+        if not book_ids:
+            return {}
+        try:
+            meta = conn.execute(
+                "SELECT id, is_multiple FROM custom_columns WHERE label = ?", (label,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return {}  # library without custom columns
+        if meta is None:
+            return {}
+
+        col, is_multiple = meta["id"], meta["is_multiple"]
+        placeholders = ",".join("?" * len(book_ids))
+        if is_multiple:
+            sql = f"""
+                SELECT l.book AS book, v.value AS value
+                FROM books_custom_column_{col}_link l
+                JOIN custom_column_{col} v ON v.id = l.value
+                WHERE l.book IN ({placeholders})
+                ORDER BY v.value
+            """
+        else:
+            sql = f"""
+                SELECT book, value FROM custom_column_{col}
+                WHERE book IN ({placeholders})
+            """
+        try:
+            rows = conn.execute(sql, book_ids).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        result: dict[int, list[str]] = {}
+        for r in rows:
+            if r["value"] is not None:
+                result.setdefault(r["book"], []).append(r["value"])
+        return result
 
     def _fetch_tags(
         self, conn: sqlite3.Connection, book_ids: list[int]

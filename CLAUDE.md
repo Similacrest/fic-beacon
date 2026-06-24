@@ -64,8 +64,12 @@ fic-beacon/
 ## Key concepts & rules
 
 ### Channels & slots (TV-channels model)
-- A **channel** groups sources by a Calibre **tag prefix** (`tag_match`); Calibre hierarchical
-  tags are flat strings with a `.` separator (e.g. `Fantasy.Epic`).
+- A **channel** groups sources by a Calibre **genre prefix** (`genre_match`) against the
+  custom column **`#genre_manual`** (hierarchical, `.`-separated, e.g. `Fantasy.Rational`).
+  On import each book is auto-routed to the first channel whose `genre_match` prefix-matches
+  one of its genres; with `#genre_manual` blank, a genre is derived by keyword-grepping the
+  raw **`#genre`** column into one of five buckets (Fanfiction, Sci-Fi, Fantasy, Classical,
+  Non-fiction) — see `app/calibre/genre.py`. Unmatched books fall back to **General**.
 - **Every source belongs to exactly one channel** (`book.channel_id` is NOT NULL). There is no
   global/default group: budget and slots live only on channels. A **"General" channel** is
   auto-created on first run so imports always have a home; books can be moved between channels
@@ -131,7 +135,7 @@ there; EPUB paths derive from the library folder structure. Do not require a run
 
 ## Data model (summary)
 
-`channel` (`name`, `slug`, `tag_match`, `parallel_slots`, `budget_*`, `budget_mode`,
+`channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
 `budget_credit`, `queue_order`) · `book` (`kind` epub|ongoing, `feed_url?`, `status`
 queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, thumbs) · `ongoing_entry` (buffer: `guid`,

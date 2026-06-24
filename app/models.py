@@ -41,7 +41,7 @@ def utcnow() -> datetime:
 
 
 class Channel(Base):
-    """A TV-style channel grouping sources by a Calibre tag prefix.
+    """A TV-style channel grouping sources by a Calibre genre prefix.
 
     Each channel has its own reading budget and parallel slots; the drop cadence is
     global (Config.cadence_cron). One feed per slot is served from the channel.
@@ -51,8 +51,9 @@ class Channel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    # Calibre tag (or tag prefix, e.g. "Fantasy") used to suggest membership on import.
-    tag_match: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Calibre #genre_manual prefix (e.g. "Fantasy" matches "Fantasy", "Fantasy.Rational")
+    # used to auto-route books into this channel on import.
+    genre_match: Mapped[str | None] = mapped_column(String, nullable=True)
     parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     budget_words: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
     budget_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=20)

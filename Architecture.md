@@ -133,7 +133,7 @@ C4Component
 
 ## 5. Data Model
 
-- **`channel`** — `id`, `name`, `slug`, `tag_match` (tag/prefix), `parallel_slots`,
+- **`channel`** — `id`, `name`, `slug`, `genre_match` (#genre_manual prefix), `parallel_slots`,
   `budget_words`, `budget_minutes`, `budget_mode`, `budget_credit` (signed carry-over),
   `queue_order`.
 - **`book`** (a *source*) — `calibre_id?`, `kind` (`epub|ongoing`), `feed_url?`, `title`,
