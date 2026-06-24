@@ -28,7 +28,6 @@ def in_memory_db():
         global_budget_minutes=20,
         budget_mode=BudgetMode.words,
         wpm=250,
-        overshoot_tolerance=1000,
         parallel_slots=2,
         cadence_cron="0 8 * * *",
         thumbs_down_drop_threshold=3,

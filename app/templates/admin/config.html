@@ -30,12 +30,6 @@
     <small style="color:#666">Used for minutes-mode budget and reading-time estimates in the UI.</small>
   </div>
   <div class="form-group">
-    <label for="overshoot_tolerance">Overshoot tolerance (words)</label>
-    <input type="number" name="overshoot_tolerance" id="overshoot_tolerance"
-           value="{{ cfg.overshoot_tolerance }}" min="0" step="100">
-    <small style="color:#666">How far over budget the global total can land. Chapters are never split.</small>
-  </div>
-  <div class="form-group">
     <label for="parallel_slots">Parallel books</label>
     <input type="number" name="parallel_slots" id="parallel_slots"
            value="{{ cfg.parallel_slots }}" min="1" max="10">

@@ -1,11 +1,10 @@
 """Tests for the Budget / Drop Planner.
 
-Global round-robin invariants:
-  - Every active book always gets at least 1 chapter (phase 1 guarantee).
-  - Total words across ALL books is bounded by budget + tolerance + phase-1 overshoot,
-    not N × budget.
-  - Weight controls ordering and per-book extra-chapter eligibility in phase 2.
-
+Pure-stochastic budget invariants:
+  - The cycle total stays near the budget (not N × budget); there is no phase-1
+    guarantee, so a source may get nothing some cycles.
+  - A unit larger than the whole budget is posted whole (it could never fit otherwise).
+  - Weight biases a source's per-unit inclusion probability upward.
 
 Uses the in-memory DB fixture and mock EPUB fixtures.
 """
@@ -74,23 +73,23 @@ class TestPlanDrops:
     def test_always_posts_at_least_one_chapter(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
         adapter = _mock_adapter(1, epub_path)
-        # Budget of 1 word — still should post 1 chapter
-        plans = _plan_drops([book], adapter, budget=1, tolerance=0)
+        # Budget of 1 word — the oversized first chapter still posts whole
+        plans = _plan_drops([book], adapter, budget=1)
         assert len(plans) == 1
         assert len(plans[0].chapters) >= 1
 
     def test_packs_multiple_chapters_within_budget(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
         adapter = _mock_adapter(1, epub_path)
-        # Each chapter is ~500 words; budget 1500 + tolerance 200 → fits 3 chapters
-        plans = _plan_drops([book], adapter, budget=1500, tolerance=200)
+        # Each chapter is ~500 words; budget 1500 comfortably fits multiple chapters
+        plans = _plan_drops([book], adapter, budget=1500)
         assert plans[0].word_count >= 1000
 
     def test_respects_cursor(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
         book.cursor_chapter_index = 3  # start at chapter 4
         adapter = _mock_adapter(1, epub_path)
-        plans = _plan_drops([book], adapter, budget=99999, tolerance=0)
+        plans = _plan_drops([book], adapter, budget=99999)
         # Only chapters 4 and 5 remain (indices 3 and 4)
         assert len(plans[0].chapters) == 2
 
@@ -141,8 +140,8 @@ class TestGlobalRoundRobin:
     def test_high_budget_allows_extra_chapters(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
         adapter = _mock_adapter(1, epub_path)
-        # Budget large enough that phase 2 can add more chapters
-        plans = _plan_drops([book], adapter, budget=9999, tolerance=1000)
+        # Budget large enough to pack more than one chapter
+        plans = _plan_drops([book], adapter, budget=9999)
         assert plans[0].word_count > 500  # more than one chapter's worth
 
     def test_minutes_budget_mode(self, in_memory_db):
@@ -202,7 +201,6 @@ class TestDropCycle:
         from app.models import Config
         cfg = in_memory_db.get(Config, 1)
         cfg.global_budget_words = 100
-        cfg.overshoot_tolerance = 0
         for i in range(1, 4):
             _make_book(
                 in_memory_db, calibre_id=i, title=f"Book {i}",
@@ -225,7 +223,6 @@ class TestDropCycle:
         from app.models import Config
         cfg = in_memory_db.get(Config, 1)
         cfg.global_budget_words = 100
-        cfg.overshoot_tolerance = 0
         book1 = _make_book(in_memory_db, calibre_id=1, status=BookStatus.active)
         book1.cursor_chapter_index = 4  # last chapter
         book2 = _make_book(in_memory_db, calibre_id=2, status=BookStatus.queued, queue_position=2)
@@ -339,7 +336,6 @@ class TestChannels:
     def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
         from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
-        cfg.overshoot_tolerance = 0
         ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget_words=100)
         in_memory_db.add(ch)
         in_memory_db.flush()

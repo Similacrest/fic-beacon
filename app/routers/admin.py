@@ -249,7 +249,6 @@ def save_config(
     global_budget_minutes: int = Form(...),
     budget_mode: str = Form(...),
     wpm: int = Form(...),
-    overshoot_tolerance: int = Form(...),
     parallel_slots: int = Form(...),
     cadence_cron: str = Form(...),
     thumbs_down_drop_threshold: int = Form(...),
@@ -262,7 +261,6 @@ def save_config(
     cfg.global_budget_minutes = global_budget_minutes
     cfg.budget_mode = budget_mode  # type: ignore[assignment]
     cfg.wpm = wpm
-    cfg.overshoot_tolerance = overshoot_tolerance
     cfg.parallel_slots = parallel_slots
     cfg.cadence_cron = cadence_cron
     cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold

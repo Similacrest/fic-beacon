@@ -42,6 +42,9 @@ the user's real ongoing serials. Landing incrementally:
 - **Superseded v2 "ongoing balancing"** — the `ongoing_feed` table, `target_total_words` config,
   and the budget-subtraction-by-word-count logic. Ongoings are now syndicated as in-budget
   sources instead of merely subtracted.
+- **`overshoot_tolerance` config** — a leftover of the old round-robin planner. The stochastic
+  budget handles overshoot via the signed `budget_credit` carry-over, so the knob no longer did
+  anything; dropped from the `config` table and the admin config form.
 
 ## [0.1.0] — 2026-06-21
 

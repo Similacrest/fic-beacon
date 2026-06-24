@@ -42,7 +42,6 @@ def _ensure_config(session: Session) -> None:
                 global_budget_minutes=settings.default_global_budget_minutes,
                 budget_mode=BudgetMode(settings.default_budget_mode),
                 wpm=settings.default_wpm,
-                overshoot_tolerance=settings.default_overshoot_tolerance,
                 parallel_slots=settings.default_parallel_slots,
                 cadence_cron=settings.default_cadence_cron,
                 thumbs_down_drop_threshold=settings.default_thumbs_down_drop_threshold,

@@ -168,7 +168,6 @@ class Config(Base):
         Enum(BudgetMode), nullable=False, default=BudgetMode.words
     )
     wpm: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
-    overshoot_tolerance: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
     parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 8 * * *")
     thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)

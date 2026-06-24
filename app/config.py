@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     default_global_budget_minutes: int = 20
     default_budget_mode: str = "words"  # words | minutes
     default_wpm: int = 250
-    default_overshoot_tolerance: int = 1000
     default_parallel_slots: int = 2
     default_cadence_cron: str = "0 8 * * *"  # 08:00 daily
     default_thumbs_down_drop_threshold: int = 3

@@ -97,7 +97,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
 
-    for channel, parallel_slots, base_budget, tolerance in _drop_groups(session, cfg):
+    for channel, parallel_slots, base_budget in _drop_groups(session, cfg):
         channel_id = channel.id if channel else None
         credit_holder = channel if channel else cfg
 
@@ -114,7 +114,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         available = base_budget + credit_holder.budget_credit
         effective = max(0, int(available))
 
-        plans = _plan_drops(active_books, adapter, effective, tolerance)
+        plans = _plan_drops(active_books, adapter, effective)
         used = 0
         for plan in plans:
             drop = _materialise(session, plan, channel_id)
@@ -135,13 +135,13 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
 
 
 def _drop_groups(session: Session, cfg: Config):
-    """Yield (channel|None, parallel_slots, budget, tolerance) for every group.
+    """Yield (channel|None, parallel_slots, budget) for every group.
 
     The default group (None) covers unchanneled books and uses the Config budget.
     """
-    yield None, cfg.parallel_slots, _compute_budget(session, cfg), cfg.overshoot_tolerance
+    yield None, cfg.parallel_slots, _effective_budget(cfg)
     for channel in session.query(Channel).order_by(Channel.queue_order, Channel.id).all():
-        yield channel, channel.parallel_slots, _channel_budget(channel, cfg), cfg.overshoot_tolerance
+        yield channel, channel.parallel_slots, _channel_budget(channel, cfg)
 
 
 def _channel_budget(channel: Channel, cfg: Config) -> int:
@@ -171,10 +171,8 @@ def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop 
     if not units:
         return None
     plan = PlannedDrop(book=book, chapters=[units[0]], word_count=units[0].word_count)
-    channel_id = book.channel_id
-    drop = _materialise(session, plan, channel_id)
+    drop = _materialise(session, plan, book.channel_id)  # sets feed_key from book.kind/slot
     if drop:
-        drop.feed_key = "ongoing" if book.kind == BookKind.ongoing else str(book.slot_index or 1)
         _advance_cursor(session, plan, adapter, cfg)
     session.flush()
     return drop
@@ -191,26 +189,20 @@ def _get_config(session: Session) -> Config:
 
 
 def _effective_budget(cfg: Config) -> int:
-    """Base budget from config (words or minutes), before ongoing-feed adjustment."""
+    """Base drop budget for the default (unchanneled) group, in words.
+
+    Ongoing serials are syndicated as in-budget sources (they compete in the weighted
+    stochastic budget like EPUBs), so there is no word-count subtraction.
+    """
     if cfg.budget_mode == BudgetMode.minutes:
         return cfg.global_budget_minutes * cfg.wpm
     return cfg.global_budget_words
-
-
-def _compute_budget(session: Session, cfg: Config) -> int:
-    """Base drop budget for the default (unchanneled) group.
-
-    Ongoing serials are now syndicated as in-budget sources (they compete in the
-    weighted stochastic budget like EPUBs), so there is no word-count subtraction.
-    """
-    return _effective_budget(cfg)
 
 
 def _plan_drops(
     active_books: list[Book],
     adapter: CalibreAdapter,
     budget: int,
-    tolerance: int = 0,  # unused; kept for signature compatibility (stochastic handles overshoot)
 ) -> list[PlannedDrop]:
     """Pure-stochastic selection over whole units (chapters), never splitting.
 

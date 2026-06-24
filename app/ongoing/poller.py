@@ -92,8 +92,3 @@ def _entry_published(entry) -> datetime | None:
         return datetime(*t[:6], tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
-
-
-def _entry_word_count(entry) -> int:
-    """Word count of an entry's content (kept for callers/tests)."""
-    return _count_words(_entry_content(entry))

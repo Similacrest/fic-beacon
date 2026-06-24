@@ -13,7 +13,9 @@ import pytest
 from feedparser.util import FeedParserDict
 
 from app.ongoing.opml import parse_opml
-from app.ongoing.poller import poll_all_feeds, poll_source, _entry_published, _entry_word_count
+from app.ongoing.poller import (
+    poll_all_feeds, poll_source, _entry_published, _entry_content, _count_words,
+)
 from app.models import Book, BookKind, BookStatus, OngoingEntry
 
 
@@ -89,7 +91,7 @@ class TestPollerHelpers:
     def test_entry_word_count_from_content(self):
         entry = MagicMock()
         entry.content = [{"value": "<p>" + " ".join(["word"] * 200) + "</p>"}]
-        assert _entry_word_count(entry) == 200
+        assert _count_words(_entry_content(entry)) == 200
 
 
 # ── Buffering ─────────────────────────────────────────────────────────────────
