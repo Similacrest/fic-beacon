@@ -93,24 +93,24 @@
   These sources were imported without a channel assignment. Select and assign before they appear in drops.
 </p>
 <form method="post" action="/admin/books/batch-set-channel" id="inbox-assign-form">
-<div style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap; margin-bottom:.6em">
-  <input type="checkbox" id="inbox-check-all" title="Select all">
-  <select name="channel_id" style="width:auto">
-    {% for ch in channels %}
-    <option value="{{ ch.id }}">{{ ch.name }}</option>
-    {% endfor %}
-  </select>
-  <button class="btn btn-primary" type="submit" style="font-size:.85em; padding:.2em .6em"
-          onclick="return batchConfirm('inbox-assign-form', 'Assign selected to channel?')">
-    Assign selected
-  </button>
-  <button class="btn btn-danger" type="submit"
-          formaction="/admin/books/batch-drop"
-          style="font-size:.85em; padding:.2em .6em"
-          onclick="return batchConfirm('inbox-assign-form', 'Drop selected inbox items?')">
-    Drop selected
-  </button>
-</div>
+  <div style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap; margin-bottom:.6em">
+    <input type="checkbox" id="inbox-check-all" title="Select all">
+    <select name="channel_id" style="width:auto">
+      {% for ch in channels %}
+      <option value="{{ ch.id }}">{{ ch.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn-primary" type="submit" style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchConfirm('inbox-check', 'Assign selected to channel?')">
+      Assign selected
+    </button>
+    <button class="btn btn-danger" type="submit" formaction="/admin/ongoing/batch-delete"
+            style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchConfirm('inbox-check', 'Remove selected from inbox entirely?')">
+      Remove selected
+    </button>
+  </div>
+</form>
 <table>
   <thead><tr>
     <th></th><th>Title</th><th>Feed URL</th><th>Actions</th>
@@ -120,7 +120,7 @@
   <tr>
     <td>
       <input type="checkbox" name="book_ids" value="{{ book.id }}"
-             class="inbox-check" id="ic-{{ book.id }}">
+             class="inbox-check" id="ic-{{ book.id }}" form="inbox-assign-form">
     </td>
     <td><label for="ic-{{ book.id }}" style="cursor:pointer; font-weight:normal">{{ book.title }}</label></td>
     <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
@@ -136,18 +136,27 @@
   {% endfor %}
   </tbody>
 </table>
-</form>
 {% endif %}
 
 <h2>Active ({{ active|length }})</h2>
 {% if active %}
+<form method="post" action="/admin/books/batch-drop" id="active-batch-form">
+  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+    <input type="checkbox" id="active-check-all" title="Select all">
+    <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchConfirm('active-check', 'Drop selected active books?')">
+      Drop selected
+    </button>
+  </div>
+</form>
 <table>
   <thead><tr>
-    <th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>👍</th><th>👎</th><th>Weight</th><th>Actions</th>
+    <th></th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>👍</th><th>👎</th><th>Weight</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for book in active %}
   <tr>
+    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="active-check" form="active-batch-form"></td>
     <td>
       {{ book.title }}
       {% if book.kind.value == 'ongoing' %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em">ongoing</span>{% endif %}
@@ -174,13 +183,14 @@
 <h2>Queue ({{ queued|length }})</h2>
 {% if queued %}
 <form method="post" action="/admin/books/batch-drop" id="queue-batch-form">
-<div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
-  <input type="checkbox" id="queue-check-all" title="Select all">
-  <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
-          onclick="return batchConfirm('queue-batch-form', 'Drop selected queued items?')">
-    Drop selected
-  </button>
-</div>
+  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+    <input type="checkbox" id="queue-check-all" title="Select all">
+    <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchConfirm('queue-check', 'Drop selected queued items?')">
+      Drop selected
+    </button>
+  </div>
+</form>
 <table>
   <thead><tr>
     <th></th><th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>Weight</th><th>Source</th><th>Actions</th>
@@ -188,7 +198,7 @@
   <tbody>
   {% for book in queued %}
   <tr>
-    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="queue-check"></td>
+    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="queue-check" form="queue-batch-form"></td>
     <td>{{ loop.index }}</td>
     <td>
       {{ book.title }}
@@ -216,7 +226,6 @@
   {% endfor %}
   </tbody>
 </table>
-</form>
 {% else %}
 <p style="color:#888">Queue is empty.</p>
 {% endif %}
@@ -269,10 +278,8 @@
 {% endif %}
 
 <script>
-function batchConfirm(formId, msg) {
-  const form = document.getElementById(formId);
-  if (!form) return false;
-  const checked = form.querySelectorAll('input[name=book_ids]:checked');
+function batchConfirm(checkClass, msg) {
+  const checked = document.querySelectorAll('.' + checkClass + ':checked');
   if (!checked.length) return false;
   return confirm(msg);
 }
@@ -284,6 +291,7 @@ function wireSelectAll(allId, checkClass) {
   });
 }
 wireSelectAll('inbox-check-all', 'inbox-check');
+wireSelectAll('active-check-all', 'active-check');
 wireSelectAll('queue-check-all', 'queue-check');
 </script>
 {% endblock %}

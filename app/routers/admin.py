@@ -34,7 +34,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     # Sources in the Inbox channel (unassigned after OPML import).
     inbox_channel = db.query(Channel).filter(Channel.slug == INBOX_CHANNEL_SLUG).first()
     inbox_books = (
-        db.query(Book).filter(Book.channel_id == inbox_channel.id).all()
+        db.query(Book)
+        .filter(Book.channel_id == inbox_channel.id, Book.status != BookStatus.dropped)
+        .all()
         if inbox_channel else []
     )
     cfg = db.get(Config, 1)

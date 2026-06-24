@@ -158,6 +158,25 @@ def delete_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResp
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
 
+@router.post("/batch-delete")
+def batch_delete_sources(
+    book_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    for book_id in book_ids:
+        source = db.get(Book, book_id)
+        if source and source.kind == BookKind.ongoing:
+            drop_ids = [d.id for d in db.query(Drop.id).filter(Drop.book_id == source.id)]
+            if drop_ids:
+                db.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
+                    synchronize_session=False
+                )
+                db.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
+            db.delete(source)
+    db.commit()
+    return RedirectResponse(url="/admin/ongoing/", status_code=303)
+
+
 @router.post("/poll-now")
 def poll_now(db: Session = Depends(get_db)) -> RedirectResponse:
     from app.ongoing.poller import poll_all_feeds
