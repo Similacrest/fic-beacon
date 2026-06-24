@@ -79,7 +79,17 @@ def poll_all_feeds(session: Session) -> int:
     total_new = 0
     for source in sources:
         try:
-            total_new += poll_source(session, source)
+            never_polled = (
+                session.query(OngoingEntry.id)
+                .filter(OngoingEntry.source_id == source.id)
+                .first() is None
+            )
+            if never_polled:
+                # First poll: mark the whole archive as already-read so the reader
+                # only receives chapters released after they added the source.
+                seed_source_as_read(session, source)
+            else:
+                total_new += poll_source(session, source)
         except Exception:  # never let one bad feed break the cycle
             logger.exception(
                 "Failed to poll ongoing source '%s' (%s)", source.title, source.feed_url

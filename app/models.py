@@ -80,6 +80,9 @@ class Book(Base):
     )
     # Ongoing serial RSS feed (kind=ongoing only).
     feed_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Calibre book ID this ongoing source corresponds to (set when added from Library).
+    # Not a FK — the Calibre book may or may not be imported into fic-beacon as well.
+    linked_calibre_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     author: Mapped[str] = mapped_column(String, nullable=False, default="Unknown")
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)

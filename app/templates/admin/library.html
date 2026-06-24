@@ -10,10 +10,15 @@
   <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
 </p>
 
-<div style="margin-bottom:1em">
+<div style="margin-bottom:1em; display:flex; gap:1em; align-items:center; flex-wrap:wrap">
   <input type="text" id="filter" placeholder="🔍 Filter by title or author…"
          style="max-width:360px" oninput="filterBooks()">
-  <span id="filter-count" style="color:#888; font-size:.85em; margin-left:.5em"></span>
+  <span id="filter-count" style="color:#888; font-size:.85em"></span>
+  <span id="page-controls" style="display:flex; gap:.4em; align-items:center; font-size:.9em">
+    <button type="button" id="prev-page" onclick="changePage(-1)" class="btn" style="padding:.2em .6em">‹ Prev</button>
+    <span id="page-label" style="color:#555"></span>
+    <button type="button" id="next-page" onclick="changePage(1)" class="btn" style="padding:.2em .6em">Next ›</button>
+  </span>
 </div>
 
 <form method="post" action="/admin/import" id="import-form">
@@ -58,12 +63,13 @@
       </td>
       <td style="white-space:nowrap">
         {% if feed %}
-          {% if feed in existing_feeds %}
+          {% if feed in existing_feeds or book.calibre_id in linked_calibre_ids %}
             <span style="color:#888; font-size:.8em">already tracked</span>
           {% else %}
             <form method="post" action="/admin/ongoing/add" style="display:inline">
               <input type="hidden" name="feed_url" value="{{ feed }}">
               <input type="hidden" name="title" value="{{ book.title }}">
+              <input type="hidden" name="linked_calibre_id" value="{{ book.calibre_id }}">
               <button class="btn" style="font-size:.8em; padding:.15em .5em"
                       title="{{ feed }}">+ Add ongoing</button>
             </form>
@@ -79,24 +85,57 @@
 </form>
 
 <script>
+  const PAGE_SIZE = 50;
+  let currentPage = 0;
+  const allRows = () => Array.from(document.querySelectorAll('.book-row'));
+
+  function matchRows(q) {
+    return allRows().filter(r => !q || r.dataset.search.includes(q));
+  }
+
+  function showPage(page) {
+    const q = document.getElementById('filter').value.trim().toLowerCase();
+    const filtering = q.length > 0;
+    const rows = allRows();
+    const matched = matchRows(q);
+    const pages = filtering ? 1 : Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    currentPage = Math.max(0, Math.min(page, pages - 1));
+
+    rows.forEach(r => { r.style.display = 'none'; });
+    if (filtering) {
+      matched.forEach(r => { r.style.display = ''; });
+    } else {
+      rows.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
+          .forEach(r => { r.style.display = ''; });
+    }
+
+    const ctrl = document.getElementById('page-controls');
+    const label = document.getElementById('page-label');
+    const prev = document.getElementById('prev-page');
+    const next = document.getElementById('next-page');
+    if (filtering) {
+      ctrl.style.display = 'none';
+      document.getElementById('filter-count').textContent =
+        matched.length + ' match' + (matched.length === 1 ? '' : 'es');
+    } else {
+      ctrl.style.display = 'flex';
+      label.textContent = `Page ${currentPage + 1} of ${pages}`;
+      prev.disabled = currentPage === 0;
+      next.disabled = currentPage >= pages - 1;
+      document.getElementById('filter-count').textContent = '';
+    }
+  }
+
+  function changePage(delta) { showPage(currentPage + delta); }
+
+  function filterBooks() { showPage(0); }
+
   function visibleRows() {
-    return Array.from(document.querySelectorAll('.book-row'))
-      .filter(r => r.style.display !== 'none');
+    return allRows().filter(r => r.style.display !== 'none');
   }
   function updateSelectedCount() {
     const n = document.querySelectorAll('.row-check:checked').length;
     document.getElementById('selected-count').textContent = n ? n + ' selected' : '';
-  }
-  function filterBooks() {
-    const q = document.getElementById('filter').value.trim().toLowerCase();
-    let shown = 0;
-    document.querySelectorAll('.book-row').forEach(row => {
-      const match = !q || row.dataset.search.includes(q);
-      row.style.display = match ? '' : 'none';
-      if (match) shown++;
-    });
-    document.getElementById('filter-count').textContent =
-      q ? shown + ' match' + (shown === 1 ? '' : 'es') : '';
   }
   document.getElementById('check-all').addEventListener('change', function() {
     visibleRows().forEach(row => {
@@ -108,6 +147,7 @@
   document.querySelectorAll('.row-check').forEach(cb =>
     cb.addEventListener('change', updateSelectedCount)
   );
+  showPage(0);
 </script>
 {% else %}
 <p style="color:#888">All EPUB books in your Calibre library are already imported.</p>

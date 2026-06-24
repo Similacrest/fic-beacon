@@ -65,18 +65,20 @@ def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     calibre_books = adapter.list_books()
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     existing_feeds = {b.feed_url for b in db.query(Book.feed_url).filter(Book.feed_url.isnot(None)).all()}
+    linked_calibre_ids = {
+        b.linked_calibre_id
+        for b in db.query(Book.linked_calibre_id).filter(Book.linked_calibre_id.isnot(None)).all()
+    }
     importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
     channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
-    # Pre-compute inferred feed URLs for the template.
-    inferred_feeds = {
-        b.calibre_id: infer_feed_url(b.source_url) for b in importable
-    }
+    inferred_feeds = {b.calibre_id: infer_feed_url(b.source_url) for b in importable}
     return templates.TemplateResponse(
         request, "admin/library.html", {
             "books": importable,
             "channels": channels,
             "inferred_feeds": inferred_feeds,
             "existing_feeds": existing_feeds,
+            "linked_calibre_ids": linked_calibre_ids,
         }
     )
 
@@ -315,6 +317,22 @@ def set_weight(
     if book is not None:
         book.quota_weight = max(0.1, min(10.0, round(weight, 3)))
         db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/books/batch-drop")
+def batch_drop(
+    book_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    from app.planner.planner import _refill_book_channel
+    for book_id in book_ids:
+        book = db.get(Book, book_id)
+        if book and book.status not in (BookStatus.completed, BookStatus.dropped):
+            book.status = BookStatus.dropped
+            book.slot_index = None
+            _refill_book_channel(db, book)
+    db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
 

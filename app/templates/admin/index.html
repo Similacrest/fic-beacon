@@ -93,13 +93,22 @@
   These sources were imported without a channel assignment. Assign each one before it
   appears in drops.
 </p>
+<form method="post" action="/admin/books/batch-drop" id="inbox-batch-form">
+<div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+  <input type="checkbox" id="inbox-check-all" title="Select all">
+  <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
+          onclick="return batchConfirm('inbox-batch-form', 'Drop selected inbox items?')">
+    Drop selected
+  </button>
+</div>
 <table>
   <thead><tr>
-    <th>Title</th><th>Feed URL</th><th>Assign to channel</th><th>Actions</th>
+    <th></th><th>Title</th><th>Feed URL</th><th>Assign to channel</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for book in inbox_books %}
   <tr>
+    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="inbox-check"></td>
     <td>{{ book.title }}</td>
     <td style="font-size:.8em; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
       {% if book.feed_url %}<a href="{{ book.feed_url }}" target="_blank">{{ book.feed_url }}</a>{% else %}—{% endif %}
@@ -115,6 +124,7 @@
   {% endfor %}
   </tbody>
 </table>
+</form>
 {% endif %}
 
 <h2>Active ({{ active|length }})</h2>
@@ -151,13 +161,22 @@
 
 <h2>Queue ({{ queued|length }})</h2>
 {% if queued %}
+<form method="post" action="/admin/books/batch-drop" id="queue-batch-form">
+<div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+  <input type="checkbox" id="queue-check-all" title="Select all">
+  <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
+          onclick="return batchConfirm('queue-batch-form', 'Drop selected queued items?')">
+    Drop selected
+  </button>
+</div>
 <table>
   <thead><tr>
-    <th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>Weight</th><th>Source</th><th>Actions</th>
+    <th></th><th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>Weight</th><th>Source</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for book in queued %}
   <tr>
+    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="queue-check"></td>
     <td>{{ loop.index }}</td>
     <td>
       {{ book.title }}
@@ -185,6 +204,7 @@
   {% endfor %}
   </tbody>
 </table>
+</form>
 {% else %}
 <p style="color:#888">Queue is empty.</p>
 {% endif %}
@@ -236,4 +256,22 @@
 </table>
 {% endif %}
 
+<script>
+function batchConfirm(formId, msg) {
+  const form = document.getElementById(formId);
+  if (!form) return false;
+  const checked = form.querySelectorAll('input[name=book_ids]:checked');
+  if (!checked.length) return false;
+  return confirm(msg);
+}
+function wireSelectAll(allId, checkClass) {
+  const all = document.getElementById(allId);
+  if (!all) return;
+  all.addEventListener('change', () => {
+    document.querySelectorAll('.' + checkClass).forEach(cb => cb.checked = all.checked);
+  });
+}
+wireSelectAll('inbox-check-all', 'inbox-check');
+wireSelectAll('queue-check-all', 'queue-check');
+</script>
 {% endblock %}

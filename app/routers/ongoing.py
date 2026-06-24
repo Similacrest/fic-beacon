@@ -26,7 +26,12 @@ templates.env.globals["version"] = __version__
 
 
 def _add_source(
-    db: Session, title: str, feed_url: str, channel_id: int, assume_read: bool = True
+    db: Session,
+    title: str,
+    feed_url: str,
+    channel_id: int,
+    assume_read: bool = True,
+    linked_calibre_id: int | None = None,
 ) -> Book | None:
     """Create an ongoing source if its feed_url isn't already registered.
 
@@ -48,6 +53,7 @@ def _add_source(
         status=BookStatus.active,
         queue_position=max_pos + 1,
         channel_id=channel_id,
+        linked_calibre_id=linked_calibre_id,
     )
     db.add(book)
     db.flush()
@@ -94,11 +100,12 @@ def add_feed(
     feed_url: str = Form(...),
     title: str = Form(""),
     channel_id: int | None = Form(None),
+    linked_calibre_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     from app.database import ensure_default_channel
     target_id = channel_id or ensure_default_channel(db).id
-    _add_source(db, title, feed_url, target_id, assume_read=True)
+    _add_source(db, title, feed_url, target_id, assume_read=True, linked_calibre_id=linked_calibre_id)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -115,8 +122,9 @@ async def import_opml(
         raise HTTPException(status_code=400, detail=str(exc))
     # OPML imports land in the hidden Inbox — user assigns them to real channels manually.
     target_id = ensure_inbox_channel(db).id
+    # Don't poll at upload time — entries will be assumed-read on first Poll Now.
     added = sum(
-        1 for title, url in entries if _add_source(db, title, url, target_id, assume_read=True)
+        1 for title, url in entries if _add_source(db, title, url, target_id, assume_read=False)
     )
     db.commit()
     return RedirectResponse(url=f"/admin/ongoing/?imported={added}", status_code=303)
