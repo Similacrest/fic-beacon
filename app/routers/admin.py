@@ -100,7 +100,7 @@ def do_import(
     adapter = CalibreAdapter(settings.calibre_library_path)
     default_channel_id = ensure_default_channel(db).id
     channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
-    max_pos = db.query(Book.queue_position).order_by(Book.queue_position.desc()).scalar() or 0
+    max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     for cid in calibre_ids:
         cbook = adapter.get_book(cid)
         if cbook is None:
