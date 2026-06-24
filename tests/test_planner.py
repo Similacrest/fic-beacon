@@ -15,12 +15,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.models import Book, BookStatus, BudgetMode, Drop, FeedbackAction
+from app.models import Book, BookKind, BookStatus, BudgetMode, Drop, FeedbackAction
 from app.planner.planner import (
     run_drop_cycle,
     apply_feedback,
     _plan_drops,
-    _fill_empty_slots,
+    _assign_slots,
     _channel_budget,
 )
 from app.epub.chapterizer import Chapter
@@ -380,6 +380,121 @@ class TestChannels:
         assert len(drops) >= 1
         assert drops[0].channel_id == general.id
         assert drops[0].feed_key == "1"
+
+
+class TestAssignSlots:
+    """Tests for the _assign_slots slot assignment / load-balancing logic."""
+
+    def _make_ongoing(self, db, title: str, channel_id: int,
+                      slot_index: int | None = None) -> Book:
+        from sqlalchemy import func
+        max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
+        book = Book(
+            kind=BookKind.ongoing,
+            feed_url=f"https://example.com/{title}.rss",
+            title=title,
+            author="Author",
+            status=BookStatus.active,
+            queue_position=max_pos + 1,
+            channel_id=channel_id,
+            slot_index=slot_index,
+        )
+        db.add(book)
+        db.flush()
+        return book
+
+    def _make_channel(self, db, parallel_slots: int = 3) -> "Channel":
+        from app.models import Channel
+        ch = Channel(name=f"Ch{parallel_slots}", slug=f"ch{id(parallel_slots)}",
+                     parallel_slots=parallel_slots, budget=5000)
+        db.add(ch)
+        db.flush()
+        return ch
+
+    def test_ongoings_get_valid_slot_assigned(self, in_memory_db):
+        ch = self._make_channel(in_memory_db, parallel_slots=2)
+        for i in range(5):
+            self._make_ongoing(in_memory_db, f"Serial {i}", ch.id)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+
+        ongoings = in_memory_db.query(Book).filter(Book.channel_id == ch.id).all()
+        for o in ongoings:
+            assert o.slot_index in (1, 2), f"{o.title} got slot {o.slot_index}"
+            assert o.status == BookStatus.active  # ongoings never demoted to queued
+
+    def test_ongoings_load_balanced_across_slots(self, in_memory_db):
+        ch = self._make_channel(in_memory_db, parallel_slots=3)
+        for i in range(9):
+            self._make_ongoing(in_memory_db, f"Serial {i}", ch.id)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+
+        counts = {1: 0, 2: 0, 3: 0}
+        for o in in_memory_db.query(Book).filter(Book.channel_id == ch.id).all():
+            counts[o.slot_index] += 1
+        # 9 ongoings across 3 slots → exactly 3 each
+        assert counts == {1: 3, 2: 3, 3: 3}
+
+    def test_ongoings_with_out_of_range_slots_reassigned(self, in_memory_db):
+        """Ongoings with slot_index beyond parallel_slots (e.g. from old code) get clamped."""
+        ch = self._make_channel(in_memory_db, parallel_slots=3)
+        o = self._make_ongoing(in_memory_db, "Serial", ch.id, slot_index=12)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+
+        # Check in-memory state (no refresh — _assign_slots updates the object directly).
+        assert 1 <= o.slot_index <= 3
+
+    def test_ongoings_sticky_valid_slot_kept(self, in_memory_db):
+        ch = self._make_channel(in_memory_db, parallel_slots=3)
+        o = self._make_ongoing(in_memory_db, "Serial", ch.id, slot_index=2)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+        in_memory_db.refresh(o)
+
+        assert o.slot_index == 2  # kept sticky
+
+    def test_epub_cap_demotes_excess_to_queued(self, in_memory_db):
+        ch = self._make_channel(in_memory_db, parallel_slots=2)
+        books = []
+        for i in range(4):
+            b = _make_book(in_memory_db, calibre_id=i + 1, title=f"EPUB {i}",
+                           status=BookStatus.active, queue_position=i + 1,
+                           channel_id=ch.id)
+            books.append(b)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+
+        active = [b for b in books if b.status == BookStatus.active]
+        queued = [b for b in books if b.status == BookStatus.queued]
+        assert len(active) == 2
+        assert len(queued) == 2
+        assert sorted(b.slot_index for b in active) == [1, 2]
+        for b in queued:
+            assert b.slot_index is None
+
+    def test_epub_and_ongoing_share_slot(self, in_memory_db, epub_path):
+        """A slot's feed carries both an EPUB and the ongoings pinned to it."""
+        ch = self._make_channel(in_memory_db, parallel_slots=2)
+        epub = _make_book(in_memory_db, calibre_id=1, title="EPUB",
+                          status=BookStatus.queued, queue_position=1,
+                          channel_id=ch.id)
+        ongoing = self._make_ongoing(in_memory_db, "Serial", ch.id)
+        in_memory_db.flush()
+
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+
+        in_memory_db.refresh(epub)
+        in_memory_db.refresh(ongoing)
+        assert epub.status == BookStatus.active
+        assert 1 <= epub.slot_index <= 2
+        assert 1 <= ongoing.slot_index <= 2
 
 
 class TestStochasticBudget:

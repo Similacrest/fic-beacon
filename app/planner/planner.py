@@ -25,6 +25,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter, CalibreBook
@@ -106,8 +107,9 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     for channel in channels:
         base_budget = _channel_budget(channel, cfg)
 
-        # Promote queued books into open slots *first* (fresh imports start 'queued').
-        _fill_empty_slots(session, channel.parallel_slots, channel.id)
+        # Assign slots first: promote queued EPUBs and pin ongoings (fresh imports start
+        # 'queued'), so every active source's drops land in the right slot's feed.
+        _assign_slots(session, channel.parallel_slots, channel.id)
         session.flush()
 
         active_books = _active_books_in(session, channel.id)
@@ -133,7 +135,8 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         leftover = available - used
         channel.budget_credit = max(-base_budget, min(base_budget, leftover))
 
-        _fill_empty_slots(session, channel.parallel_slots, channel.id)
+        # Re-fill slots freed by EPUBs that just completed this broadcast.
+        _assign_slots(session, channel.parallel_slots, channel.id)
 
     session.flush()
     return drops
@@ -340,40 +343,110 @@ def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
     return max(used, default=0) + 1  # over-subscribed; keep slots unique anyway
 
 
-def _fill_empty_slots(
+def _assign_slots(
     session: Session, parallel_slots: int, channel_id: int
 ) -> None:
-    """Promote queued books (EPUB or ongoing) into open numbered slots within one channel.
+    """Pin a channel's sources to feed slots (1..parallel_slots).
 
-    All sources share the same pool of numbered slots; ongoing serials occupy slots
-    just like EPUB books and their drops land in /feed/{slug}/{slot}. Also normalizes
-    slot assignment for active books that are missing a slot_index.
+    A slot is a feed *bucket*, not a single-book reservation:
+
+    - **EPUBs** stream one-at-a-time per slot. At most `parallel_slots` EPUBs are active
+      (one per slot); any extra active EPUBs are demoted back to `queued`, and queued
+      EPUBs are promoted into slots with no active EPUB.
+    - **Ongoings** are uncapped and never queued. Each active ongoing is load-balanced
+      onto a slot — the slot with the fewest pinned works, tie-broken by the fewest
+      chapters ever dropped there — so several ongoings may share a slot alongside the
+      slot's EPUB.
+
+    Assignment is sticky: a source with a valid, unique-where-required slot keeps it;
+    only sources lacking one are (re)placed. Drops carry the source's slot as feed_key.
     """
-    active = _active_books_in(session, channel_id)
-    used = {b.slot_index for b in active if b.slot_index is not None}
-    for book in active:
-        if book.slot_index is None:
-            book.slot_index = _lowest_free_slot(used, parallel_slots)
-            used.add(book.slot_index)
+    def _valid(idx: int | None) -> bool:
+        return idx is not None and 1 <= idx <= parallel_slots
 
-    slots_available = parallel_slots - len(active)
-    if slots_available <= 0:
-        return
-
-    queued = (
+    # ── EPUBs: one active per slot, capped at parallel_slots ───────────────────
+    active_epubs = (
         session.query(Book)
         .filter(
-            Book.status == BookStatus.queued,
             Book.channel_id == channel_id,
+            Book.kind == BookKind.epub,
+            Book.status == BookStatus.active,
         )
         .order_by(Book.queue_position)
-        .limit(slots_available)
         .all()
     )
-    for book in queued:
-        book.status = BookStatus.active
-        book.slot_index = _lowest_free_slot(used, parallel_slots)
-        used.add(book.slot_index)
+    # Demote any active EPUBs beyond the cap (e.g. after shrinking parallel_slots).
+    for book in active_epubs[parallel_slots:]:
+        book.status = BookStatus.queued
+        book.slot_index = None
+    active_epubs = active_epubs[:parallel_slots]
+
+    epub_slots: set[int] = set()
+    needs_slot: list[Book] = []
+    for book in active_epubs:
+        if _valid(book.slot_index) and book.slot_index not in epub_slots:
+            epub_slots.add(book.slot_index)
+        else:  # missing, duplicate, or out-of-range
+            book.slot_index = None
+            needs_slot.append(book)
+    for book in needs_slot:
+        book.slot_index = _lowest_free_slot(epub_slots, parallel_slots)
+        epub_slots.add(book.slot_index)
+
+    # Promote queued EPUBs into any slot with no active EPUB.
+    free = parallel_slots - len(active_epubs)
+    if free > 0:
+        queued = (
+            session.query(Book)
+            .filter(
+                Book.channel_id == channel_id,
+                Book.kind == BookKind.epub,
+                Book.status == BookStatus.queued,
+            )
+            .order_by(Book.queue_position)
+            .limit(free)
+            .all()
+        )
+        for book in queued:
+            book.status = BookStatus.active
+            book.slot_index = _lowest_free_slot(epub_slots, parallel_slots)
+            epub_slots.add(book.slot_index)
+
+    # ── Ongoings: uncapped, load-balanced across all slots (sticky) ────────────
+    ongoings = (
+        session.query(Book)
+        .filter(
+            Book.channel_id == channel_id,
+            Book.kind == BookKind.ongoing,
+            Book.status == BookStatus.active,
+        )
+        .all()
+    )
+    work_count: dict[int, int] = {s: 0 for s in range(1, parallel_slots + 1)}
+    for slot in epub_slots:
+        work_count[slot] += 1
+    for ongoing in ongoings:
+        if _valid(ongoing.slot_index):
+            work_count[ongoing.slot_index] += 1
+    # Chapters ever dropped into each slot (string feed_key), used as the tie-breaker.
+    chapter_freq = dict(
+        session.query(Drop.feed_key, func.count(Drop.id))
+        .filter(Drop.channel_id == channel_id)
+        .group_by(Drop.feed_key)
+        .all()
+    )
+
+    def _balanced_slot() -> int:
+        return min(
+            range(1, parallel_slots + 1),
+            key=lambda s: (work_count[s], int(chapter_freq.get(str(s), 0)), s),
+        )
+
+    for ongoing in ongoings:
+        if not _valid(ongoing.slot_index):
+            slot = _balanced_slot()
+            ongoing.slot_index = slot
+            work_count[slot] += 1
 
 
 def apply_feedback(
@@ -441,7 +514,7 @@ def apply_feedback(
 
 
 def _refill_book_channel(session: Session, book: Book) -> None:
-    """Promote the next queued book into the slot freed within this book's channel."""
+    """Promote the next queued EPUB into the slot freed within this book's channel."""
     channel = session.get(Channel, book.channel_id)
     if channel is not None:
-        _fill_empty_slots(session, channel.parallel_slots, book.channel_id)
+        _assign_slots(session, channel.parallel_slots, book.channel_id)

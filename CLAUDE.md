@@ -77,10 +77,24 @@ fic-beacon/
 - A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
   as is reading speed (`config.wpm`) and the 👎 drop threshold.
 - **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`.
-  Both EPUB backlog books and ongoing serials occupy numbered slots — there is no separate
-  "ongoing" feed. There is **no all-channels union feed** — subscribe to each channel/slot feed.
-- A slot shows one book at a time; when it completes (EPUB) or is dropped, the next queued book
-  inherits the slot and that feed keeps broadcasting.
+  There is **no all-channels union feed** — subscribe to each channel/slot feed.
+- **A slot is a feed *bucket*, not a single-book reservation.** Slot N's feed carries the *one*
+  EPUB currently streaming in that slot **plus** all ongoings pinned to that slot, interleaved.
+  Picture each slot as a TV channel: one "main show" (the backlog EPUB) running alongside several
+  serial shorts (ongoings).
+- **EPUBs stream one-at-a-time per slot.** At most **N EPUBs are active per channel** (one per
+  slot); extra EPUBs stay `queued`. A slot may legitimately hold **zero** EPUBs (e.g. 2 EPUBs,
+  3 slots). When an EPUB completes or is dropped its slot frees and the next queued EPUB rebalances
+  in (lowest free slot).
+- **Ongoings are never capped and never queued.** Every active ongoing is eligible each broadcast
+  (it self-gates on whether a chapter is buffered) and is pinned to a slot by load-balancing: the
+  slot with the fewest pinned works, tie-broken by the fewest chapters ever dropped into that slot.
+  Pinning is **sticky** — an ongoing keeps its slot across broadcasts.
+- **Selection is slot-agnostic** (see Drop Planner): the per-channel weighted budget pass decides
+  *which* chapters drop across the whole channel; slot assignment is a separate, sticky step that
+  only decides *which feed* each chosen chapter lands in.
+- Terminology: a scheduled **broadcast** is one drop cycle (it emits `drop` rows); **dropping**
+  (❌) means *cancelling a source*. Don't conflate the two.
 
 ### Sources & units (EPUB and ongoing unified)
 - A **source** is a `book` row. `kind=epub` (Calibre-backed) or `kind=ongoing` (RSS-backed,
@@ -90,14 +104,21 @@ fic-beacon/
   only at drop time. Unit shape: `{title, html, word_count, source_url}`.
 
 ### Drop Planner — per-channel stochastic budget
-- Runs per channel each cycle. Effective budget `B = channel.budget + channel.budget_credit`
-  (signed carry-over so the long-run mean tracks the budget).
-- Candidates = each active source's next unit, ordered by `quota_weight` (weighted-random).
-  Include a unit of size `w` with probability `p = clamp((B − used)/w, 0, 1)`, biased up by
-  weight/votes. Included → emit + advance cursor; excluded → **roll over** whole to a later cycle.
+- Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued EPUBs
+  into free slots up to `parallel_slots`, and pin every active ongoing to a balanced slot. *Then*
+  select content — selection is slot-agnostic.
+- Effective budget `B = channel.budget + channel.budget_credit` (signed carry-over so the long-run
+  mean tracks the budget).
+- Candidates = the next unit of **every active source in the channel**: each active EPUB's next
+  chapter (≤ N EPUBs) **plus** every ongoing that has a buffered chapter (uncapped). Ordered by
+  `quota_weight` (weighted-random). Include a unit of size `w` with probability
+  `p = clamp((B − used)/w, 0, 1)`, biased up by weight/votes. Included → emit + advance cursor;
+  excluded → **roll over** whole to a later broadcast.
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
   defer; a low-weight source may get nothing some cycles. **Never split a unit.**
 - After the pass: `budget_credit += channel.budget − used` (clamped to ±budget).
+- Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
+  that slot's feed regardless of which other sources also dropped this broadcast.
 - Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
 
 ### Permalinks (source-aware, per-chapter) — EPUB

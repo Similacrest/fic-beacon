@@ -2,9 +2,13 @@
 
 An ongoing source is a Book with kind=ongoing and an RSS feed_url, living in a channel.
 The poller buffers its new chapters (OngoingEntry, released=False); the planner releases
-them, batched, at drop time — weighted in the channel budget like EPUBs, and votable/
-droppable via the same feedback links. They occupy numbered slots like EPUB books and are
-served from the same per-slot feeds.
+them, batched, at broadcast time — weighted in the channel budget like EPUBs, and votable/
+droppable via the same feedback links.
+
+Ongoings are never queued and never capped: all active ongoings are eligible each broadcast
+(self-gating on whether a chapter is buffered). They are load-balanced (sticky) across the
+channel's numbered feed slots by _assign_slots — several ongoings may share a slot alongside
+the slot's active EPUB.
 """
 from __future__ import annotations
 

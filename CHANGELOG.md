@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-24
+
 Major redesign turning Fic-Beacon into a single weighted queue for the completed backlog **and**
 the user's real ongoing serials. Landing incrementally:
 
@@ -35,6 +37,13 @@ the user's real ongoing serials. Landing incrementally:
   recreate channels. (No in-place Alembic migration is shipped for this jump.)
 
 ### Changed
+- **Slots are feed buckets, not single-book reservations** — each numbered slot's feed now carries
+  the one EPUB streaming in that slot **plus** the ongoings pinned to it, interleaved. EPUBs are
+  capped at `parallel_slots` active per channel (one per slot; extras stay queued); **ongoings are
+  uncapped and never queued**, load-balanced (sticky) across slots by fewest pinned works, tie-break
+  fewest chapters ever dropped there. Fixes the bug where N ongoings consumed all slots and starved
+  the EPUB backlog (and where ongoings were spread one-per-slot past `parallel_slots`). Content
+  selection is unchanged and slot-agnostic; only slot *assignment* changed (`_assign_slots`).
 - **Genre-based channel routing** — channels match on the Calibre custom column
   `#genre_manual` (hierarchical, e.g. `Fantasy.Rational`) via a per-channel `genre_match`
   prefix (replaces the old `tag_match`). On import, books auto-route to the first matching
@@ -65,6 +74,10 @@ the user's real ongoing serials. Landing incrementally:
   budget handles overshoot via the signed `budget_credit` carry-over, so the knob no longer did
   anything; dropped from the `config` table and the admin config form.
 
+## [0.2.0] — 2026-06-23
+
+(Slot & ongoing-syndication iteration — see git log for details.)
+
 ## [0.1.0] — 2026-06-21
 
 ### Added
@@ -77,5 +90,8 @@ the user's real ongoing serials. Landing incrementally:
   configurable Calibre library path.
 - v2-designed (not built) ongoing-feed balancing scaffolding (later superseded — see Unreleased).
 
-[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Similacrest/fic-beacon/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Similacrest/fic-beacon/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Similacrest/fic-beacon/releases/tag/v0.1.0
 [0.1.0]: https://github.com/Similacrest/fic-beacon/releases/tag/v0.1.0

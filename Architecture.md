@@ -40,9 +40,10 @@ FastAPI + APScheduler + SQLAlchemy + SQLite, Jinja + HTMX.
 |---|---|
 | Calibre access | Read the library folder directly (mounted **read-only**); parse `metadata.db` (incl. **tags**) + EPUBs in place. No Calibre process. |
 | Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed (slug stays stable) from the admin UI. |
-| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`, occupied by both EPUB backlog and ongoing serials. No all-channels union feed — subscribe per channel/slot. |
+| Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`. A slot is a feed *bucket* — it carries the one EPUB streaming in that slot **plus** the ongoings pinned to it, interleaved. No all-channels union feed — subscribe per channel/slot. |
+| Slots & caps | **EPUBs stream one-at-a-time per slot** → at most `N = parallel_slots` active EPUBs per channel (extras stay queued; a slot may hold zero EPUBs). **Ongoings are uncapped**, never queued, and load-balanced (sticky) across the N slots. |
 | Sources | EPUB backlog books and ongoing serials are unified as **sources** (`book.kind`). Both are weighted, votable, droppable, and live in a channel. |
-| Ongoing serials | Polled hourly into a buffer; **released only at drop time**, competing in the channel's weighted budget like EPUBs. Content embedded from the RSS entry as-is (summary-only → "new chapter" notice + link). |
+| Ongoing serials | Polled hourly into a buffer; **released only at broadcast time**, competing in the channel's weighted budget like EPUBs. Content embedded from the RSS entry as-is (summary-only → "new chapter" notice + link). |
 | Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
 | Feedback | Four tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ❌ drop (super-down)**. up/down fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
@@ -138,11 +139,12 @@ C4Component
   `queue_order`.
 - **`book`** (a *source*) — `calibre_id?`, `kind` (`epub|ongoing`), `feed_url?`, `title`,
   `author`, `source_url?`, `total_chapters?`, `status` (`queued|active|completed|dropped`),
-  `channel_id` (**NOT NULL** — every source lives in a channel), `slot_index?`, `queue_position`,
+  `channel_id` (**NOT NULL** — every source lives in a channel), `slot_index?` (pinned feed slot;
+  unique per active EPUB, *shared* by the ongoings pinned to it), `queue_position`,
   `quota_weight`, `cursor_chapter_index`, `thumbs_up`, `thumbs_down`, `added_at`.
 - **`ongoing_entry`** (buffer) — `id`, `source_id`, `guid` (unique per source), `title`, `link`,
   `content_html`, `word_count`, `published_at`, `released` (bool), `drop_id?`.
-- **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"` | `"ongoing"`),
+- **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"`, = source's pinned slot),
   `created_at`, `published_at`, `word_count`, `chapter_start`, `chapter_end`, `chapter_titles`,
   `source_url?`, `content_html`, `feedback_token` (unguessable), `reader_slug`.
 - **`feedback_event`** — `id`, `token`, `book_id`, `drop_id`, `action`
@@ -154,15 +156,18 @@ C4Component
 
 ## 6. Core Flows
 
-### 6.1 Drop cycle (scheduled, per channel)
+### 6.1 Broadcast cycle (scheduled, per channel)
 1. Scheduler fires the Planner on `cadence_cron` (in `BEACON_TZ`).
-2. For each channel: promote queued books into open slots (stable `slot_index`); gather each
-   active source's **next unit** (EPUB chapter or oldest unreleased ongoing entry).
-3. Run the **stochastic pass**: `B = budget + budget_credit`; include each marginal whole unit
-   with `p = clamp((B − used)/w, 0, 1)`, weight-biased; excluded units roll over whole. Never
-   split. Then `budget_credit += budget − used`.
-4. Materialize a `drop` per source that emitted units; advance EPUB cursors / mark ongoing
-   entries released; complete+promote books that ran out.
+2. For each channel, **assign slots** (`_assign_slots`): promote queued EPUBs into free slots up to
+   `parallel_slots` (≤ N active EPUBs, one per slot; sticky), and pin every active ongoing to a
+   balanced slot (fewest pinned works, tie-break fewest chapters ever dropped there; sticky). Then
+   gather each active source's **next unit** — every active EPUB's next chapter plus every ongoing
+   with a buffered entry (ongoings are uncapped).
+3. Run the **stochastic pass** (slot-agnostic, channel-wide): `B = budget + budget_credit`; include
+   each marginal whole unit with `p = clamp((B − used)/w, 0, 1)`, weight-biased; excluded units roll
+   over whole. Never split. Then `budget_credit += budget − used`.
+4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance EPUB cursors /
+   mark ongoing entries released; complete+free EPUBs that ran out (next queued EPUB rebalances in).
 5. WebSub push fires for each affected slot-feed.
 
 ### 6.2 Ongoing buffering (hourly)
