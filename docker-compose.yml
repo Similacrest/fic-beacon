@@ -1,6 +1,9 @@
 services:
   beacon:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: "${VERSION:-dev}"
     restart: unless-stopped
     ports:
       - "${BEACON_PORT:-8000}:8000"
