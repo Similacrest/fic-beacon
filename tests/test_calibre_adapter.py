@@ -25,6 +25,8 @@ def _build_calibre_db(library_path: Path) -> None:
     CREATE TABLE books_authors_link (book INTEGER, author INTEGER);
     CREATE TABLE data (id INTEGER PRIMARY KEY, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);
     CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INTEGER, type TEXT, val TEXT);
+    CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
+    CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
 
     INSERT INTO books VALUES (1, 'Story One', 'story one', 'AuthorA/Story One (1)', 'AuthorA', '2026-01-01 10:00:00');
     INSERT INTO books VALUES (2, 'Story Two', 'story two', 'AuthorB/Story Two (2)', 'AuthorB', '2026-06-01 10:00:00');
@@ -36,6 +38,11 @@ def _build_calibre_db(library_path: Path) -> None:
     INSERT INTO data VALUES (2, 2, 'EPUB', 'Story Two - Author B', 0);
     -- Book 1 has a FanFicFare source URL
     INSERT INTO identifiers VALUES (1, 1, 'url', 'https://archiveofourown.org/works/99999');
+    -- Book 1 is tagged Fantasy.Epic + Complete; book 2 has no tags
+    INSERT INTO tags VALUES (1, 'Fantasy.Epic');
+    INSERT INTO tags VALUES (2, 'Complete');
+    INSERT INTO books_tags_link VALUES (1, 1, 1);
+    INSERT INTO books_tags_link VALUES (2, 1, 2);
     """)
     conn.commit()
     conn.close()
@@ -71,6 +78,12 @@ class TestListBooks:
         adapter = CalibreAdapter(library_path)
         books = {b.calibre_id: b for b in adapter.list_books()}
         assert books[2].source_url is None
+
+    def test_tags_present(self, library_path):
+        adapter = CalibreAdapter(library_path)
+        books = {b.calibre_id: b for b in adapter.list_books()}
+        assert books[1].tags == ["Complete", "Fantasy.Epic"]  # ordered by name
+        assert books[2].tags == []
 
     def test_ordered_by_last_modified_desc(self, library_path):
         adapter = CalibreAdapter(library_path)

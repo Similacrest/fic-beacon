@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     feed_secret: str = secrets.token_urlsafe(32)
 
+    # Scheduling timezone for drop/poll cron (e.g. "Europe/Tallinn").
+    # Unset → APScheduler uses the machine local tz, which is UTC in a stock container.
+    tz: str | None = None
+
     # Defaults (overridable from the config table in DB)
     default_global_budget_words: int = 5000
     default_global_budget_minutes: int = 20
@@ -25,9 +29,6 @@ class Settings(BaseSettings):
     default_parallel_slots: int = 2
     default_cadence_cron: str = "0 8 * * *"  # 08:00 daily
     default_thumbs_down_drop_threshold: int = 3
-
-    # v2 balancing: set > 0 to enable synthetic budget = target - ongoing_volume
-    default_target_total_words: int = 0  # 0 = disabled
 
     # Misc
     feed_item_limit: int = 50

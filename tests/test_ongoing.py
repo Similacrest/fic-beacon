@@ -1,21 +1,20 @@
-"""Tests for the v2 ongoing-feed balancing strategy.
+"""Tests for ongoing-serial syndication.
 
-Covers:
-  - OPML parsing (various formats)
-  - Feed polling word counting
-  - _compute_budget: without target, with target, with ongoing volume
+Covers OPML parsing, poller helpers, and the buffer-and-release pipeline (the poller
+buffers new entries; the planner releases them, weighted in the channel budget).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from feedparser.util import FeedParserDict
 
 from app.ongoing.opml import parse_opml
-from app.ongoing.poller import poll_feed, _entry_published, _entry_word_count
-from app.planner.planner import _compute_budget, _effective_budget
-from app.models import BudgetMode, Config, OngoingFeed
+from app.ongoing.poller import poll_all_feeds, poll_source, _entry_published, _entry_word_count
+from app.models import Book, BookKind, BookStatus, OngoingEntry
 
 
 # ── OPML parsing ─────────────────────────────────────────────────────────────
@@ -36,9 +35,6 @@ OPML_NESTED = b"""<?xml version="1.0"?>
       <outline text="Serial A" xmlUrl="https://a.example.com/feed"/>
       <outline text="Serial B" xmlUrl="https://b.example.com/feed"/>
     </outline>
-    <outline text="Non-fiction" title="Non-fiction">
-      <outline text="Blog C" xmlUrl="https://c.example.com/feed"/>
-    </outline>
   </body>
 </opml>"""
 
@@ -54,43 +50,35 @@ class TestOPMLParsing:
         assert ("Practical Villainy", "https://pv.example.com/feed") in results
 
     def test_nested_opml_flattened(self):
-        results = parse_opml(OPML_NESTED)
-        urls = [r[1] for r in results]
+        urls = [r[1] for r in parse_opml(OPML_NESTED)]
         assert "https://a.example.com/feed" in urls
         assert "https://b.example.com/feed" in urls
-        assert "https://c.example.com/feed" in urls
 
     def test_xmlurl_case_insensitive(self):
-        results = parse_opml(OPML_CASE_INSENSITIVE)
-        assert results[0][1] == "https://lowercase.example.com/feed"
+        assert parse_opml(OPML_CASE_INSENSITIVE)[0][1] == "https://lowercase.example.com/feed"
 
     def test_invalid_xml_raises(self):
         with pytest.raises(ValueError, match="Invalid OPML"):
             parse_opml(b"not xml at all <<<")
 
     def test_empty_opml_returns_empty(self):
-        results = parse_opml(b"<opml><body></body></opml>")
-        assert results == []
+        assert parse_opml(b"<opml><body></body></opml>") == []
 
 
-# ── Feed polling helpers ──────────────────────────────────────────────────────
+# ── Poller helpers ────────────────────────────────────────────────────────────
 
 class TestPollerHelpers:
     def test_entry_published_parsed(self):
         entry = MagicMock()
         entry.published_parsed = (2025, 6, 1, 10, 0, 0, 0, 0, 0)
         entry.updated_parsed = None
-        dt = _entry_published(entry)
-        assert dt is not None
-        assert dt.year == 2025
+        assert _entry_published(entry).year == 2025
 
     def test_entry_published_fallback_to_updated(self):
         entry = MagicMock()
         entry.published_parsed = None
         entry.updated_parsed = (2025, 5, 15, 8, 0, 0, 0, 0, 0)
-        dt = _entry_published(entry)
-        assert dt is not None
-        assert dt.month == 5
+        assert _entry_published(entry).month == 5
 
     def test_entry_published_none_when_absent(self):
         entry = MagicMock()
@@ -101,104 +89,96 @@ class TestPollerHelpers:
     def test_entry_word_count_from_content(self):
         entry = MagicMock()
         entry.content = [{"value": "<p>" + " ".join(["word"] * 200) + "</p>"}]
-        count = _entry_word_count(entry)
-        assert count == 200
-
-    def test_entry_word_count_from_summary(self):
-        entry = MagicMock(spec=[])  # no .content attribute
-        entry.summary = "<p>" + " ".join(["word"] * 100) + "</p>"
-        entry.description = ""
-        count = _entry_word_count(entry)
-        assert count == 100
-
-    def test_poll_feed_counts_recent_entries(self):
-        now = datetime.now(timezone.utc)
-        recent_time = tuple(now.timetuple())
-        old_time = tuple((now - timedelta(days=2)).timetuple())
-
-        mock_parsed = MagicMock()
-        recent_entry = MagicMock()
-        recent_entry.published_parsed = recent_time
-        recent_entry.updated_parsed = None
-        recent_entry.content = [{"value": "<p>" + " ".join(["word"] * 500) + "</p>"}]
-
-        old_entry = MagicMock()
-        old_entry.published_parsed = old_time
-        old_entry.updated_parsed = None
-        old_entry.content = [{"value": "<p>" + " ".join(["word"] * 999) + "</p>"}]
-
-        mock_parsed.entries = [recent_entry, old_entry]
-
-        with patch("app.ongoing.poller.feedparser.parse", return_value=mock_parsed):
-            words = poll_feed("https://example.com/feed", window_hours=24)
-
-        assert words == 500  # old entry excluded
+        assert _entry_word_count(entry) == 200
 
 
-# ── Budget computation ────────────────────────────────────────────────────────
+# ── Buffering ─────────────────────────────────────────────────────────────────
 
-class TestComputeBudget:
-    def test_no_target_returns_base_budget(self, in_memory_db):
+def _ongoing_source(db, feed_url="https://s.example.com/feed"):
+    src = Book(
+        kind=BookKind.ongoing, feed_url=feed_url, title="Serial", author="(ongoing)",
+        status=BookStatus.active, queue_position=1,
+    )
+    db.add(src)
+    db.flush()
+    return src
+
+
+def _mock_feed(*entries):
+    parsed = MagicMock()
+    parsed.entries = list(entries)
+    return parsed
+
+
+def _entry(guid, words, when=(2025, 6, 1, 10, 0, 0, 0, 0, 0)):
+    # FeedParserDict mirrors real feedparser entries (attribute + key access).
+    return FeedParserDict(
+        id=guid,
+        link=f"https://s.example.com/{guid}",
+        title=guid,
+        content=[FeedParserDict(value="<p>" + " ".join(["word"] * words) + "</p>")],
+        published_parsed=when,
+    )
+
+
+class TestBuffering:
+    def test_poll_buffers_new_entries(self, in_memory_db):
+        src = _ongoing_source(in_memory_db)
+        feed = _mock_feed(_entry("c1", 100), _entry("c2", 200))
+        with patch("app.ongoing.poller.feedparser.parse", return_value=feed):
+            new = poll_source(in_memory_db, src)
+        assert new == 2
+        entries = in_memory_db.query(OngoingEntry).filter_by(source_id=src.id).all()
+        assert {e.guid for e in entries} == {"c1", "c2"}
+        assert all(e.released is False for e in entries)
+        assert {e.word_count for e in entries} == {100, 200}
+
+    def test_poll_dedupes_by_guid(self, in_memory_db):
+        src = _ongoing_source(in_memory_db)
+        feed1 = _mock_feed(_entry("c1", 100))
+        feed2 = _mock_feed(_entry("c1", 100), _entry("c2", 150))
+        with patch("app.ongoing.poller.feedparser.parse", return_value=feed1):
+            poll_source(in_memory_db, src)
+        with patch("app.ongoing.poller.feedparser.parse", return_value=feed2):
+            new = poll_source(in_memory_db, src)
+        assert new == 1  # only c2 is new
+        assert in_memory_db.query(OngoingEntry).count() == 2
+
+    def test_poll_all_skips_epub_and_survives_errors(self, in_memory_db):
+        _ongoing_source(in_memory_db, feed_url="https://ok.example.com/feed")
+        # An epub book must be ignored by the poller.
+        in_memory_db.add(Book(calibre_id=1, kind=BookKind.epub, title="E", author="A",
+                              status=BookStatus.active, queue_position=2))
+        in_memory_db.flush()
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_mock_feed(_entry("x", 50))):
+            new = poll_all_feeds(in_memory_db)
+        assert new == 1
+
+
+class TestOngoingDrops:
+    def test_planner_releases_buffered_entries(self, in_memory_db):
+        from app.planner.planner import run_drop_cycle
+        from app.models import Drop
+        src = _ongoing_source(in_memory_db)
+        # Three buffered chapters, ~100 words each; small budget releases a subset.
+        from app.models import Config
         cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = None
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == _effective_budget(cfg)
-
-    def test_target_with_no_ongoing_feeds(self, in_memory_db):
-        cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = 8000
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == 8000
-
-    def test_target_minus_ongoing_volume(self, in_memory_db):
-        cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = 10000
-        in_memory_db.flush()
-        in_memory_db.add(OngoingFeed(
-            title="My Serial",
-            feed_url="https://example.com/feed",
-            estimated_words_per_cycle=3000,
-            is_active=True,
-        ))
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == 7000
-
-    def test_multiple_active_feeds_summed(self, in_memory_db):
-        cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = 10000
-        in_memory_db.flush()
-        for i, words in enumerate([2000, 1500, 500]):
-            in_memory_db.add(OngoingFeed(
-                title=f"Feed {i}",
-                feed_url=f"https://f{i}.example.com/feed",
-                estimated_words_per_cycle=words,
-                is_active=True,
+        cfg.global_budget_words = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
+        for i in range(1, 4):
+            in_memory_db.add(OngoingEntry(
+                source_id=src.id, guid=f"c{i}", title=f"Ch {i}",
+                link=f"https://s/{i}", content_html="<p>x</p>", word_count=100,
+                published_at=datetime(2025, 6, i, tzinfo=timezone.utc), released=False,
             ))
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == 6000  # 10000 - 4000
+        in_memory_db.commit()
 
-    def test_inactive_feeds_excluded(self, in_memory_db):
-        cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = 10000
-        in_memory_db.flush()
-        in_memory_db.add(OngoingFeed(
-            title="Inactive",
-            feed_url="https://paused.example.com/feed",
-            estimated_words_per_cycle=5000,
-            is_active=False,
-        ))
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == 10000  # inactive excluded
+        drops = run_drop_cycle(in_memory_db, Path("/fake"))
 
-    def test_clamped_at_zero_when_ongoing_exceeds_target(self, in_memory_db):
-        cfg = in_memory_db.get(Config, 1)
-        cfg.target_total_words = 3000
-        in_memory_db.flush()
-        in_memory_db.add(OngoingFeed(
-            title="Prolific",
-            feed_url="https://huge.example.com/feed",
-            estimated_words_per_cycle=5000,
-            is_active=True,
-        ))
-        in_memory_db.flush()
-        assert _compute_budget(in_memory_db, cfg) == 0  # clamped, never negative
+        assert drops, "expected at least one ongoing drop"
+        assert all(d.feed_key == "ongoing" for d in drops)
+        released = in_memory_db.query(OngoingEntry).filter_by(released=True).count()
+        unreleased = in_memory_db.query(OngoingEntry).filter_by(released=False).count()
+        assert released == 2 and unreleased == 1  # batched: 2 fit the budget, 1 rolls over
+        # Released entries are linked to a drop.
+        linked = in_memory_db.query(OngoingEntry).filter(OngoingEntry.drop_id.isnot(None)).count()
+        assert linked == released

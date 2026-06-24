@@ -1,53 +1,87 @@
-"""Poll ongoing RSS/Atom feeds and estimate recent word volume.
+"""Poll ongoing serial RSS/Atom feeds and buffer new chapters.
 
-Called by the scheduler every few hours so that the drop planner always has a
-fresh estimate of how many words the user's real ongoing fics are delivering per
-cycle.  The estimate is stored in OngoingFeed.estimated_words_per_cycle and
-subtracted from Config.target_total_words to compute the synthetic drop budget.
+Each ongoing source (a Book with kind=ongoing and a feed_url) is polled on a schedule.
+New entries are appended to the OngoingEntry buffer with released=False; the drop
+planner releases the oldest unreleased entries at drop time, weighted in the channel
+budget like EPUB chapters. So ongoing chapters arrive batched at drop time, not whenever
+the author posts.
 """
 from __future__ import annotations
 
+import logging
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import feedparser
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from app.models import OngoingFeed
+from app.models import Book, BookKind, OngoingEntry, utcnow
 
-# Default look-back window: how far into the past we count entries as "recent".
-# Matches a daily drop cadence; callers can override.
-_DEFAULT_WINDOW_HOURS = 24
+logger = logging.getLogger(__name__)
 
 
-def poll_feed(feed_url: str, window_hours: int = _DEFAULT_WINDOW_HOURS) -> int:
-    """Fetch feed_url and return word count of entries published within window_hours."""
-    parsed = feedparser.parse(feed_url)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    total = 0
-    for entry in parsed.entries:
-        pub = _entry_published(entry)
-        if pub is not None and pub < cutoff:
-            continue  # older than the window
-        total += _entry_word_count(entry)
-    return total
-
-
-def poll_all_feeds(session: Session, window_hours: int = _DEFAULT_WINDOW_HOURS) -> None:
-    """Poll every active OngoingFeed and update its estimated_words_per_cycle."""
-    feeds = session.query(OngoingFeed).filter(OngoingFeed.is_active.is_(True)).all()
-    for feed in feeds:
+def poll_all_feeds(session: Session) -> int:
+    """Poll every ongoing source and buffer new entries. Returns count of new entries."""
+    sources = (
+        session.query(Book)
+        .filter(Book.kind == BookKind.ongoing, Book.feed_url.isnot(None))
+        .all()
+    )
+    total_new = 0
+    for source in sources:
         try:
-            words = poll_feed(feed.feed_url, window_hours=window_hours)
-        except Exception:
-            words = feed.estimated_words_per_cycle  # keep last known value on error
-        feed.estimated_words_per_cycle = words
-        feed.last_polled_at = datetime.now(timezone.utc)
+            total_new += poll_source(session, source)
+        except Exception:  # never let one bad feed break the cycle
+            logger.exception("Failed to poll ongoing source '%s' (%s)", source.title, source.feed_url)
     session.flush()
+    return total_new
+
+
+def poll_source(session: Session, source: Book) -> int:
+    """Fetch one source's feed and append any new entries to the buffer."""
+    parsed = feedparser.parse(source.feed_url)
+    existing = {
+        guid
+        for (guid,) in session.query(OngoingEntry.guid).filter(
+            OngoingEntry.source_id == source.id
+        )
+    }
+    new_count = 0
+    for entry in parsed.entries:
+        guid = entry.get("id") or entry.get("link")
+        if not guid or guid in existing:
+            continue
+        existing.add(guid)
+        html = _entry_content(entry)
+        session.add(OngoingEntry(
+            source_id=source.id,
+            guid=guid,
+            title=entry.get("title", "") or "",
+            link=entry.get("link"),
+            content_html=html,
+            word_count=_count_words(html),
+            published_at=_entry_published(entry) or utcnow(),
+            released=False,
+        ))
+        new_count += 1
+    return new_count
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+
+def _entry_content(entry) -> str:
+    """Full HTML of an entry: prefer content[0], fall back to summary/description."""
+    content_list = getattr(entry, "content", None)
+    if content_list:
+        return content_list[0].get("value", "") or ""
+    return getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
+
+
+def _count_words(html: str) -> int:
+    text = BeautifulSoup(html or "", "lxml").get_text(" ")
+    return len(re.findall(r"\S+", text))
 
 
 def _entry_published(entry) -> datetime | None:
@@ -61,10 +95,5 @@ def _entry_published(entry) -> datetime | None:
 
 
 def _entry_word_count(entry) -> int:
-    content_list = getattr(entry, "content", None)
-    if content_list:
-        raw = content_list[0].get("value", "")
-    else:
-        raw = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
-    text = BeautifulSoup(raw, "lxml").get_text(" ")
-    return len(re.findall(r"\S+", text))
+    """Word count of an entry's content (kept for callers/tests)."""
+    return _count_words(_entry_content(entry))

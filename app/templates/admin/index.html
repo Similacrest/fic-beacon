@@ -114,7 +114,13 @@
 {% endif %}
 
 {% if dropped %}
-<h2>Dropped</h2>
+<h2>
+  Dropped
+  <form method="post" action="/admin/dropped/clear" style="display:inline; margin-left:.5em"
+        onsubmit="return confirm('Permanently remove all dropped sources and their drops?')">
+    <button class="btn btn-danger" style="font-size:.8em; padding:.15em .6em">Clear dropped</button>
+  </form>
+</h2>
 <table>
   <thead><tr><th>Title</th><th>Author</th><th>👎</th><th>Actions</th></tr></thead>
   <tbody>
