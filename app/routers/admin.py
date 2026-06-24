@@ -14,7 +14,7 @@ from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
 from app.database import INBOX_CHANNEL_SLUG, ensure_default_channel, get_db
-from app.models import Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackEvent
+from app.models import Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackEvent, OngoingEntry
 from app.ongoing.feed_url import infer_feed_url
 from app.version import __version__
 
@@ -32,7 +32,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     completed = db.query(Book).filter(Book.status == BookStatus.completed).order_by(Book.added_at.desc()).limit(10).all()
     dropped = db.query(Book).filter(Book.status == BookStatus.dropped).order_by(Book.added_at.desc()).limit(10).all()
     # Sources in the Inbox channel (unassigned after OPML import).
-    from app.database import INBOX_CHANNEL_SLUG
     inbox_channel = db.query(Channel).filter(Channel.slug == INBOX_CHANNEL_SLUG).first()
     inbox_books = (
         db.query(Book).filter(Book.channel_id == inbox_channel.id).all()
@@ -40,8 +39,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     )
     cfg = db.get(Config, 1)
     channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
-    # Unreleased (buffered) entry count per ongoing source.
-    from app.models import OngoingEntry
     buffered = dict(
         db.query(OngoingEntry.source_id, func.count(OngoingEntry.id))
         .filter(OngoingEntry.released.is_(False))
@@ -287,7 +284,6 @@ def set_cursor(
     if book is not None:
         if book.kind == BookKind.ongoing:
             # For ongoing: rewind by un-releasing entries beyond the target cursor.
-            from app.models import OngoingEntry
             target = max(0, chapter_index)
             book.cursor_chapter_index = target
             # Entries ordered by publish date; those after the new cursor re-enter the buffer.

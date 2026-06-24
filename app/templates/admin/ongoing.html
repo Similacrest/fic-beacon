@@ -30,8 +30,8 @@
   {% for s in sources %}
   <tr style="{{ 'opacity:.55' if s.status.value != 'active' }}">
     <td>{{ s.title }}</td>
-    <td>{{ chan_name.get(s.channel_id, '— default —') }}</td>
-    <td title="Unreleased buffered chapters">{{ buffered.get(s.id, 0) }}</td>
+    <td>{{ chan_name.get(s.channel_id, '—') }}</td>
+    <td title="Unreleased buffered chapters">{{ buffered.get(s.id) or '—' }}</td>
     <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
       <a href="{{ s.feed_url }}" target="_blank">{{ s.feed_url }}</a>
     </td>
@@ -70,20 +70,21 @@
   <div style="min-width:140px">
     <label for="channel_id" style="font-size:.9em">Channel</label>
     <select name="channel_id" id="channel_id">
-      <option value="">— General (default) —</option>
+      <option value="">— General —</option>
       {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
     </select>
   </div>
-  <div style="align-self:flex-end">
-    <small style="color:#666; display:block; margin-bottom:.3em">New feeds assume you've already read everything in the current archive.</small>
-  </div>
-  <button class="btn btn-primary" type="submit">Add</button>
+  <button class="btn btn-primary" type="submit" style="align-self:flex-end">Add</button>
 </form>
+<small style="color:#666; display:block; margin-top:.4em">
+  The existing feed archive is marked as already read; only new chapters released after adding will appear in drops.
+</small>
 
 <h2>Import OPML</h2>
 <p style="color:#555; font-size:.9em">
-  Export your subscriptions (InoReader: Preferences → Import/Export → Export OPML). All imported
-  serials land in General — reassign them per-row above afterwards.
+  Export your subscriptions from your RSS reader (e.g. Preferences → Import/Export → Export OPML).
+  Imported serials land in the <strong>Inbox</strong> on the Dashboard — assign each to a channel
+  before it appears in drops.
   Note: AO3/FFN have no per-chapter RSS — those aren't supported here yet.
   Alternatively, use the <a href="/admin/library">Library</a> page to add feeds inferred from
   your Calibre source URLs (RoyalRoad, SpaceBattles, SufficientVelocity).
