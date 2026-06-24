@@ -35,21 +35,14 @@ class CalibreAdapter:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT
-                    b.id,
-                    b.title,
-                    b.path,
-                    b.last_modified,
-                    d.name AS epub_name,
-                    COALESCE(a.name, 'Unknown') AS author
+                SELECT b.id, b.title, b.path, b.last_modified, d.name AS epub_name
                 FROM books b
                 JOIN data d ON d.book = b.id AND d.format = 'EPUB'
-                LEFT JOIN books_authors_link bal ON bal.book = b.id
-                LEFT JOIN authors a ON a.id = bal.author
                 ORDER BY b.last_modified DESC
                 """,
             ).fetchall()
             ids = [r["id"] for r in rows]
+            authors = self._fetch_authors(conn, ids)
             urls = self._fetch_source_urls(conn, ids)
             tags = self._fetch_tags(conn, ids)
             genres = self._fetch_custom_text(conn, "genre_manual", ids)
@@ -58,7 +51,7 @@ class CalibreAdapter:
                 CalibreBook(
                     calibre_id=r["id"],
                     title=r["title"],
-                    author=r["author"],
+                    author=authors.get(r["id"], "Unknown"),
                     path=r["path"],
                     epub_name=r["epub_name"],
                     source_url=urls.get(r["id"]),
@@ -75,23 +68,16 @@ class CalibreAdapter:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT
-                    b.id,
-                    b.title,
-                    b.path,
-                    b.last_modified,
-                    d.name AS epub_name,
-                    COALESCE(a.name, 'Unknown') AS author
+                SELECT b.id, b.title, b.path, b.last_modified, d.name AS epub_name
                 FROM books b
                 JOIN data d ON d.book = b.id AND d.format = 'EPUB'
-                LEFT JOIN books_authors_link bal ON bal.book = b.id
-                LEFT JOIN authors a ON a.id = bal.author
                 WHERE b.id = ?
                 """,
                 (calibre_id,),
             ).fetchone()
             if row is None:
                 return None
+            authors = self._fetch_authors(conn, [calibre_id])
             urls = self._fetch_source_urls(conn, [calibre_id])
             tags = self._fetch_tags(conn, [calibre_id])
             genres = self._fetch_custom_text(conn, "genre_manual", [calibre_id])
@@ -99,7 +85,7 @@ class CalibreAdapter:
             return CalibreBook(
                 calibre_id=row["id"],
                 title=row["title"],
-                author=row["author"],
+                author=authors.get(calibre_id, "Unknown"),
                 path=row["path"],
                 epub_name=row["epub_name"],
                 source_url=urls.get(calibre_id),
@@ -111,6 +97,29 @@ class CalibreAdapter:
 
     def epub_path(self, book: CalibreBook) -> Path:
         return self.library_path / book.path / f"{book.epub_name}.epub"
+
+    def _fetch_authors(
+        self, conn: sqlite3.Connection, book_ids: list[int]
+    ) -> dict[int, str]:
+        """Return {calibre_id: author_name} — first author only for multi-author books."""
+        if not book_ids:
+            return {}
+        placeholders = ",".join("?" * len(book_ids))
+        rows = conn.execute(
+            f"""
+            SELECT bal.book AS book, a.name AS name
+            FROM books_authors_link bal
+            JOIN authors a ON a.id = bal.author
+            WHERE bal.book IN ({placeholders})
+            ORDER BY bal.book, a.name
+            """,
+            book_ids,
+        ).fetchall()
+        result: dict[int, str] = {}
+        for r in rows:
+            if r["book"] not in result:
+                result[r["book"]] = r["name"]
+        return result
 
     def _fetch_source_urls(
         self, conn: sqlite3.Connection, book_ids: list[int]

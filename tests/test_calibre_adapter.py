@@ -115,6 +115,22 @@ class TestListBooks:
         assert [b.calibre_id for b in books] == [2, 1]
         assert books[0].last_modified.startswith("2026-06")
 
+    def test_multi_author_book_not_duplicated(self, library_path):
+        """A book with two authors must appear once, not once per author."""
+        import sqlite3
+        db_path = library_path / "metadata.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("INSERT INTO authors VALUES (3, 'Author C', 'C, Author')")
+        conn.execute("INSERT INTO books_authors_link VALUES (1, 3)")  # book 1 now has 2 authors
+        conn.commit()
+        conn.close()
+
+        adapter = CalibreAdapter(library_path)
+        books = adapter.list_books()
+        assert len(books) == 2  # still 2 books, not 3
+        book1 = next(b for b in books if b.calibre_id == 1)
+        assert book1.author in ("Author A", "Author C")  # one of them, deterministic
+
 
 class TestGetBook:
     def test_returns_correct_book(self, library_path):

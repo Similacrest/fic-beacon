@@ -276,9 +276,12 @@ def set_cursor(
 
 @router.post("/books/{book_id}/drop")
 def drop_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    from app.planner.planner import _refill_book_channel
     book = db.get(Book, book_id)
     if book:
         book.status = BookStatus.dropped
+        book.slot_index = None
+        _refill_book_channel(db, book)
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
@@ -304,6 +307,7 @@ def requeue_book(book_id: int, db: Session = Depends(get_db)) -> RedirectRespons
     book = db.get(Book, book_id)
     if book:
         book.status = BookStatus.queued
+        book.slot_index = None
         book.cursor_chapter_index = 0
         book.thumbs_down = 0
         book.thumbs_up = 0

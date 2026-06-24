@@ -41,7 +41,7 @@ def _run_cycle() -> None:
         drops = run_drop_cycle(session, settings.calibre_library_path)
         session.commit()
         publish_updates(session, drops)
-    print(f"[beacon] Drop cycle complete — {len(drops)} drop(s) created.")
+    logger.info("Drop cycle complete — %d drop(s) created.", len(drops))
 
 
 def _run_poll() -> None:
@@ -49,7 +49,7 @@ def _run_poll() -> None:
     with db_session() as session:
         poll_all_feeds(session)
         session.commit()
-    print("[beacon] Ongoing feed poll complete.")
+    logger.info("Ongoing feed poll complete.")
 
 
 def start(cadence_cron: str) -> None:

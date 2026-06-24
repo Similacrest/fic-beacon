@@ -264,7 +264,7 @@ def _get_chapters(
     return all_chapters[book.cursor_chapter_index:]
 
 
-def _materialise(session: Session, plan: PlannedDrop, channel_id: int | None = None) -> Drop | None:
+def _materialise(session: Session, plan: PlannedDrop, channel_id: int) -> Drop | None:
     if not plan.chapters:
         return None
 
@@ -336,7 +336,7 @@ def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
 
 
 def _fill_empty_slots(
-    session: Session, parallel_slots: int, channel_id: int | None = None
+    session: Session, parallel_slots: int, channel_id: int
 ) -> None:
     """Promote queued *EPUB* books into open numbered slots within one channel group.
 
