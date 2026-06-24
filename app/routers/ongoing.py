@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database import ensure_default_channel, get_db
+from app.database import ensure_inbox_channel, get_db
 from app.models import Book, BookKind, BookStatus, Channel, Drop, FeedbackEvent, OngoingEntry
 from app.ongoing.opml import parse_opml
 from app.version import __version__
@@ -25,25 +25,43 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 templates.env.globals["version"] = __version__
 
 
-def _add_source(db: Session, title: str, feed_url: str, channel_id: int) -> bool:
-    """Create an ongoing source if its feed_url isn't already registered."""
+def _add_source(
+    db: Session, title: str, feed_url: str, channel_id: int, assume_read: bool = True
+) -> Book | None:
+    """Create an ongoing source if its feed_url isn't already registered.
+
+    When assume_read=True (default), the source's existing feed entries are immediately
+    polled and marked as already-read so only future chapters reach the reader.
+    Returns the new Book, or None if it already existed / URL was blank.
+    """
     feed_url = feed_url.strip()
     if not feed_url:
-        return False
+        return None
     exists = db.query(Book).filter(Book.feed_url == feed_url).first()
     if exists is not None:
-        return False
+        return None
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
-    db.add(Book(
+    book = Book(
         kind=BookKind.ongoing,
         feed_url=feed_url,
         title=(title or feed_url).strip(),
-        author="(ongoing)",
-        status=BookStatus.active,  # ongoing sources are always-active (not slot-gated)
+        status=BookStatus.active,
         queue_position=max_pos + 1,
         channel_id=channel_id,
-    ))
-    return True
+    )
+    db.add(book)
+    db.flush()
+    if assume_read:
+        from app.ongoing.poller import seed_source_as_read
+        try:
+            seed_source_as_read(db, book)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Could not seed '%s' as already-read; buffered entries will release at next drop",
+                book.title,
+            )
+    return book
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -54,8 +72,8 @@ def ongoing_list(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
         .order_by(Book.title)
         .all()
     )
-    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
-    chan_name = {c.id: c.name for c in channels}
+    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    chan_name = {c.id: c.name for c in db.query(Channel).all()}
     # Unreleased (buffered) entry count per source.
     buffered = dict(
         db.query(OngoingEntry.source_id, func.count(OngoingEntry.id))
@@ -78,7 +96,9 @@ def add_feed(
     channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    _add_source(db, title, feed_url, channel_id or ensure_default_channel(db).id)
+    from app.database import ensure_default_channel
+    target_id = channel_id or ensure_default_channel(db).id
+    _add_source(db, title, feed_url, target_id, assume_read=True)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -93,8 +113,11 @@ async def import_opml(
         entries = parse_opml(content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    target_id = ensure_default_channel(db).id
-    added = sum(_add_source(db, title, url, target_id) for title, url in entries)
+    # OPML imports land in the hidden Inbox — user assigns them to real channels manually.
+    target_id = ensure_inbox_channel(db).id
+    added = sum(
+        1 for title, url in entries if _add_source(db, title, url, target_id, assume_read=True)
+    )
     db.commit()
     return RedirectResponse(url=f"/admin/ongoing/?imported={added}", status_code=303)
 
