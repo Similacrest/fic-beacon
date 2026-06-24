@@ -1,19 +1,20 @@
 """Budget / Drop Planner.
 
-Budget model (global round-robin, never pre-slice):
-  Phase 1 — guaranteed minimum: each active book always gets exactly one chapter
-  regardless of budget. This is the "never starve a book" rule.
+Budget model (per-channel, pure-stochastic, never pre-slice):
+  Each channel (plus the implicit default group) runs independently each cycle with
+  effective budget B = base_budget + budget_credit (signed carry-over so the long-run
+  mean tracks the base budget).
 
-  Phase 2 — bonus round-robin: iterate active books (highest quota first) in
-  repeated passes. Each pass offers one extra chapter to a book if BOTH
-  conditions hold: (a) the book's pro-rata per-book share + tolerance allows it,
-  AND (b) the global counter has headroom (global_words ≤ budget + tolerance).
-  This bounds total overshoot to budget + tolerance + phase-1 overshoot rather
-  than N × budget.
+  Candidates are each active source's next whole unit, taken in weight-ordered passes.
+  A unit of size w is *included* this cycle with probability
+  p = clamp((B − used)/w, 0, 1), biased up by the source's quota_weight (p = base ** (1/w)).
+  Included → emit + advance cursor; excluded → roll the whole unit over to a later cycle.
 
-  Per-book share = budget * quota_weight / total_quota (proportional weight).
-  Budget is a soft guide — chapters are never split; an oversized single chapter
-  posts whole.
+  There is *no* guaranteed first chapter: over budget, even a source's first unit can
+  defer, and a low-weight source may get nothing some cycles. A unit larger than the
+  whole budget is posted whole (once per source per cycle) since it could never fit.
+  Units are never split — an oversized single chapter posts whole. After the pass,
+  budget_credit += base_budget − used (clamped to ±base_budget).
 """
 from __future__ import annotations
 
