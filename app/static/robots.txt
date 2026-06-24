@@ -1,0 +1,7 @@
+User-agent: *
+Disallow: /
+
+User-agent: Inoreader
+Allow: /feed/
+Allow: /fb/
+Disallow: /
