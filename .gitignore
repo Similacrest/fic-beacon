@@ -11,3 +11,4 @@ build/
 *.egg-info/
 # Calibre library should not be committed
 Calibre Library/
+**/personal.ini
