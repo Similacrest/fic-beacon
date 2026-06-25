@@ -62,6 +62,8 @@
 {% endif %}
 {% endmacro %}
 
+{% macro fmt_dt(dt) %}{% if dt %}{{ dt.strftime('%Y-%m-%d %H:%M %Z') or dt.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}<span class="muted">never</span>{% endif %}{% endmacro %}
+
 {# Inline weight adjustment #}
 {% macro weight_cell(book) %}
 <form method="post" action="/admin/books/{{ book.id }}/set-weight" style="display:inline">
@@ -86,6 +88,129 @@
     <button class="btn">🔄 Poll feeds now</button>
   </form>
 </div>
+
+{# ── Now broadcasting: per-channel slot feeds (post + chapter level) ───────── #}
+<details class="section" open>
+  <summary>📺 Now broadcasting <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
+  {% for cv in slot_view %}
+  <h3 style="margin:.6em 0 .2em">{{ cv.channel.name }}
+    <span class="muted" style="font-size:.7em">/{{ cv.channel.slug }} · {{ cv.channel.parallel_slots }} slot(s)</span>
+  </h3>
+  {% for slot in cv.slots %}
+  <div class="slot-card">
+    <h4>Slot {{ slot.n }}
+      <span class="muted" style="font-weight:normal; font-size:.8em">
+        feed <code>/feed/{{ cv.channel.slug }}/{{ slot.n }}</code>
+      </span>
+    </h4>
+    <div style="margin-bottom:.3em">
+      {% if slot.epub %}<span class="pill pill-epub">📖 {{ slot.epub.title }}</span>{% endif %}
+      {% for o in slot.ongoings %}<span class="pill pill-ongoing">📡 {{ o.title }}</span>{% endfor %}
+      {% if not slot.epub and not slot.ongoings %}<span class="muted">empty — no source pinned here</span>{% endif %}
+    </div>
+    {% if slot.drops %}
+    <table style="font-size:.85em">
+      <thead><tr><th>Posted</th><th>Source</th><th>Chapter(s)</th><th>Words</th></tr></thead>
+      <tbody>
+      {% for d in slot.drops %}
+      <tr>
+        <td class="muted" style="white-space:nowrap">{{ d.published_at.strftime('%m-%d %H:%M') }}</td>
+        <td>{{ d.book.title }}</td>
+        <td>{{ d.chapter_titles or ('Ch ' ~ (d.chapter_start + 1)) }}</td>
+        <td>{{ '{:,}'.format(d.word_count) }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <span class="muted" style="font-size:.85em">no drops in this feed yet</span>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="muted">No channels yet.</p>
+  {% endfor %}
+</details>
+
+{# ── Next broadcast: queued EPUBs + ongoings holding buffered chapters ─────── #}
+<details class="section">
+  <summary>⏭ Next broadcast — waiting &amp; held out</summary>
+  <p class="muted" style="font-size:.85em">
+    Queued EPUBs enter a slot when one frees. Ongoings with buffered chapters are eligible
+    every broadcast but may be held out by the stochastic budget / lower weight.
+  </p>
+  {% for cv in slot_view %}
+  {% if cv.queued_epubs or cv.waiting_ongoings %}
+  <h4 style="margin:.5em 0 .2em">{{ cv.channel.name }}</h4>
+  {% if cv.queued_epubs %}
+  <div style="margin-bottom:.3em"><strong style="font-size:.85em">Queued EPUBs:</strong>
+    {% for b in cv.queued_epubs %}<span class="pill pill-epub">📖 {{ b.title }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if cv.waiting_ongoings %}
+  <div><strong style="font-size:.85em">Ongoings with buffered chapters:</strong>
+    {% for b in cv.waiting_ongoings %}<span class="pill pill-ongoing">📡 {{ b.title }} (+{{ buffered.get(b.id, 0) }})</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+  {% else %}
+  <p class="muted">Nothing waiting.</p>
+  {% endfor %}
+
+  {% if last_skips %}
+  <h4 style="margin:1em 0 .2em">Held out last broadcast</h4>
+  <p class="muted" style="font-size:.85em">Sources whose next unit lost the stochastic budget
+    roll (lower weight / over budget) and rolled over.</p>
+  <table style="font-size:.85em">
+    <thead><tr><th>Source</th><th>Channel</th><th>Weight</th><th>Outcome</th></tr></thead>
+    <tbody>
+    {% for s in last_skips %}
+    <tr>
+      <td>{{ s.title }}{% if s.kind == 'ongoing' %} <span class="pill pill-ongoing">📡</span>{% endif %}</td>
+      <td class="muted">{{ s.channel }}</td>
+      <td>{{ s.weight }}</td>
+      <td>{% if s.held_out %}<span class="badge badge-queued">held out</span> ({{ s.remaining }} pending)
+          {% else %}dropped {{ s.dropped }}, {{ s.remaining }} rolled over{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</details>
+
+{# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
+<details class="section">
+  <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
+  <div class="kv" style="margin:.5em 0 1em">
+    <span class="muted">Last broadcast (drop cron)</span><span>{{ fmt_dt(status.last_drop) }}</span>
+    <span class="muted">Next broadcast</span><span>{{ fmt_dt(status.next_drop) }}</span>
+    <span class="muted">Last feed poll</span><span>{{ fmt_dt(status.last_poll) }}</span>
+    <span class="muted">Next feed poll</span><span>{{ fmt_dt(status.next_poll) }}</span>
+  </div>
+  <h4 style="margin:.3em 0">WebSub subscribers (realtime push)</h4>
+  {% if subscribers %}
+  <table style="font-size:.85em">
+    <thead><tr><th>Topic feed</th><th>Status</th><th>Lease expires</th><th>Callback</th></tr></thead>
+    <tbody>
+    {% for s in subscribers %}
+    <tr>
+      <td><code>{{ s.label }}</code></td>
+      <td>
+        {% if not s.verified %}<span class="badge badge-queued">unverified</span>
+        {% elif s.expired %}<span class="badge badge-dropped">expired</span>
+        {% else %}<span class="badge badge-active">active</span>{% endif %}
+      </td>
+      <td class="muted">{{ fmt_dt(s.lease_expires_at) }}</td>
+      <td class="muted" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ s.callback }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No WebSub subscribers registered yet. Readers without WebSub fall back to
+    polling (InoReader free polls roughly every few hours).</p>
+  {% endif %}
+</details>
 
 {% if inbox_books %}
 <h2 style="color:#856404">Inbox — unassigned ({{ inbox_books|length }})</h2>
@@ -138,7 +263,8 @@
 </table>
 {% endif %}
 
-<h2>Active ({{ active|length }})</h2>
+<details class="section" open>
+<summary>📚 Active sources <span class="count">— {{ active|length }}</span></summary>
 {% if active %}
 <form method="post" action="/admin/books/batch-drop" id="active-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
@@ -179,8 +305,10 @@
 {% else %}
 <p style="color:#888">No active books — import and queue some!</p>
 {% endif %}
+</details>
 
-<h2>Queue ({{ queued|length }})</h2>
+<details class="section">
+<summary>📋 Queue <span class="count">— {{ queued|length }}</span></summary>
 {% if queued %}
 <form method="post" action="/admin/books/batch-drop" id="queue-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
@@ -229,9 +357,11 @@
 {% else %}
 <p style="color:#888">Queue is empty.</p>
 {% endif %}
+</details>
 
 {% if completed %}
-<h2>Recently completed</h2>
+<details class="section">
+<summary>✅ Recently completed <span class="count">— {{ completed|length }}</span></summary>
 <table>
   <thead><tr><th>Title</th><th>Author</th><th>Actions</th></tr></thead>
   <tbody>
@@ -248,16 +378,18 @@
   {% endfor %}
   </tbody>
 </table>
+</details>
 {% endif %}
 
 {% if dropped %}
-<h2>
-  Dropped
-  <form method="post" action="/admin/dropped/clear" style="display:inline; margin-left:.5em"
+<details class="section">
+<summary>🗑 Dropped <span class="count">— {{ dropped|length }}</span></summary>
+<p>
+  <form method="post" action="/admin/dropped/clear" style="display:inline"
         onsubmit="return confirm('Permanently remove all dropped sources and their drops?')">
     <button class="btn btn-danger" style="font-size:.8em; padding:.15em .6em">Clear dropped</button>
   </form>
-</h2>
+</p>
 <table>
   <thead><tr><th>Title</th><th>Author</th><th>👎</th><th>Actions</th></tr></thead>
   <tbody>
@@ -275,6 +407,7 @@
   {% endfor %}
   </tbody>
 </table>
+</details>
 {% endif %}
 
 <script>

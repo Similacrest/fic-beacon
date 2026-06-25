@@ -28,4 +28,17 @@
   <button class="btn btn-primary" type="submit">Save</button>
 </form>
 
+<h2>Feed secret</h2>
+<div style="max-width:480px">
+  <p style="color:#888; font-size:.9em">
+    The <code>?token=</code> on every feed URL. Regenerating it is a hard reset that forces
+    readers (e.g. InoReader) to treat the feeds as brand-new — useful for clearing a stale cache.
+  </p>
+  <div class="feed-url" style="margin-bottom:.6em">{{ cfg.feed_secret }}</div>
+  <form method="post" action="/admin/config/regenerate-secret"
+        onsubmit="return confirm('Regenerate the feed secret?\n\nEVERY feed URL changes — all reader subscriptions (every channel) break until you re-add the new URLs from the Channels page. Per-drop feedback links keep working.')">
+    <button class="btn btn-danger" type="submit">🔁 Regenerate feed secret</button>
+  </form>
+</div>
+
 {% endblock %}

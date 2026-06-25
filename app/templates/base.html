@@ -64,6 +64,23 @@
     }
     .progress-bar-wrap { background: #e9ecef; border-radius: 4px; height: 8px; width: 120px; display: inline-block; vertical-align: middle; }
     .progress-bar-fill { background: #0d6efd; height: 100%; border-radius: 4px; }
+    details.section { border: 1px solid #e3e3e3; border-radius: 6px; background: #fff; margin: .8em 0; padding: 0 1em; }
+    details.section > summary {
+      cursor: pointer; font-size: 1.1em; font-weight: 600; color: #444;
+      padding: .7em 0; list-style: none; user-select: none;
+    }
+    details.section > summary::-webkit-details-marker { display: none; }
+    details.section > summary::before { content: "▸"; display: inline-block; width: 1.1em; color: #999; }
+    details.section[open] > summary::before { content: "▾"; }
+    details.section > summary .count { color: #999; font-weight: 400; font-size: .85em; }
+    details.section > :not(summary):last-child { margin-bottom: 1em; }
+    .slot-card { border: 1px solid #eee; border-radius: 6px; padding: .6em .8em; margin: .5em 0; background: #fcfcfc; }
+    .slot-card h4 { margin: 0 0 .4em; font-size: 1em; }
+    .pill { display:inline-block; padding:.1em .5em; border-radius:10px; font-size:.78em; background:#eef; color:#335; margin-right:.3em; }
+    .pill-epub { background:#e7f1ff; color:#0b5394; }
+    .pill-ongoing { background:#e6f4ea; color:#1e7e34; }
+    .muted { color:#999; }
+    .kv { display:grid; grid-template-columns:max-content 1fr; gap:.2em 1em; font-size:.9em; }
   </style>
 </head>
 <body>

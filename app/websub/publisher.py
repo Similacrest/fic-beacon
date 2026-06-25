@@ -13,6 +13,7 @@ import logging
 from datetime import timezone
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -66,9 +67,19 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
 
 def _notify_topic(session: Session, topic_url: str, atom_bytes: bytes) -> None:
     now = utcnow()
+    # A subscriber may have registered the topic *with* the ?token=… query string
+    # (the URL the user pasted into their reader) while our advertised rel=self —
+    # and thus topic_url here — is token-free. Match both forms so realtime push
+    # isn't silently dropped for tokened subscriptions.
     subs = (
         session.query(WebSubSubscription)
-        .filter(WebSubSubscription.topic_url == topic_url, WebSubSubscription.verified.is_(True))
+        .filter(
+            or_(
+                WebSubSubscription.topic_url == topic_url,
+                WebSubSubscription.topic_url.like(topic_url + "?%"),
+            ),
+            WebSubSubscription.verified.is_(True),
+        )
         .all()
     )
     for sub in subs:

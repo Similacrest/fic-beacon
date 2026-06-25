@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-25
+
+### Added
+- **Dashboard observability** — collapsible sections on `/admin`:
+  - *Now broadcasting* — per channel, what each numbered slot feed currently carries
+    (the streaming EPUB + pinned ongoings) and the most recent drops in that feed
+    (post + chapter level).
+  - *Next broadcast* — queued EPUBs (waiting for a free slot), ongoings holding buffered
+    chapters, and the **held-out log** from the last broadcast (sources whose next unit
+    lost the stochastic budget roll and rolled over).
+  - *System status* — when the drop and poll crons last ran and when they next fire,
+    plus the list of WebSub subscribers (verified / unverified / expired).
+- **Per-broadcast skip log** — the planner records which sources had units roll over
+  (held out entirely vs. partly deferred); persisted to `app_state` and shown on the dashboard.
+- **Regenerate feed secret** — a Settings-page button rotates `config.feed_secret` (every
+  feed URL's `?token=` changes) and clears stale WebSub subscriptions, for a hard reader-cache
+  reset. Per-drop feedback links are unaffected.
+- **Cron run tracking** — `app_state` key/value table records `last_drop_run_at` /
+  `last_poll_run_at` (a new table, so `create_all` adds it without recreating the volume).
+
+### Fixed
+- **WebSub realtime push for tokened feeds** — subscribers that register a topic with the
+  `?token=…` query string (the URL pasted into the reader) are now matched on push; the
+  publisher previously only matched the token-free `rel=self` URL, so pushes were silently
+  dropped and feeds only updated on the reader's slow poll. This is the likely cause of new
+  chapters not appearing promptly in InoReader.
+
+### Changed
+- **Feeds are always polled right before a broadcast** — both the scheduled drop cycle and the
+  manual "Run drop cycle" trigger poll every ongoing feed first, so a broadcast releases the
+  freshest chapters instead of waiting for the next hourly poll. (The hourly poll still runs.)
+- **Single source of truth for the version** — `app/version.py` reads `[project].version`
+  from `pyproject.toml` at runtime (copied into the image). Removed the baked-in
+  `APP_VERSION`/`VERSION` build-arg/`git describe` plumbing (Dockerfile, docker-compose,
+  rebuild.sh) and fixed the doubled-`v` (`vv0.2.0-…`) in the UI.
+
 ## [0.3.0] — 2026-06-24
 
 Major redesign turning Fic-Beacon into a single weighted queue for the completed backlog **and**
@@ -90,8 +126,8 @@ the user's real ongoing serials. Landing incrementally:
   configurable Calibre library path.
 - v2-designed (not built) ongoing-feed balancing scaffolding (later superseded — see Unreleased).
 
-[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Similacrest/fic-beacon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Similacrest/fic-beacon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Similacrest/fic-beacon/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/Similacrest/fic-beacon/releases/tag/v0.1.0
 [0.1.0]: https://github.com/Similacrest/fic-beacon/releases/tag/v0.1.0

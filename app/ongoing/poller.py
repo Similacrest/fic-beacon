@@ -94,6 +94,8 @@ def poll_all_feeds(session: Session) -> int:
             logger.exception(
                 "Failed to poll ongoing source '%s' (%s)", source.title, source.feed_url
             )
+    from app.state import LAST_POLL_RUN, mark_run
+    mark_run(session, LAST_POLL_RUN)
     session.flush()
     return total_new
 

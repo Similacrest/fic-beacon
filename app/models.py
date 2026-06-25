@@ -195,6 +195,23 @@ class WebSubSubscription(Base):
     )
 
 
+class AppState(Base):
+    """Tiny key/value store for runtime state (e.g. last cron run times).
+
+    Deliberately a *new table* rather than extra Config columns: SQLAlchemy's
+    create_all adds missing tables on existing volumes but does NOT add missing
+    columns, so this picks up automatically on upgrade with no migration/volume
+    recreation.
+    """
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class OngoingEntry(Base):
     """A buffered chapter from an ongoing serial's RSS feed.
 

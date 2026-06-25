@@ -1,7 +1,9 @@
 """Admin UI — Jinja + HTMX single-user management interface."""
 from __future__ import annotations
 
+import json
 import re
+import secrets
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -14,8 +16,12 @@ from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
 from app.database import INBOX_CHANNEL_SLUG, ensure_default_channel, get_db
-from app.models import Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackEvent, OngoingEntry
+from app.models import (
+    Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop,
+    FeedbackEvent, OngoingEntry, WebSubSubscription,
+)
 from app.ongoing.feed_url import infer_feed_url
+from app.state import LAST_DROP_RUN, LAST_POLL_RUN, LAST_SKIPS, get_run, get_value
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -27,6 +33,8 @@ templates.env.globals["version"] = __version__
 
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    from app import scheduler
+
     active = db.query(Book).filter(Book.status == BookStatus.active).order_by(Book.queue_position).all()
     queued = db.query(Book).filter(Book.status == BookStatus.queued).order_by(Book.queue_position).all()
     completed = db.query(Book).filter(Book.status == BookStatus.completed).order_by(Book.added_at.desc()).limit(10).all()
@@ -47,6 +55,25 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         .group_by(OngoingEntry.source_id)
         .all()
     )
+
+    # ── Per-channel slot view: what's broadcasting in each feed right now ──────
+    slot_view = _build_slot_view(db, channels, active, queued, buffered)
+
+    # ── System status: cron last/next runs + WebSub subscribers ───────────────
+    next_runs = scheduler.next_run_times()
+    status = {
+        "last_drop": get_run(db, LAST_DROP_RUN),
+        "last_poll": get_run(db, LAST_POLL_RUN),
+        "next_drop": next_runs.get("drop_cycle"),
+        "next_poll": next_runs.get("poll_ongoing"),
+    }
+    subscribers = _build_subscriber_view(db, channels)
+
+    try:
+        last_skips = json.loads(get_value(db, LAST_SKIPS) or "[]")
+    except json.JSONDecodeError:
+        last_skips = []
+
     return templates.TemplateResponse(request, "admin/index.html", {
         "active": active,
         "queued": queued,
@@ -56,7 +83,81 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "cfg": cfg,
         "channels": channels,
         "buffered": buffered,
+        "slot_view": slot_view,
+        "status": status,
+        "subscribers": subscribers,
+        "last_skips": last_skips,
     })
+
+
+def _build_slot_view(db, channels, active, queued, buffered):
+    """Assemble, per channel, what each numbered slot feed is broadcasting:
+    its streaming EPUB + pinned ongoings, the most recent drops in that feed, plus
+    the channel's queued EPUBs and ongoings holding buffered (not-yet-dropped) chapters.
+    """
+    view = []
+    for ch in channels:
+        # Recent drops for this channel, bucketed by feed_key (slot).
+        recent = (
+            db.query(Drop)
+            .join(Drop.book)
+            .filter(Drop.channel_id == ch.id)
+            .order_by(Drop.published_at.desc())
+            .limit(40)
+            .all()
+        )
+        drops_by_slot: dict[str, list[Drop]] = {}
+        for d in recent:
+            drops_by_slot.setdefault(d.feed_key or "?", []).append(d)
+
+        slots = []
+        for s in range(1, ch.parallel_slots + 1):
+            here = [b for b in active if b.channel_id == ch.id and b.slot_index == s]
+            slots.append({
+                "n": s,
+                "epub": next((b for b in here if b.kind == BookKind.epub), None),
+                "ongoings": [b for b in here if b.kind == BookKind.ongoing],
+                "drops": drops_by_slot.get(str(s), [])[:5],
+            })
+
+        queued_epubs = [b for b in queued if b.channel_id == ch.id and b.kind == BookKind.epub]
+        # Ongoings with buffered chapters waiting — eligible next broadcast, may be held
+        # out by the stochastic budget. (Ongoings are never queued, only buffered.)
+        waiting_ongoings = [
+            b for b in active
+            if b.channel_id == ch.id and b.kind == BookKind.ongoing and buffered.get(b.id, 0)
+        ]
+        view.append({
+            "channel": ch,
+            "slots": slots,
+            "queued_epubs": queued_epubs,
+            "waiting_ongoings": waiting_ongoings,
+        })
+    return view
+
+
+def _build_subscriber_view(db, channels):
+    """Group WebSub subscribers by topic feed, flagging verified/expired state."""
+    from app.models import utcnow
+    now = utcnow()
+    by_slug = {ch.slug: ch.name for ch in channels}
+    subs = db.query(WebSubSubscription).order_by(WebSubSubscription.topic_url).all()
+    out = []
+    for sub in subs:
+        topic = sub.topic_url.split("?", 1)[0]
+        label = topic.replace(f"{settings.base_url}/feed/", "")
+        exp = sub.lease_expires_at
+        if exp is not None and exp.tzinfo is None:
+            from datetime import timezone
+            exp = exp.replace(tzinfo=timezone.utc)
+        out.append({
+            "label": label,
+            "callback": sub.callback_url,
+            "verified": sub.verified,
+            "expired": exp is not None and exp < now,
+            "lease_expires_at": exp,
+        })
+    return out
 
 
 # ── Calibre import / Library ──────────────────────────────────────────────────
@@ -422,12 +523,31 @@ def save_config(
     return RedirectResponse(url="/admin/", status_code=303)
 
 
+@router.post("/config/regenerate-secret")
+def regenerate_feed_secret(db: Session = Depends(get_db)) -> RedirectResponse:
+    """Rotate the feed secret — every feed URL's ?token= changes.
+
+    This is the hard reset: all existing reader subscriptions (every channel) break
+    until re-added with the new URLs, and stale WebSub subscriptions are cleared since
+    their topics no longer resolve. Per-drop feedback links are unaffected.
+    """
+    cfg = db.get(Config, 1)
+    if cfg is not None:
+        cfg.feed_secret = secrets.token_urlsafe(32)
+        db.query(WebSubSubscription).delete(synchronize_session=False)
+        db.commit()
+    return RedirectResponse(url="/admin/channels", status_code=303)
+
+
 # ── Manual drop / poll triggers ───────────────────────────────────────────────
 
 @router.post("/trigger-drop")
 def trigger_drop(db: Session = Depends(get_db)) -> RedirectResponse:
+    from app.ongoing.poller import poll_all_feeds
     from app.planner.planner import run_drop_cycle
     from app.websub.publisher import publish_updates
+    # Always poll ongoing feeds first so the broadcast releases the freshest chapters.
+    poll_all_feeds(db)
     drops = run_drop_cycle(db, settings.calibre_library_path)
     db.commit()
     publish_updates(db, drops)

@@ -28,7 +28,7 @@ reading budget per channel, and each drop embeds feedback links to steer the rot
 ## Stack
 
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
-- **APScheduler** (in-process: drop cycle on `cadence_cron`; hourly ongoing-feed poll)
+- **APScheduler** (in-process: drop cycle on `cadence_cron`, which polls feeds first; hourly ongoing-feed poll)
 - **SQLAlchemy + SQLite** (app state; schema built via `create_all`, recreate volume on
   schema-changing upgrades)
 - **Jinja + HTMX** (server-rendered single-user admin UI)
@@ -100,7 +100,8 @@ fic-beacon/
 - A **source** is a `book` row. `kind=epub` (Calibre-backed) or `kind=ongoing` (RSS-backed,
   carries `feed_url`). Both hold `quota_weight`, votes, `status`, and live in a channel.
 - A **unit** is one drop-able chunk: an EPUB chapter (`chapterize(epub)[cursor]`) or an unreleased
-  `ongoing_entry` (oldest first). The poller buffers ongoing entries hourly; they are *released*
+  `ongoing_entry` (oldest first). The poller buffers ongoing entries hourly **and again right
+  before every broadcast** (so a drop always sees the freshest chapters); entries are *released*
   only at drop time. Unit shape: `{title, html, word_count, source_url}`.
 
 ### Drop Planner — per-channel stochastic budget
@@ -116,7 +117,9 @@ fic-beacon/
   excluded → **roll over** whole to a later broadcast.
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
   defer; a low-weight source may get nothing some cycles. **Never split a unit.**
-- After the pass: `budget_credit += channel.budget − used` (clamped to ±budget).
+- After the pass: `budget_credit += channel.budget − used` (clamped to ±budget). Sources whose
+  units rolled over are written to a per-broadcast **skip log** (`app_state[last_broadcast_skips]`)
+  surfaced on the dashboard.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
 - Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
@@ -149,6 +152,10 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
+The advertised `rel=self` / topic is **token-free** (`{base}/feed/{slug}/{key}`), but a reader may
+register the topic **with** the `?token=…` it polls; the publisher matches both forms so tokened
+subscriptions still receive push. The admin dashboard lists current subscribers + last/next cron
+runs for diagnosing "feed not updating".
 
 ### Calibre access
 Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), and **tags** come from
@@ -164,7 +171,11 @@ queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `feed_secret`). See `Architecture.md §5`.
+`thumbs_down_drop_threshold`, `feed_secret`) · `app_state` (key/value runtime store, e.g.
+`last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
+
+The app **version** has a single source of truth — `[project].version` in `pyproject.toml`,
+read at runtime by `app/version.py` (no baked env var). Bump it there on release.
 
 ## Timezone
 

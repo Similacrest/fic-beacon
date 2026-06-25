@@ -149,6 +149,34 @@ class TestGlobalRoundRobin:
         plans = _plan_drops([book], adapter, budget=9999)
         assert plans[0].word_count > 500  # more than one chapter's worth
 
+    def test_skips_out_records_rolled_over_sources(self, in_memory_db, epub_path):
+        random.seed(0)
+        # 4 books × 5 chapters of ~500 words, tight budget → most units roll over.
+        books = [
+            _make_book(in_memory_db, calibre_id=i, title=f"Book {i}", queue_position=i)
+            for i in range(1, 5)
+        ]
+        from app.calibre.adapter import CalibreBook
+        mock_all = MagicMock()
+        mock_all.get_book.return_value = CalibreBook(
+            calibre_id=1, title="T", author="A", path="A/T (1)", epub_name="T - A", source_url=None,
+        )
+        mock_all.epub_path.return_value = epub_path
+
+        skips = []
+        plans = _plan_drops(books, mock_all, budget=1000, skips_out=skips)
+
+        assert skips, "tight budget should leave sources with rolled-over units"
+        assert all(s.remaining_count > 0 for s in skips)
+        # A fully held-out source dropped nothing; reflected by held_out.
+        for s in skips:
+            assert s.held_out == (s.dropped_count == 0)
+        # Books that dropped something are not double-counted as fully held out.
+        dropped_ids = {p.book.id for p in plans}
+        for s in skips:
+            if s.book.id in dropped_ids:
+                assert not s.held_out
+
     def test_minutes_budget_mode(self, in_memory_db):
         # A channel in minutes mode multiplies its budget by the global wpm.
         from app.models import Channel, Config

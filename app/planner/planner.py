@@ -61,6 +61,22 @@ class PlannedDrop:
     word_count: int
 
 
+@dataclass
+class SkippedSource:
+    """A source that had pending units but left ≥1 un-dropped this broadcast.
+
+    held_out=True when *nothing* dropped (lost the weighted budget roll outright);
+    otherwise some units dropped and the rest rolled over to a later broadcast.
+    """
+    book: Book
+    dropped_count: int
+    remaining_count: int
+
+    @property
+    def held_out(self) -> bool:
+        return self.dropped_count == 0
+
+
 def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
     """Remaining units for a source. None = source unresolvable (warned); [] = none now."""
     if book.kind == BookKind.ongoing:
@@ -97,6 +113,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     cfg = _get_config(session)
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
+    skip_log: list[dict] = []
 
     channels = (
         session.query(Channel)
@@ -121,7 +138,8 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         available = base_budget + channel.budget_credit
         effective = max(0, int(available))
 
-        plans = _plan_drops(active_books, adapter, effective)
+        skips: list[SkippedSource] = []
+        plans = _plan_drops(active_books, adapter, effective, skips_out=skips)
         used = 0
         for plan in plans:
             drop = _materialise(session, plan, channel.id)
@@ -129,6 +147,17 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
                 drops.append(drop)
                 used += plan.word_count
                 _advance_cursor(session, plan, adapter, cfg)
+
+        for skip in skips:
+            skip_log.append({
+                "channel": channel.name,
+                "title": skip.book.title,
+                "kind": skip.book.kind.value,
+                "weight": round(skip.book.quota_weight, 2),
+                "dropped": skip.dropped_count,
+                "remaining": skip.remaining_count,
+                "held_out": skip.held_out,
+            })
 
         # Carry the leftover (can be negative after an oversized post); clamp so a big
         # overshoot doesn't suppress drops for many cycles.
@@ -138,6 +167,11 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         # Re-fill slots freed by EPUBs that just completed this broadcast.
         _assign_slots(session, channel.parallel_slots, channel.id)
 
+    import json
+
+    from app.state import LAST_DROP_RUN, LAST_SKIPS, mark_run, set_value
+    mark_run(session, LAST_DROP_RUN)
+    set_value(session, LAST_SKIPS, json.dumps(skip_log))
     session.flush()
     return drops
 
@@ -186,6 +220,7 @@ def _plan_drops(
     active_books: list[Book],
     adapter: CalibreAdapter,
     budget: int,
+    skips_out: list["SkippedSource"] | None = None,
 ) -> list[PlannedDrop]:
     """Pure-stochastic selection over whole units (chapters), never splitting.
 
@@ -236,6 +271,16 @@ def _plan_drops(
                 remaining.pop(0)
                 used += unit.word_count
                 changed = True
+
+    if skips_out is not None:
+        for book in valid:
+            remaining_count = len(book_remaining[book.id])
+            if remaining_count > 0:  # something rolled over to a later broadcast
+                skips_out.append(SkippedSource(
+                    book=book,
+                    dropped_count=len(selected[book.id]),
+                    remaining_count=remaining_count,
+                ))
 
     return [
         PlannedDrop(book=book, chapters=chs, word_count=sum(c.word_count for c in chs))

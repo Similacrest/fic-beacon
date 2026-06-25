@@ -3,8 +3,11 @@ import secrets
 import uuid
 from zoneinfo import ZoneInfo
 
-from app.models import Book, BookStatus, Channel, Drop, FeedbackAction, FeedbackEvent
-from app.routers.admin import clear_dropped
+from app.models import (
+    Book, BookStatus, Channel, Config, Drop, FeedbackAction, FeedbackEvent,
+    WebSubSubscription,
+)
+from app.routers.admin import clear_dropped, regenerate_feed_secret
 
 
 def _book(db, status, cid=1):
@@ -43,6 +46,32 @@ class TestClearDropped:
         assert in_memory_db.get(Book, kept.id) is not None
         assert in_memory_db.query(Drop).count() == 0          # dropped book's drops gone
         assert in_memory_db.query(FeedbackEvent).count() == 0  # and their feedback
+
+
+class TestRegenerateFeedSecret:
+    def test_rotates_secret_and_clears_subscriptions(self, in_memory_db):
+        cfg = in_memory_db.get(Config, 1)
+        old = cfg.feed_secret
+        in_memory_db.add(WebSubSubscription(
+            topic_url="http://testserver/feed/general/1",
+            callback_url="http://reader/cb", verified=True,
+        ))
+        in_memory_db.commit()
+
+        regenerate_feed_secret(db=in_memory_db)
+
+        assert in_memory_db.get(Config, 1).feed_secret != old
+        assert in_memory_db.query(WebSubSubscription).count() == 0
+
+
+class TestStateHelpers:
+    def test_run_stamp_roundtrip_and_missing(self, in_memory_db):
+        from app.state import LAST_DROP_RUN, get_run, mark_run
+        assert get_run(in_memory_db, LAST_DROP_RUN) is None
+        mark_run(in_memory_db, LAST_DROP_RUN)
+        in_memory_db.flush()
+        stamped = get_run(in_memory_db, LAST_DROP_RUN)
+        assert stamped is not None and stamped.tzinfo is not None
 
 
 class TestTimezone:

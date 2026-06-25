@@ -153,11 +153,16 @@ C4Component
   `verified`, `created_at`.
 - **`config`** — single-row globals only: `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`,
   `feed_secret`. (Budget, slots, and budget-mode live per-channel, not here.)
+- **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
+  `last_drop_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
+  adds it on existing volumes without a migration.
 
 ## 6. Core Flows
 
 ### 6.1 Broadcast cycle (scheduled, per channel)
-1. Scheduler fires the Planner on `cadence_cron` (in `BEACON_TZ`).
+1. Scheduler fires on `cadence_cron` (in `BEACON_TZ`) and **polls every ongoing feed first**
+   (same as §6.2) so the broadcast releases the freshest chapters; then runs the Planner. The
+   manual "Run drop cycle" trigger does the same poll-then-plan.
 2. For each channel, **assign slots** (`_assign_slots`): promote queued EPUBs into free slots up to
    `parallel_slots` (≤ N active EPUBs, one per slot; sticky), and pin every active ongoing to a
    balanced slot (fewest pinned works, tie-break fewest chapters ever dropped there; sticky). Then
@@ -168,7 +173,8 @@ C4Component
    over whole. Never split. Then `budget_credit += budget − used`.
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance EPUB cursors /
    mark ongoing entries released; complete+free EPUBs that ran out (next queued EPUB rebalances in).
-5. WebSub push fires for each affected slot-feed.
+   Sources whose units rolled over are recorded in the per-broadcast skip log (`app_state`).
+5. WebSub push fires for each affected slot-feed (subscribers matched with or without the `?token=`).
 
 ### 6.2 Ongoing buffering (hourly)
 The poller fetches each `kind=ongoing` source's `feed_url`, inserts new entries (deduped by

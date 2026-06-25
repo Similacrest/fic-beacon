@@ -35,9 +35,12 @@ _scheduler = BackgroundScheduler()
 
 
 def _run_cycle() -> None:
+    from app.ongoing.poller import poll_all_feeds
     from app.planner.planner import run_drop_cycle
     from app.websub.publisher import publish_updates
     with db_session() as session:
+        # Always poll ongoing feeds first so a broadcast releases the freshest chapters.
+        poll_all_feeds(session)
         drops = run_drop_cycle(session, settings.calibre_library_path)
         session.commit()
         publish_updates(session, drops)
@@ -81,6 +84,15 @@ def update_cadence(cadence_cron: str) -> None:
         "drop_cycle",
         trigger=CronTrigger.from_crontab(cadence_cron, timezone=_timezone()),
     )
+
+
+def next_run_times() -> dict[str, object]:
+    """Next scheduled fire time per job (None if not scheduled), for the dashboard."""
+    out: dict[str, object] = {}
+    for job_id in ("drop_cycle", "poll_ongoing"):
+        job = _scheduler.get_job(job_id) if _scheduler.running else None
+        out[job_id] = job.next_run_time if job else None
+    return out
 
 
 def shutdown() -> None:
