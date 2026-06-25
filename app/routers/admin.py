@@ -17,8 +17,8 @@ from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
 from app.database import INBOX_CHANNEL_SLUG, ensure_default_channel, get_db
 from app.models import (
-    Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop,
-    FeedbackEvent, OngoingEntry, WebSubSubscription,
+    Book, BookStatus, BudgetMode, Channel, Config, Drop,
+    FeedbackEvent, WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
 from app.state import LAST_DROP_RUN, LAST_POLL_RUN, LAST_SKIPS, get_run, get_value
@@ -27,6 +27,7 @@ from app.version import __version__
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 templates.env.globals["version"] = __version__
+templates.env.globals["abs_chapter"] = absolute_chapter_number
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -49,15 +50,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     )
     cfg = db.get(Config, 1)
     channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
-    buffered = dict(
-        db.query(OngoingEntry.source_id, func.count(OngoingEntry.id))
-        .filter(OngoingEntry.released.is_(False))
-        .group_by(OngoingEntry.source_id)
-        .all()
-    )
 
     # ── Per-channel slot view: what's broadcasting in each feed right now ──────
-    slot_view = _build_slot_view(db, channels, active, queued, buffered)
+    slot_view = _build_slot_view(db, channels, active, queued)
 
     # ── System status: cron last/next runs + WebSub subscribers ───────────────
     next_runs = scheduler.next_run_times()
@@ -65,7 +60,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "last_drop": get_run(db, LAST_DROP_RUN),
         "last_poll": get_run(db, LAST_POLL_RUN),
         "next_drop": next_runs.get("drop_cycle"),
-        "next_poll": next_runs.get("poll_ongoing"),
+        "next_sweep": next_runs.get("feedless_sweep"),
     }
     subscribers = _build_subscriber_view(db, channels)
 
@@ -82,7 +77,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "inbox_books": inbox_books,
         "cfg": cfg,
         "channels": channels,
-        "buffered": buffered,
         "slot_view": slot_view,
         "status": status,
         "subscribers": subscribers,
@@ -90,10 +84,18 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     })
 
 
-def _build_slot_view(db, channels, active, queued, buffered):
+def _pending_chapters(book: Book) -> int:
+    """How many whole chapters sit past the cursor (rough 'waiting to drop' count)."""
+    if book.total_chapters is None:
+        return 0
+    return max(0, book.total_chapters - book.cursor_chapter_index)
+
+
+def _build_slot_view(db, channels, active, queued):
     """Assemble, per channel, what each numbered slot feed is broadcasting:
-    its streaming EPUB + pinned ongoings, the most recent drops in that feed, plus
-    the channel's queued EPUBs and ongoings holding buffered (not-yet-dropped) chapters.
+    its streaming backlog book + pinned tracked stories, the most recent drops in that
+    feed, plus the channel's queued backlog books and tracked stories with chapters
+    waiting past their cursor.
     """
     view = []
     for ch in channels:
@@ -115,17 +117,17 @@ def _build_slot_view(db, channels, active, queued, buffered):
             here = [b for b in active if b.channel_id == ch.id and b.slot_index == s]
             slots.append({
                 "n": s,
-                "epub": next((b for b in here if b.kind == BookKind.epub), None),
-                "ongoings": [b for b in here if b.kind == BookKind.ongoing],
+                "epub": next((b for b in here if not b.tracked), None),
+                "ongoings": [b for b in here if b.tracked],
                 "drops": drops_by_slot.get(str(s), [])[:5],
             })
 
-        queued_epubs = [b for b in queued if b.channel_id == ch.id and b.kind == BookKind.epub]
-        # Ongoings with buffered chapters waiting — eligible next broadcast, may be held
-        # out by the stochastic budget. (Ongoings are never queued, only buffered.)
+        queued_epubs = [b for b in queued if b.channel_id == ch.id and not b.tracked]
+        # Tracked stories with chapters waiting past their cursor — eligible next
+        # broadcast, may be held out by the stochastic budget.
         waiting_ongoings = [
             b for b in active
-            if b.channel_id == ch.id and b.kind == BookKind.ongoing and buffered.get(b.id, 0)
+            if b.channel_id == ch.id and b.tracked and _pending_chapters(b)
         ]
         view.append({
             "channel": ch,
@@ -167,21 +169,15 @@ def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     adapter = CalibreAdapter(settings.calibre_library_path)
     calibre_books = adapter.list_books()
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
-    existing_feeds = {b.feed_url for b in db.query(Book.feed_url).filter(Book.feed_url.isnot(None)).all()}
-    linked_calibre_ids = {
-        b.linked_calibre_id
-        for b in db.query(Book.linked_calibre_id).filter(Book.linked_calibre_id.isnot(None)).all()
-    }
     importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
     channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    # Offer "track for updates" only where we can derive an update feed from the source URL.
     inferred_feeds = {b.calibre_id: infer_feed_url(b.source_url) for b in importable}
     return templates.TemplateResponse(
         request, "admin/library.html", {
             "books": importable,
             "channels": channels,
             "inferred_feeds": inferred_feeds,
-            "existing_feeds": existing_feeds,
-            "linked_calibre_ids": linked_calibre_ids,
         }
     )
 
@@ -222,6 +218,67 @@ def do_import(
             channel_id=target_id,
         ))
     db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/library/track")
+def track_from_library(
+    calibre_id: int = Form(...),
+    channel_id: int | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Import a Calibre book AND mark it tracked (auto-updating) in one step.
+
+    The book already lives in the library, so no fetch is needed now; future updates are
+    RSS-triggered (inferred feed) or picked up by the daily feedless sweep.
+    """
+    adapter = CalibreAdapter(settings.calibre_library_path)
+    cbook = adapter.get_book(calibre_id)
+    if cbook is None:
+        return RedirectResponse(url="/admin/library", status_code=303)
+    existing = db.query(Book).filter(Book.calibre_id == calibre_id).first()
+    if existing is None:
+        target_id = channel_id or _auto_channel_id(db, cbook)
+        max_pos = (db.query(func.max(Book.queue_position)).scalar() or 0) + 1
+        db.add(Book(
+            calibre_id=calibre_id,
+            title=cbook.title,
+            author=cbook.author,
+            source_url=cbook.source_url,
+            tracked=True,
+            feed_url=infer_feed_url(cbook.source_url),
+            status=BookStatus.active,
+            queue_position=max_pos,
+            channel_id=target_id,
+        ))
+    db.commit()
+    return RedirectResponse(url="/admin/library", status_code=303)
+
+
+def _auto_channel_id(db: Session, cbook) -> int:
+    default_channel_id = ensure_default_channel(db).id
+    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.id).all()
+    genres = effective_genres(cbook.genres, cbook.genre_tags, cbook.source_url)
+    return pick_channel_id(genres, channels, default_channel_id)
+
+
+@router.post("/books/{book_id}/track")
+def set_book_tracked(
+    book_id: int,
+    tracked: int = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Toggle whether an existing book auto-updates. Tracked books are never queued."""
+    book = db.get(Book, book_id)
+    if book is not None:
+        book.tracked = bool(tracked)
+        if book.tracked:
+            if book.feed_url is None:
+                book.feed_url = infer_feed_url(book.source_url)
+            if book.status == BookStatus.queued:
+                book.status = BookStatus.active
+                book.slot_index = None
+        db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
 
@@ -382,25 +439,9 @@ def set_cursor(
 ) -> RedirectResponse:
     book = db.get(Book, book_id)
     if book is not None:
-        if book.kind == BookKind.ongoing:
-            # For ongoing: rewind by un-releasing entries beyond the target cursor.
-            target = max(0, chapter_index)
-            book.cursor_chapter_index = target
-            # Entries ordered by publish date; those after the new cursor re-enter the buffer.
-            all_entries = (
-                db.query(OngoingEntry)
-                .filter(OngoingEntry.source_id == book.id)
-                .order_by(OngoingEntry.published_at, OngoingEntry.id)
-                .all()
-            )
-            for i, entry in enumerate(all_entries, start=1):
-                pos = entry.chapter_num if entry.chapter_num is not None else i
-                if pos > target:
-                    entry.released = False
-                    entry.drop_id = None
-        else:
-            upper = book.total_chapters if book.total_chapters is not None else chapter_index
-            book.cursor_chapter_index = max(0, min(chapter_index, upper))
+        upper = book.total_chapters if book.total_chapters is not None else chapter_index
+        # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
+        book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 

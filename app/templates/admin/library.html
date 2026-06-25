@@ -63,17 +63,11 @@
       </td>
       <td style="white-space:nowrap">
         {% if feed %}
-          {% if feed in existing_feeds or book.calibre_id in linked_calibre_ids %}
-            <span style="color:#888; font-size:.8em">already tracked</span>
-          {% else %}
-            <form method="post" action="/admin/ongoing/add" style="display:inline">
-              <input type="hidden" name="feed_url" value="{{ feed }}">
-              <input type="hidden" name="title" value="{{ book.title }}">
-              <input type="hidden" name="linked_calibre_id" value="{{ book.calibre_id }}">
-              <button class="btn" style="font-size:.8em; padding:.15em .5em"
-                      title="{{ feed }}">+ Add ongoing</button>
-            </form>
-          {% endif %}
+          <form method="post" action="/admin/library/track" style="display:inline">
+            <input type="hidden" name="calibre_id" value="{{ book.calibre_id }}">
+            <button class="btn" style="font-size:.8em; padding:.15em .5em"
+                    title="Import and auto-update from {{ feed }}">📡 Track updates</button>
+          </form>
         {% else %}
           <span style="color:#ccc; font-size:.8em">—</span>
         {% endif %}

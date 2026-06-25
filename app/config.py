@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     feed_secret: str = secrets.token_urlsafe(32)
 
+    # FanFicFare/Calibre fetcher container — Fic-Beacon POSTs story URLs here to have
+    # new chapters downloaded into the (read-only-to-us) Calibre library. See fetcher/.
+    fetcher_url: str = "http://fetcher:8080"
+    # Per-request timeout (seconds) for a fetch — FanFicFare downloads can be slow.
+    fetcher_timeout: float = 300.0
+
     # Scheduling timezone for drop/poll cron (e.g. "Europe/Tallinn").
     # Unset → APScheduler uses the machine local tz, which is UTC in a stock container.
     tz: str | None = None

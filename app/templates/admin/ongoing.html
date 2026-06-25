@@ -1,39 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Ongoing Serials — Fic Beacon{% endblock %}
+{% block title %}Tracked Stories — Fic Beacon{% endblock %}
 {% block content %}
 
-<h1>Ongoing Serials</h1>
+<h1>Tracked Stories</h1>
 <p style="color:#888">
-  Register a serial's RSS feed into a channel. New chapters are buffered hourly and released,
-  batched, at your drop times — weighted in the channel budget alongside the backlog, and
-  steerable with the same 👍/👎/❌ feedback. Serials occupy numbered slots in their channel
-  just like EPUB books and appear in the same per-slot feeds.
+  Track a web serial by its story URL. The fetcher container downloads new chapters into
+  your Calibre library with FanFicFare; Fic-Beacon then serves them as a normal EPUB —
+  weighted in the channel budget alongside the backlog and steerable with the same
+  👍/👎/❌ feedback. If the URL has an RSS feed we use it only to <em>notice</em> updates
+  fast; otherwise it is refreshed by the daily sweep.
 </p>
 
-{% set imported = request.query_params.get('imported') %}
-{% if imported %}
+{% set added = request.query_params.get('added') %}
+{% if added %}
 <p style="background:#d4edda; color:#155724; padding:.6em 1em; border-radius:4px">
-  Added {{ imported }} new source(s) from OPML.
+  Added {{ added }} story(ies). Their first download runs in the background — refresh to see status.
 </p>
 {% endif %}
-
-<p style="color:#888; font-size:.9em">
-  Feeds are polled hourly automatically. Use the <a href="/admin/">Dashboard</a> 🔄 button to poll now.
-</p>
 
 {% if sources %}
 <form method="post" action="/admin/ongoing/batch-delete" id="ongoing-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
     <input type="checkbox" id="ongoing-check-all" title="Select all">
     <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('ongoing-check', 'Delete selected serials and their buffered chapters?')">
+            onclick="return batchConfirm('ongoing-check', 'Delete selected tracked stories?')">
       Delete selected
     </button>
   </div>
 </form>
 <table>
   <thead><tr>
-    <th></th><th>Title</th><th>Channel</th><th>Buffered</th><th>Feed URL</th><th>Status</th><th>Actions</th>
+    <th></th><th>Title</th><th>Channel</th><th>Last fetch</th><th>Feed / source</th><th>Status</th><th>Actions</th>
   </tr></thead>
   <tbody>
   {% for s in sources %}
@@ -41,9 +38,15 @@
     <td><input type="checkbox" name="book_ids" value="{{ s.id }}" class="ongoing-check" form="ongoing-batch-form"></td>
     <td>{{ s.title }}</td>
     <td>{{ chan_name.get(s.channel_id, '—') }}</td>
-    <td title="Unreleased buffered chapters">{{ buffered.get(s.id) or '—' }}</td>
+    <td style="font-size:.82em" title="{{ s.last_fetch_at }}">
+      {% if s.last_fetch_status %}
+        <span style="color:{{ '#a00' if s.last_fetch_status.startswith('error') else ('#856404' if s.last_fetch_status == 'pending' else '#155724') }}">{{ s.last_fetch_status }}</span>
+      {% else %}—{% endif %}
+    </td>
     <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
-      <a href="{{ s.feed_url }}" target="_blank">{{ s.feed_url }}</a>
+      {% if s.feed_url %}<a href="{{ s.feed_url }}" target="_blank" title="RSS notify feed">🔔 {{ s.feed_url }}</a>
+      {% elif s.source_url %}<a href="{{ s.source_url }}" target="_blank">{{ s.source_url }}</a>
+      {% else %}—{% endif %}
     </td>
     <td>
       <form method="post" action="/admin/ongoing/{{ s.id }}/toggle">
@@ -52,9 +55,12 @@
         </button>
       </form>
     </td>
-    <td>
-      <form method="post" action="/admin/ongoing/{{ s.id }}/delete"
-            onsubmit="return confirm('Remove this source and its buffered chapters?')">
+    <td style="white-space:nowrap">
+      <form method="post" action="/admin/ongoing/{{ s.id }}/fetch-now" style="display:inline">
+        <button style="font-size:.8em; padding:.15em .5em" title="Fetch new chapters now">⤓</button>
+      </form>
+      <form method="post" action="/admin/ongoing/{{ s.id }}/delete" style="display:inline"
+            onsubmit="return confirm('Stop tracking this story?')">
         <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
       </form>
     </td>
@@ -73,15 +79,16 @@ document.getElementById('ongoing-check-all').addEventListener('change', function
 });
 </script>
 {% else %}
-<p style="color:#888">No ongoing serials yet. Add one below or import an OPML export.</p>
+<p style="color:#888">No tracked stories yet. Add one below.</p>
 {% endif %}
 
-<h2>Add a serial</h2>
+<h2>Add a story</h2>
 <form method="post" action="/admin/ongoing/add"
       style="display:flex; gap:.5em; align-items:flex-end; flex-wrap:wrap; max-width:700px">
   <div style="flex:2; min-width:200px">
-    <label for="feed_url" style="font-size:.9em">Feed URL</label>
-    <input type="url" name="feed_url" id="feed_url" required placeholder="https://royalroad.com/.../feed">
+    <label for="source_url" style="font-size:.9em">Story URL</label>
+    <input type="url" name="source_url" id="source_url" required
+           placeholder="https://royalroad.com/fiction/12345/...">
   </div>
   <div style="flex:1; min-width:120px">
     <label for="title" style="font-size:.9em">Title (optional)</label>
@@ -97,22 +104,26 @@ document.getElementById('ongoing-check-all').addEventListener('change', function
   <button class="btn btn-primary" type="submit" style="align-self:flex-end">Add</button>
 </form>
 <small style="color:#666; display:block; margin-top:.4em">
-  The existing feed archive is marked as already read; only new chapters released after adding will appear in drops.
+  Paste any URL FanFicFare understands (RoyalRoad, SpaceBattles, SufficientVelocity, AO3, …).
+  Auth-gated sites need a password in the fetcher's <code>personal.ini</code>. The first
+  download runs in the background; new chapters start at the beginning of the work — set the
+  cursor on the Dashboard if you only want future chapters.
 </small>
 
-<h2>Import OPML</h2>
-<p style="color:#555; font-size:.9em">
-  Export your subscriptions from your RSS reader (e.g. Preferences → Import/Export → Export OPML).
-  Imported serials land in the <strong>Inbox</strong> on the Dashboard — assign each to a channel
-  before it appears in drops.
-  Note: AO3/FFN have no per-chapter RSS — those aren't supported here yet.
-  Alternatively, use the <a href="/admin/library">Library</a> page to add feeds inferred from
-  your Calibre source URLs (RoyalRoad, SpaceBattles, SufficientVelocity).
-</p>
-<form method="post" action="/admin/ongoing/import-opml" enctype="multipart/form-data"
-      style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap">
-  <input type="file" name="opml_file" accept=".opml,.xml" required>
-  <button class="btn btn-primary" type="submit">Import</button>
+<h2>Add several at once</h2>
+<form method="post" action="/admin/ongoing/add-bulk" style="max-width:700px">
+  <p style="color:#555; font-size:.9em; margin:.2em 0">One story URL per line.</p>
+  <textarea name="urls" rows="6" required
+            style="width:100%; font-family:monospace; font-size:.85em"
+            placeholder="https://royalroad.com/fiction/111/...&#10;https://forums.spacebattles.com/threads/...&#10;..."></textarea>
+  <div style="display:flex; gap:.5em; align-items:center; margin-top:.4em">
+    <label for="bulk_channel" style="font-size:.9em">Channel</label>
+    <select name="channel_id" id="bulk_channel">
+      <option value="">— General —</option>
+      {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-primary" type="submit">Add all</button>
+  </div>
 </form>
 
 {% endblock %}

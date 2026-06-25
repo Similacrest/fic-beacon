@@ -24,11 +24,6 @@ class BudgetMode(str, PyEnum):
     minutes = "minutes"
 
 
-class BookKind(str, PyEnum):
-    epub = "epub"        # Calibre-backed backlog book
-    ongoing = "ongoing"  # RSS-backed ongoing serial (feed_url)
-
-
 class FeedbackAction(str, PyEnum):
     up = "up"
     down = "down"
@@ -38,6 +33,17 @@ class FeedbackAction(str, PyEnum):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def absolute_chapter_number(book: "Book", physical_index: int) -> int:
+    """Map a 0-based physical EPUB chapter index to its absolute, human chapter number.
+
+    Normally `physical_index + 1`. After a stub (the site removed old chapters and the
+    EPUB was overwritten shorter), `chapter_label_offset` carries the removed count so
+    labels stay continuous: e.g. if 40 chapters were dropped, physical index 101 still
+    reads as chapter 142. See Book.chapter_label_offset / cursor_floor.
+    """
+    return physical_index + book.chapter_label_offset + 1
 
 
 class Channel(Base):
@@ -71,20 +77,29 @@ class Book(Base):
     __tablename__ = "book"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # NULL for ongoing (RSS) sources, which aren't backed by a Calibre book.
+    # The Calibre book backing this source. Every source is a library EPUB now —
+    # backlog books are imported; tracked stories are downloaded into Calibre by the
+    # fetcher container. Nullable only for safety during transitional states.
     calibre_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
-    kind: Mapped[BookKind] = mapped_column(
-        Enum(BookKind), nullable=False, default=BookKind.epub
-    )
-    # Ongoing serial RSS feed (kind=ongoing only).
-    feed_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Calibre book ID this ongoing source corresponds to (set when added from Library).
-    # Not a FK — the Calibre book may or may not be imported into fic-beacon as well.
-    linked_calibre_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     author: Mapped[str] = mapped_column(String, nullable=False, default="Unknown")
+    # The work's canonical URL. For tracked books this is ALSO the FanFicFare fetch URL.
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
     total_chapters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ── Update tracking (replaces the old kind=ongoing split) ──────────────────
+    # tracked=True → the fetcher auto-updates this book's EPUB (RSS-triggered if it has
+    # a feed_url, else via the daily sweep). tracked books never "complete".
+    tracked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Optional RSS/Atom feed used only as a fast *notification* that new chapters exist
+    # (its body is never read for content). Absent → the book relies on the daily sweep.
+    feed_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Newest feed GUID seen, so the poller can detect "something new → trigger a fetch".
+    last_seen_guid: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Short human status of the last fetch ("ok", "ok (stub 141→101)", or an error).
+    last_fetch_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
     status: Mapped[BookStatus] = mapped_column(
         Enum(BookStatus), nullable=False, default=BookStatus.queued
     )
@@ -97,7 +112,14 @@ class Book(Base):
     slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # quota_weight: relative priority; normalized against sum of all active weights
     quota_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # 0-based PHYSICAL index of the next chapter to drop within the current EPUB.
     cursor_chapter_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Added to the physical index to derive the absolute chapter label after a stub
+    # (see absolute_chapter_number). 0 for normal books.
+    chapter_label_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Lowest physical index the cursor may be rewound to. Raised on a stub so the reader
+    # can't rewind into a rewritten body. 0 for normal books.
+    cursor_floor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_down: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     added_at: Mapped[datetime] = mapped_column(
@@ -105,9 +127,6 @@ class Book(Base):
     )
 
     drops: Mapped[list["Drop"]] = relationship("Drop", back_populates="book")
-    ongoing_entries: Mapped[list["OngoingEntry"]] = relationship(
-        "OngoingEntry", back_populates="source", cascade="all, delete-orphan"
-    )
 
 
 class Drop(Base):
@@ -210,30 +229,3 @@ class AppState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
-
-
-class OngoingEntry(Base):
-    """A buffered chapter from an ongoing serial's RSS feed.
-
-    The poller appends new entries (released=False) hourly; the drop planner releases
-    the oldest unreleased entries at drop time, weighted in the channel budget like
-    EPUB chapters. Each released entry becomes (part of) a Drop.
-    """
-    __tablename__ = "ongoing_entry"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_id: Mapped[int] = mapped_column(ForeignKey("book.id"), nullable=False, index=True)
-    guid: Mapped[str] = mapped_column(String, nullable=False, index=True)  # unique per source
-    title: Mapped[str] = mapped_column(String, nullable=False, default="")
-    link: Mapped[str | None] = mapped_column(String, nullable=True)
-    content_html: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    published_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow
-    )
-    released: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
-    drop_id: Mapped[int | None] = mapped_column(ForeignKey("drops.id"), nullable=True)
-    # Chapter number extracted from the entry title (regex); None = sequential counter used.
-    chapter_num: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    source: Mapped["Book"] = relationship("Book", back_populates="ongoing_entries")

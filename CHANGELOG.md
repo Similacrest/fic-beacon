@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-25
+
+### Changed — RSS is now a trigger, not a content source (major redesign)
+- **Ongoing serials become real Calibre books.** Web serials only syndicate a *preview* in
+  RSS, not full chapter text — the old buffer-the-feed-body model was structurally broken.
+  Now RSS is used *only* to notice that a story updated; a separate **fetcher container**
+  runs FanFicFare + `calibredb` to download the new chapters into the Calibre library, and
+  Fic-Beacon serves them as a normal EPUB through the existing chapterizer/cursor path.
+- **Unified source model.** The `epub`/`ongoing` `BookKind` split is gone. Every source is a
+  library EPUB; a `tracked` flag (with an optional `feed_url` for fast RSS notification) marks
+  the ones that auto-update. One code path through the planner, feed builder, and cursor logic.
+- **Calibre is read-only *from Fic-Beacon*.** The app's library mount is `:ro`; only the
+  isolated fetcher container writes. Coexists with an external calibre-web on the same library.
+- **Fetch scheduling.** Feeds are polled **pre-drop** (the hourly poll job is gone); a detected
+  update is fetched synchronously so the same broadcast serves it. Tracked stories without a
+  feed (auth-gated) are refreshed by a **daily sweep**.
+- **Stub handling.** When the site removes old chapters (FanFicFare: "Existing epub contains N
+  chapters, web site only has M"), the fetcher archives the old EPUB as a separate Calibre
+  entry and overwrites the book; Fic-Beacon keeps chapter labels continuous via a new
+  `chapter_label_offset` and forbids rewinding into the rewritten body via `cursor_floor`.
+- **Admin UI.** "Ongoing Serials" → **Tracked Stories**: add by story URL (single or a paste
+  of URLs, one per line), per-source last-fetch status and "fetch now". The Library page gains
+  a **"📡 Track updates"** action. OPML file upload removed.
+
+### Removed
+- The `ongoing_entry` table and all RSS-body buffering: entry content extraction, chapter-number
+  regex, `seed_source_as_read`, OPML parsing (`app/ongoing/opml.py`), the hourly poll job, and
+  the `BookKind` / `linked_calibre_id` / `chapter_num` fields.
+
+### Migration
+- Schema-changing upgrade — **recreate the app DB volume** (no migration path). Re-add tracked
+  stories by URL. Stand up the new `fetcher` container (see `docker-compose.yml`, `./fetcher`).
+
 ## [0.4.0] — 2026-06-25
 
 ### Added

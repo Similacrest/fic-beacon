@@ -3,22 +3,40 @@ services:
     build:
       context: .
     restart: unless-stopped
+    depends_on:
+      - fetcher
     ports:
       - "${BEACON_PORT:-8000}:8000"
     volumes:
       # App state (SQLite DB)
       - beacon-data:/data
-      # Calibre library: mount your library folder as read-only
-      # Set CALIBRE_LIBRARY_PATH env var to your Calibre library path
+      # Calibre library: mounted READ-ONLY here — only the fetcher writes it.
       - ${CALIBRE_LIBRARY_PATH:-.}:/calibre-library:ro
     environment:
       BEACON_BASE_URL: "${BEACON_BASE_URL:-http://localhost:8000}"
       BEACON_CALIBRE_LIBRARY_PATH: "/calibre-library"
       BEACON_DATABASE_URL: "sqlite:////data/fic-beacon.db"
-      # Timezone for drop/poll schedules (IANA name, e.g. Europe/Tallinn). Unset → UTC.
+      # The isolated FanFicFare/Calibre fetcher (see ./fetcher).
+      BEACON_FETCHER_URL: "http://fetcher:8080"
+      # Timezone for drop/sweep schedules (IANA name, e.g. Europe/Tallinn). Unset → UTC.
       BEACON_TZ: "${BEACON_TZ:-UTC}"
       # Generate a secret: python -c "import secrets; print(secrets.token_urlsafe(32))"
       # BEACON_FEED_SECRET: "${BEACON_FEED_SECRET:}"
+
+  # FanFicFare + calibredb — the ONLY container that writes the Calibre library.
+  # Coexists with an external calibre-web pointed at the same library folder.
+  fetcher:
+    build:
+      context: ./fetcher
+    restart: unless-stopped
+    volumes:
+      # Same library as beacon, but READ-WRITE here.
+      - ${CALIBRE_LIBRARY_PATH:-.}:/calibre-library
+      # personal.ini (site logins) — edit it directly in this container/host path.
+      - ${FETCHER_CONFIG_PATH:-./fetcher/config}:/config
+    # Not published by default — beacon reaches it over the internal compose network.
+    expose:
+      - "8080"
 
 volumes:
   beacon-data:
