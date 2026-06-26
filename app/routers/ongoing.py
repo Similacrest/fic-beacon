@@ -63,7 +63,7 @@ def _add_tracked_story(
 @router.get("/", response_class=HTMLResponse)
 def ongoing_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     sources = db.query(Book).filter(Book.tracked.is_(True)).order_by(Book.title).all()
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
     chan_name = {c.id: c.name for c in db.query(Channel).all()}
     return templates.TemplateResponse(request, "admin/ongoing.html", {
         "sources": sources,

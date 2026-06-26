@@ -104,7 +104,6 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
 
     channels = (
         session.query(Channel)
-        .filter(Channel.is_inbox.is_(False))
         .order_by(Channel.queue_order, Channel.id)
         .all()
     )

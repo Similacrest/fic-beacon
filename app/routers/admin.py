@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
 from app.config import settings
-from app.database import INBOX_CHANNEL_SLUG, ensure_default_channel, get_db
+from app.database import ensure_default_channel, get_db
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop,
     FeedbackEvent, WebSubSubscription, absolute_chapter_number,
@@ -40,16 +40,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     queued = db.query(Book).filter(Book.status == BookStatus.queued).order_by(Book.queue_position).all()
     completed = db.query(Book).filter(Book.status == BookStatus.completed).order_by(Book.added_at.desc()).limit(10).all()
     dropped = db.query(Book).filter(Book.status == BookStatus.dropped).order_by(Book.added_at.desc()).limit(10).all()
-    # Sources in the Inbox channel (unassigned after OPML import).
-    inbox_channel = db.query(Channel).filter(Channel.slug == INBOX_CHANNEL_SLUG).first()
-    inbox_books = (
-        db.query(Book)
-        .filter(Book.channel_id == inbox_channel.id, Book.status != BookStatus.dropped)
-        .all()
-        if inbox_channel else []
-    )
     cfg = db.get(Config, 1)
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
 
     # ── Per-channel slot view: what's broadcasting in each feed right now ──────
     slot_view = _build_slot_view(db, channels, active, queued)
@@ -76,7 +68,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "queued": queued,
         "completed": completed,
         "dropped": dropped,
-        "inbox_books": inbox_books,
         "cfg": cfg,
         "channels": channels,
         "slot_view": slot_view,
@@ -194,7 +185,7 @@ def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     calibre_books = adapter.list_books()
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
     # Offer "track for updates" only where we can derive an update feed from the source URL.
     inferred_feeds = {b.calibre_id: infer_feed_url(b.source_url) for b in importable}
     return templates.TemplateResponse(
@@ -220,7 +211,7 @@ def do_import(
 ) -> RedirectResponse:
     adapter = CalibreAdapter(settings.calibre_library_path)
     default_channel_id = ensure_default_channel(db).id
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     for cid in calibre_ids:
         cbook = adapter.get_book(cid)
@@ -281,7 +272,7 @@ def track_from_library(
 
 def _auto_channel_id(db: Session, cbook) -> int:
     default_channel_id = ensure_default_channel(db).id
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.id).all()
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all()
     genres = effective_genres(cbook.genres, cbook.genre_tags, cbook.source_url)
     return pick_channel_id(genres, channels, default_channel_id)
 
@@ -315,7 +306,7 @@ def _slugify(name: str) -> str:
 
 @router.get("/channels", response_class=HTMLResponse)
 def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    channels = db.query(Channel).filter(Channel.is_inbox.is_(False)).order_by(Channel.queue_order, Channel.name).all()
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
     cfg = db.get(Config, 1)
     token = cfg.feed_secret if cfg else ""
     feeds = {}
@@ -342,10 +333,7 @@ def create_channel(
     name = name.strip()
     if not name:
         return RedirectResponse(url="/admin/channels", status_code=303)
-    # Reserve "inbox" slug for the system channel.
     slug = _slugify(name)
-    if slug == INBOX_CHANNEL_SLUG:
-        slug = f"{slug}-2"
     base_slug, n = slug, 2
     while db.query(Channel).filter(Channel.slug == slug).first() is not None:
         slug = f"{base_slug}-{n}"
@@ -378,7 +366,7 @@ def edit_channel(
     """Edit channel settings. The slug (and thus feed URLs) stays fixed."""
     channel = db.get(Channel, channel_id)
     name = name.strip()
-    if channel and name and not channel.is_inbox:
+    if channel and name:
         channel.name = name
         channel.genre_match = genre_match.strip() or None
         channel.parallel_slots = max(1, parallel_slots)
@@ -391,10 +379,10 @@ def edit_channel(
 @router.post("/channels/{channel_id}/delete")
 def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     channel = db.get(Channel, channel_id)
-    if channel and not channel.is_inbox:
+    if channel:
         fallback = (
             db.query(Channel)
-            .filter(Channel.id != channel_id, Channel.is_inbox.is_(False))
+            .filter(Channel.id != channel_id)
             .order_by(Channel.queue_order, Channel.id)
             .first()
         )

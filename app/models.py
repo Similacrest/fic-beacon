@@ -69,8 +69,6 @@ class Channel(Base):
     # Signed carry-over so the stochastic per-cycle mean tracks the budget.
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # System-managed staging channel; excluded from drops/feeds. Users cannot rename it.
-    is_inbox: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class Book(Base):

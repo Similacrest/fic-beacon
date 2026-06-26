@@ -201,7 +201,7 @@ broadcast or an admin request.
 ## Data model (summary)
 
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
-`budget_credit`, `queue_order`, `is_inbox`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
+`budget_credit`, `queue_order`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
