@@ -611,7 +611,8 @@ def trigger_drop(db: Session = Depends(get_db)) -> RedirectResponse:
     from app.ongoing.poller import poll_all_feeds
     from app.planner.planner import run_drop_cycle
     from app.websub.publisher import publish_updates
-    # Always poll ongoing feeds first so the broadcast releases the freshest chapters.
+    # Check feeds first so any new chapters are queued for fetch (async — they land in a
+    # later broadcast); this drop broadcasts the current EPUB state.
     poll_all_feeds(db)
     drops = run_drop_cycle(db, settings.calibre_library_path)
     db.commit()

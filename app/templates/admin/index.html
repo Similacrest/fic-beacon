@@ -62,7 +62,7 @@
     <button class="btn btn-primary">▶ Run drop cycle now</button>
   </form>
   <form method="post" action="/admin/poll-now">
-    <button class="btn" title="Check tracked feeds for new chapters and fetch them now">🔄 Check feeds now</button>
+    <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
   </form>
 </div>
 
@@ -109,7 +109,7 @@
   {% endfor %}
 </details>
 
-{# ── Next broadcast: queued EPUBs + ongoings holding buffered chapters ─────── #}
+{# ── Next broadcast: queued backlog EPUBs + tracked stories with chapters past cursor ── #}
 <details class="section">
   <summary>⏭ Next broadcast — waiting &amp; held out</summary>
   <p class="muted" style="font-size:.85em">

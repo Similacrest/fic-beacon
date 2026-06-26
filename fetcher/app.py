@@ -192,10 +192,6 @@ def _prune_jobs() -> None:
         _jobs.pop(jid, None)
 
 
-def _set_phase(entry: dict, phase: str) -> None:
-    entry["phase"] = phase
-
-
 def _run_job(job_id: str) -> None:
     """Background worker: process every URL in the job, updating per-URL phase as it goes."""
     job = _jobs[job_id]
@@ -211,13 +207,13 @@ def _run_job(job_id: str) -> None:
             _process_new_batch(new, by_url)
         for url in existing:
             entry = by_url[url]
-            _set_phase(entry, "downloading")
+            entry["phase"] = "downloading"
             try:
                 _with_retry(url, lambda u=url, e=entry: _update_one(u, e))
             except Exception as exc:  # never let one story sink the job
                 logger.exception("update failed for %s", url)
                 entry["error"] = str(exc)
-            _set_phase(entry, "error" if entry["error"] else "done")
+            entry["phase"] = "error" if entry["error"] else "done"
     except Exception as exc:
         logger.exception("job %s failed", job_id)
         for e in entries:
@@ -231,7 +227,7 @@ def _run_job(job_id: str) -> None:
 def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
     """Download all brand-new stories in a single warm `fanficfare -i` pass, add to Calibre."""
     for u in urls:
-        _set_phase(by_url[u], "downloading")
+        by_url[u]["phase"] = "downloading"
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         infile = work / "urls.txt"
