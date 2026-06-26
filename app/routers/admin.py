@@ -471,23 +471,6 @@ def set_weight(
     return RedirectResponse(url="/admin/", status_code=303)
 
 
-@router.post("/books/batch-set-channel")
-def batch_set_channel(
-    book_ids: list[int] = Form(...),
-    channel_id: int = Form(...),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    target = db.get(Channel, channel_id)
-    if target:
-        for book_id in book_ids:
-            book = db.get(Book, book_id)
-            if book and book.channel_id != target.id:
-                book.channel_id = target.id
-                book.slot_index = None
-        db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
-
-
 @router.post("/books/batch-drop")
 def batch_drop(
     book_ids: list[int] = Form(...),
