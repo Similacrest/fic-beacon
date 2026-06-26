@@ -19,9 +19,15 @@ All notable changes to this project are documented here. The format is based on
   the ones that auto-update. One code path through the planner, feed builder, and cursor logic.
 - **Calibre is read-only *from Fic-Beacon*.** The app's library mount is `:ro`; only the
   isolated fetcher container writes. Coexists with an external calibre-web on the same library.
-- **Fetch scheduling.** Feeds are polled **pre-drop** (the hourly poll job is gone); a detected
-  update is fetched synchronously so the same broadcast serves it. Tracked stories without a
-  feed (auth-gated) are refreshed by a **daily sweep**.
+- **Fetch scheduling — batched & async.** Feeds are polled **pre-drop** (the hourly poll job is
+  gone). Because a FanFicFare run can take ~15 min, fetches are **asynchronous**: `POST /fetch
+  {urls}` returns a `job_id` immediately and the app polls `GET /fetch/{job_id}`; the triggering
+  broadcast never waits, so freshly fetched chapters land in the **next** cycle. Changed feeds are
+  submitted in **one batch** (new stories share a single warm `fanficfare -i` pass); the fetcher
+  runs them in a single-worker pool (serialized `calibredb` writes) with **force-detection** and a
+  **3-try exponential backoff** borrowed (trimmed) from AutomatedFanfic. Tracked stories without a
+  feed (auth-gated) are refreshed by a **daily sweep**. The dashboard shows an *in-progress* panel
+  (per-story phase + elapsed); the job→book map is persisted so a restart resumes polling.
 - **Stub handling.** When the site removes old chapters (FanFicFare: "Existing epub contains N
   chapters, web site only has M"), the fetcher archives the old EPUB as a separate Calibre
   entry and overwrites the book; Fic-Beacon keeps chapter labels continuous via a new

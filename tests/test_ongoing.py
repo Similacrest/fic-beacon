@@ -1,8 +1,9 @@
-"""Tests for tracked-story update detection and fetching.
+"""Tests for tracked-story update detection and the async fetch path.
 
-RSS feeds are now only a *notification* that new chapters exist; the fetcher container
-downloads them into Calibre. These tests cover GUID-change detection, the fetch client's
-stub mechanic (chapter-label offset + cursor floor), and the feedless sweep.
+RSS feeds are only a *notification* that new chapters exist; the fetcher container downloads
+them into Calibre asynchronously (a batch job the scheduler polls). These tests cover
+GUID-change detection, that the poller *batches* due sources into one submit, and the
+fetch-result folding (chapter-label offset + cursor floor on a stub).
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from feedparser.util import FeedParserDict
 
 from app.models import Book, BookStatus, Channel, absolute_chapter_number
 from app.ongoing.poller import _newest_guid, poll_all_feeds, sweep_feedless
-from app.fetch.client import FetchResult, StubInfo, fetch_book
+from app.fetch.client import apply_result
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -54,47 +55,60 @@ class TestPollTriggers:
     def test_first_sight_seeds_without_fetch(self, in_memory_db):
         src = _tracked(in_memory_db, last_seen_guid=None)
         with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
-             patch("app.ongoing.poller.fetch_book") as mock_fetch:
-            fetched = poll_all_feeds(in_memory_db)
-        assert fetched == 0
-        mock_fetch.assert_not_called()
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 0
+        mock_submit.assert_not_called()
         assert src.last_seen_guid == "c5"
 
-    def test_new_guid_triggers_fetch(self, in_memory_db):
+    def test_new_guid_queues_fetch(self, in_memory_db):
         src = _tracked(in_memory_db, last_seen_guid="c4")
         with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
-             patch("app.ongoing.poller.fetch_book") as mock_fetch:
-            fetched = poll_all_feeds(in_memory_db)
-        assert fetched == 1
-        mock_fetch.assert_called_once()
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 1
+        mock_submit.assert_called_once()
+        assert list(mock_submit.call_args[0][1]) == [src]
         assert src.last_seen_guid == "c5"
 
     def test_unchanged_guid_no_fetch(self, in_memory_db):
         _tracked(in_memory_db, last_seen_guid="c5")
         with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
-             patch("app.ongoing.poller.fetch_book") as mock_fetch:
-            fetched = poll_all_feeds(in_memory_db)
-        assert fetched == 0
-        mock_fetch.assert_not_called()
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 0
+        mock_submit.assert_not_called()
 
-    def test_sweep_fetches_feedless_only(self, in_memory_db):
-        feedless = _tracked(in_memory_db, feed_url=None, source_url="https://x/story", calibre_id=next(_next_calibre_id))
-        _tracked(in_memory_db, feed_url="https://y/feed", source_url="https://y/story", calibre_id=next(_next_calibre_id))
-        with patch("app.ongoing.poller.fetch_book") as mock_fetch:
-            fetched = sweep_feedless(in_memory_db)
-        assert fetched == 1
-        assert mock_fetch.call_args[0][1] is feedless
+    def test_changed_feeds_submit_in_one_batch(self, in_memory_db):
+        a = _tracked(in_memory_db, feed_url="https://a/feed", source_url="https://a/s",
+                     last_seen_guid="old", calibre_id=next(_next_calibre_id))
+        b = _tracked(in_memory_db, feed_url="https://b/feed", source_url="https://b/s",
+                     last_seen_guid="old", calibre_id=next(_next_calibre_id))
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("new")), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 2
+        mock_submit.assert_called_once()  # one batch, not two calls
+        assert set(mock_submit.call_args[0][1]) == {a, b}
+
+    def test_sweep_submits_feedless_only(self, in_memory_db):
+        feedless = _tracked(in_memory_db, feed_url=None, source_url="https://x/story",
+                            calibre_id=next(_next_calibre_id))
+        _tracked(in_memory_db, feed_url="https://y/feed", source_url="https://y/story",
+                 calibre_id=next(_next_calibre_id))
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = sweep_feedless(in_memory_db)
+        assert queued == 1
+        assert list(mock_submit.call_args[0][1]) == [feedless]
 
 
-# ── fetch client: result folding + stub mechanic ───────────────────────────────
+# ── fetch result folding + stub mechanic ────────────────────────────────────────
 
-class TestFetchBook:
+class TestApplyResult:
     def test_ok_updates_fields(self, in_memory_db):
         src = _tracked(in_memory_db)
         src.calibre_id = None
-        result = FetchResult(ok=True, calibre_id=99, chapter_count=12, stub=None)
-        with patch("app.fetch.client.request_fetch", return_value=result):
-            fetch_book(in_memory_db, src)
+        apply_result(src, {"calibre_id": 99, "chapter_count": 12, "stub": None, "error": None})
         assert src.calibre_id == 99
         assert src.total_chapters == 12
         assert src.last_fetch_status == "ok"
@@ -103,8 +117,7 @@ class TestFetchBook:
     def test_error_leaves_book_untouched(self, in_memory_db):
         src = _tracked(in_memory_db)
         before = src.cursor_chapter_index
-        with patch("app.fetch.client.request_fetch", return_value=FetchResult(ok=False, error="boom")):
-            fetch_book(in_memory_db, src)
+        apply_result(src, {"error": "boom"})
         assert src.cursor_chapter_index == before
         assert src.last_fetch_status.startswith("error")
 
@@ -112,10 +125,8 @@ class TestFetchBook:
         src = _tracked(in_memory_db)
         src.cursor_chapter_index = 130
         src.total_chapters = 141
-        result = FetchResult(ok=True, calibre_id=42, chapter_count=101,
-                             stub=StubInfo(old=141, new=101))
-        with patch("app.fetch.client.request_fetch", return_value=result):
-            fetch_book(in_memory_db, src)
+        apply_result(src, {"calibre_id": 42, "chapter_count": 101,
+                           "stub": {"old": 141, "new": 101}, "error": None})
         # 40 chapters removed → next chapter still labels continuously.
         assert src.chapter_label_offset == 40
         assert src.cursor_chapter_index == 101   # caught up to the rewritten body
@@ -127,10 +138,8 @@ class TestFetchBook:
     def test_offsets_compose_across_stubs(self, in_memory_db):
         src = _tracked(in_memory_db)
         src.chapter_label_offset = 40
-        result = FetchResult(ok=True, calibre_id=42, chapter_count=90,
-                             stub=StubInfo(old=101, new=90))
-        with patch("app.fetch.client.request_fetch", return_value=result):
-            fetch_book(in_memory_db, src)
+        apply_result(src, {"calibre_id": 42, "chapter_count": 90,
+                           "stub": {"old": 101, "new": 90}, "error": None})
         assert src.chapter_label_offset == 51   # 40 + (101-90)
 
 

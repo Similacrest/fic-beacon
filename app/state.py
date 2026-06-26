@@ -10,6 +10,7 @@ from app.models import AppState, utcnow
 LAST_DROP_RUN = "last_drop_run_at"
 LAST_POLL_RUN = "last_poll_run_at"
 LAST_SKIPS = "last_broadcast_skips"  # JSON: sources held out / partly deferred last broadcast
+FETCH_JOB_PREFIX = "fetch_job:"  # + job_id → JSON {submitted_at, url_to_book} for in-flight fetches
 
 
 def set_value(session: Session, key: str, value: str) -> None:
@@ -24,6 +25,18 @@ def set_value(session: Session, key: str, value: str) -> None:
 def get_value(session: Session, key: str) -> str | None:
     row = session.get(AppState, key)
     return row.value if row else None
+
+
+def delete_value(session: Session, key: str) -> None:
+    row = session.get(AppState, key)
+    if row is not None:
+        session.delete(row)
+
+
+def list_with_prefix(session: Session, prefix: str) -> list[tuple[str, str]]:
+    """All (key, value) AppState rows whose key starts with `prefix`."""
+    rows = session.query(AppState).filter(AppState.key.like(f"{prefix}%")).all()
+    return [(r.key, r.value) for r in rows]
 
 
 def mark_run(session: Session, key: str) -> None:

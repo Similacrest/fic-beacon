@@ -155,6 +155,29 @@
   {% endif %}
 </details>
 
+{# ── Fetches in progress: async FanFicFare downloads (phase + elapsed) ──────── #}
+{% if fetch_progress %}
+<details class="section" open>
+  <summary>⏳ Fetches in progress <span class="count">— {{ fetch_progress|length }}</span></summary>
+  <p class="muted" style="font-size:.85em">
+    FanFicFare downloads run in the background (up to ~15 min). Phase advances each poll;
+    fetched chapters drop on the next broadcast.
+  </p>
+  <table style="font-size:.9em">
+    <thead><tr><th>Story</th><th>Phase</th><th>Elapsed</th></tr></thead>
+    <tbody>
+    {% for f in fetch_progress %}
+    <tr>
+      <td>📡 {{ f.book.title }}</td>
+      <td><span class="badge badge-queued">{{ f.status }}</span></td>
+      <td class="muted">{% if f.elapsed is not none %}{{ (f.elapsed // 60) }}m {{ (f.elapsed % 60) }}s{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
+
 {# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
 <details class="section">
   <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>

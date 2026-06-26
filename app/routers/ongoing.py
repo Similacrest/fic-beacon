@@ -120,12 +120,16 @@ def toggle_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResp
 
 @router.post("/{source_id}/fetch-now")
 def fetch_now(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
-    """Synchronously fetch one source (initial download or manual refresh)."""
-    from app.fetch.client import fetch_book
+    """Queue an async fetch for one source (initial download or manual refresh).
+
+    Returns immediately — the fetcher downloads in the background (up to ~15 min) and the
+    row shows `fetching…` until the poll job folds the result.
+    """
+    from app import scheduler
     source = db.get(Book, source_id)
     if source is None or not source.tracked:
         raise HTTPException(status_code=404)
-    fetch_book(db, source)
+    scheduler.submit_and_track(db, [source])
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 

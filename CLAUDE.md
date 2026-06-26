@@ -58,7 +58,7 @@ fic-beacon/
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
     planner/           # Drop Planner (per-channel stochastic budget; unit abstraction)
     ongoing/           # RSS update-detection poller + feed-URL inference (no content)
-    fetch/             # HTTP client to the fetcher container (request_fetch / fetch_book)
+    fetch/             # async HTTP client to the fetcher (submit_fetch / poll_fetch / apply_result)
     feed/              # Feed Builder (feedgen)
     websub/            # WebSub publisher (push to subscribers)
     scheduler.py       # APScheduler wiring (timezone-aware)
@@ -111,9 +111,10 @@ fic-beacon/
   FanFicFare fetch URL. All sources hold `quota_weight`, votes, `status`, and live in a channel.
 - A **unit** is one drop-able chunk: a whole EPUB chapter (`chapterize(epub)[cursor]`). Unit shape:
   `{title, html, word_count, source_url}`. There is no separate ongoing-entry path.
-- **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; if it changed it calls
-  the fetcher (`app/fetch/client.py:fetch_book`) to download the new chapters into Calibre, so the
-  same broadcast serves them. Feed-less tracked stories are refreshed by a daily sweep.
+- **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
+  into one **async** fetch job (`scheduler.submit_and_track`) that downloads the new chapters into
+  Calibre in the background. The triggering broadcast does **not** wait — new chapters land in the
+  *next* one. Feed-less tracked stories are refreshed by a daily sweep.
 - **Stub handling (chapter labels & cursor floor):** if the site removed chapters, the fetcher
   archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
   `stub {old,new}`. Fic-Beacon then bumps `book.chapter_label_offset` by `old−new` (so the next
@@ -179,11 +180,23 @@ Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), and *
 there; EPUB paths derive from the library folder structure. Do not require a running Calibre. The
 fetcher container is what *writes* (via `calibredb`); the app only ever reads.
 
-### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`)
-`POST {BEACON_FETCHER_URL}/fetch {"url"}` → `{calibre_id, chapter_count, stub:{old,new}|null,
-error}`. The fetcher runs FanFicFare (download new, or `-u` update) + `calibredb` (add / replace
-format, archive-on-stub). `request_fetch` is the pure HTTP call; `fetch_book(session, book)` folds
-the result into the row (links `calibre_id`, applies the stub mechanic, records `last_fetch_*`).
+### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`) — batched & async
+FanFicFare runs can take **~15 min**, so fetches are batched and asynchronous; they never block a
+broadcast or an admin request.
+- `POST {BEACON_FETCHER_URL}/fetch {"urls":[...]}` → **`202 {job_id}`** immediately. The fetcher
+  works in a background `ThreadPoolExecutor(max_workers=1)` (one worker ⇒ `calibredb` writes never
+  overlap, preserving the single-writer invariant). **NEW** stories (no matching `url:` identifier)
+  download together in one warm `fanficfare -i` pass; **EXISTING** ones update per-story (`-u`,
+  archive-on-stub, `add_format`). It borrows two ideas from AutomatedFanfic, trimmed: broad
+  **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is
+  the stub case) and a **3-try exponential backoff** on transient site/network errors.
+- `GET {BEACON_FETCHER_URL}/fetch/{job_id}` → `{status: running|done|unknown, results:[{url,
+  calibre_id, chapter_count, stub:{old,new}|null, phase, error}]|null}`.
+- App side: `submit_fetch(urls)` posts the batch and returns the `job_id`; `scheduler.submit_and_track`
+  marks the books `fetching…` and persists the job→book map in `app_state` (so a restart resumes).
+  A transient `fetch_poll_{id}` interval job polls until `done`, reflecting each book's live `phase`
+  on the dashboard, then `apply_result(book, raw)` folds calibre_id / chapter_count / stub into the
+  row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them.
 
 ## Data model (summary)
 

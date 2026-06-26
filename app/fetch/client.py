@@ -1,15 +1,16 @@
 """HTTP client to the FanFicFare/Calibre fetcher container.
 
 Fic-Beacon never runs FanFicFare or `calibredb` itself — the Calibre library is mounted
-read-only here. Instead it POSTs a story URL to the separate, isolated fetcher container,
-which downloads/updates the EPUB *into* the Calibre library and reports back the resulting
-`calibre_id`, the new chapter count, and any **stub** event (the site removed old chapters
-and the EPUB was overwritten shorter). See `fetcher/` for the service and Architecture.md
-for the contract.
+read-only here. Instead it submits story URLs to the separate, isolated fetcher container,
+which downloads/updates the EPUBs *into* the Calibre library in the background and reports
+back each story's `calibre_id`, new chapter count, and any **stub** event (the site removed
+old chapters and the EPUB was overwritten shorter).
 
-The contract (POST {fetcher_url}/fetch, JSON {"url": ...}) returns JSON:
-    {"calibre_id": int, "chapter_count": int,
-     "stub": {"old": int, "new": int} | null, "error": str | null}
+Fetches are **async**: FanFicFare runs can take ~15 minutes, far too long to block a drop
+cycle or an admin request. `submit_fetch` POSTs a batch of URLs and gets a `job_id` back
+immediately (HTTP 202); the scheduler then polls `poll_fetch` until the job is `done` and
+folds each result into its Book row with `apply_result`. See `fetcher/` for the service and
+Architecture.md for the contract.
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ import logging
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Book, utcnow
@@ -41,45 +41,65 @@ class FetchResult:
     error: str | None = None
 
 
-def request_fetch(story_url: str) -> FetchResult:
-    """Ask the fetcher container to download/update one story. Pure HTTP — no DB writes."""
+def submit_fetch(urls: list[str]) -> str | None:
+    """Submit a batch of story URLs to the fetcher. Returns the job_id, or None on failure."""
+    urls = [u for u in urls if u]
+    if not urls:
+        return None
     try:
         resp = httpx.post(
             f"{settings.fetcher_url.rstrip('/')}/fetch",
-            json={"url": story_url},
+            json={"urls": urls},
             timeout=settings.fetcher_timeout,
         )
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json().get("job_id")
     except Exception as exc:  # network error, timeout, bad JSON, HTTP error
-        logger.warning("Fetch failed for %s: %s", story_url, exc)
-        return FetchResult(ok=False, error=str(exc))
+        logger.warning("Fetch submit failed for %d url(s): %s", len(urls), exc)
+        return None
 
-    if data.get("error"):
-        return FetchResult(ok=False, error=str(data["error"]))
 
-    stub = data.get("stub")
+def poll_fetch(job_id: str) -> dict | None:
+    """Poll a fetch job. Returns {"status", "results"} or None on a transient HTTP error.
+
+    `status` is "running" | "done" | "unknown" (the job_id is gone — fetcher restarted or
+    the result was pruned). `results` is a list of per-URL dicts (see the fetcher contract).
+    """
+    try:
+        resp = httpx.get(
+            f"{settings.fetcher_url.rstrip('/')}/fetch/{job_id}",
+            timeout=settings.fetcher_timeout,
+        )
+        if resp.status_code == 404:
+            return {"status": "unknown", "results": None}
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Fetch poll failed for job %s: %s", job_id, exc)
+        return None
+
+
+def _to_result(raw: dict) -> FetchResult:
+    """Turn one per-URL dict from the fetcher into a FetchResult."""
+    if raw.get("error"):
+        return FetchResult(ok=False, error=str(raw["error"]))
+    stub = raw.get("stub")
     return FetchResult(
         ok=True,
-        calibre_id=data.get("calibre_id"),
-        chapter_count=data.get("chapter_count"),
+        calibre_id=raw.get("calibre_id"),
+        chapter_count=raw.get("chapter_count"),
         stub=StubInfo(old=int(stub["old"]), new=int(stub["new"])) if stub else None,
     )
 
 
-def fetch_book(session: Session, book: Book) -> FetchResult:
-    """Trigger a fetch for one tracked book and fold the result back into its row.
+def apply_result(book: Book, raw: dict) -> FetchResult:
+    """Fold one finished per-URL fetch result into its Book row. Caller commits.
 
     Records `last_fetch_at`/`last_fetch_status`, links a freshly-downloaded `calibre_id`,
     updates `total_chapters`, and applies the **stub** mechanic when the site shrank the
-    work (see Book.chapter_label_offset / cursor_floor and Architecture.md). Caller commits.
+    work (see Book.chapter_label_offset / cursor_floor and Architecture.md).
     """
-    if not book.source_url:
-        book.last_fetch_at = utcnow()
-        book.last_fetch_status = "error: no source URL"
-        return FetchResult(ok=False, error="no source URL")
-
-    result = request_fetch(book.source_url)
+    result = _to_result(raw)
     book.last_fetch_at = utcnow()
 
     if not result.ok:

@@ -18,9 +18,15 @@ class Settings(BaseSettings):
 
     # FanFicFare/Calibre fetcher container — Fic-Beacon POSTs story URLs here to have
     # new chapters downloaded into the (read-only-to-us) Calibre library. See fetcher/.
+    # Fetches are async: POST /fetch returns a job_id immediately; we poll GET /fetch/{id}.
     fetcher_url: str = "http://fetcher:8080"
-    # Per-request timeout (seconds) for a fetch — FanFicFare downloads can be slow.
-    fetcher_timeout: float = 300.0
+    # Per-request HTTP timeout (seconds). Only covers the quick 202 submit / status GET —
+    # the actual (slow, up to ~15 min) FanFicFare run happens in the fetcher's background.
+    fetcher_timeout: float = 30.0
+    # How often to poll a running fetch job for completion (seconds).
+    fetcher_poll_interval: float = 30.0
+    # Give up on a fetch job after this many seconds (mark the books as errored).
+    fetcher_job_timeout: float = 1200.0
 
     # Scheduling timezone for drop/poll cron (e.g. "Europe/Tallinn").
     # Unset → APScheduler uses the machine local tz, which is UTC in a stock container.

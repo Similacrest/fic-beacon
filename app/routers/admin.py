@@ -69,6 +69,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     except json.JSONDecodeError:
         last_skips = []
 
+    fetch_progress = _build_fetch_progress(db)
+
     return templates.TemplateResponse(request, "admin/index.html", {
         "active": active,
         "queued": queued,
@@ -81,7 +83,29 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "status": status,
         "subscribers": subscribers,
         "last_skips": last_skips,
+        "fetch_progress": fetch_progress,
     })
+
+
+def _build_fetch_progress(db) -> list[dict]:
+    """Tracked stories with an async fetch in flight: phase + elapsed seconds since submit."""
+    from datetime import timezone
+    from app.models import utcnow
+    now = utcnow()
+    fetching = (
+        db.query(Book)
+        .filter(Book.tracked.is_(True), Book.last_fetch_status.like("fetching%"))
+        .order_by(Book.last_fetch_at)
+        .all()
+    )
+    out = []
+    for b in fetching:
+        started = b.last_fetch_at
+        if started is not None and started.tzinfo is None:  # SQLite drops tz → assume UTC
+            started = started.replace(tzinfo=timezone.utc)
+        elapsed = int((now - started).total_seconds()) if started else None
+        out.append({"book": b, "status": b.last_fetch_status, "elapsed": elapsed})
+    return out
 
 
 def _pending_chapters(book: Book) -> int:

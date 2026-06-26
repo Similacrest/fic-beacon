@@ -73,6 +73,8 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_FEED_SECRET` | Secret token gating the feeds (auto-generated if unset) | random |
 | `BEACON_TZ` | Timezone for drop/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |
+| `BEACON_FETCHER_POLL_INTERVAL` | Seconds between polls of a running fetch job | `30` |
+| `BEACON_FETCHER_JOB_TIMEOUT` | Give up on a fetch job after this many seconds | `1200` |
 
 Generate a feed secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 

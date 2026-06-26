@@ -41,7 +41,7 @@ SQLite, Jinja + HTMX.
 | Area | Decision |
 |---|---|
 | Calibre access | The app reads the library folder directly (mounted **read-only**); parses `metadata.db` (incl. **tags**) + EPUBs in place. **Writes happen only in the separate fetcher container.** No Calibre process needed by the app. |
-| Fetcher | A separate, isolated container runs **FanFicFare + `calibredb`** (library RW). `POST /fetch {url}` downloads/updates a story's EPUB into Calibre and returns `{calibre_id, chapter_count, stub?}`. The app calls it over HTTP; it coexists with an external calibre-web on the same library. |
+| Fetcher | A separate, isolated container runs **FanFicFare + `calibredb`** (library RW). `POST /fetch {urls}` → `202 {job_id}`; it downloads/updates the EPUBs into Calibre in a background single-worker pool and exposes `GET /fetch/{job_id}` → per-URL `{calibre_id, chapter_count, stub?}`. The app submits batches and polls (FanFicFare can take ~15 min); it coexists with an external calibre-web on the same library. |
 | Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed (slug stays stable) from the admin UI. |
 | Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`. A slot is a feed *bucket* — it carries the one backlog book streaming in that slot **plus** the tracked stories pinned to it, interleaved. No all-channels union feed — subscribe per channel/slot. |
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
@@ -74,7 +74,7 @@ C4Context
   Rel(reader_app, beacon, "Polls feeds / WebSub; follows feedback + permalink links", "HTTPS")
   Rel(beacon, calibre, "Reads books + metadata + tags", "filesystem / SQLite RO")
   Rel(beacon, ongoing, "Reads newest GUID (update trigger)", "HTTPS")
-  Rel(beacon, fetcher, "POST /fetch {story url}", "HTTP")
+  Rel(beacon, fetcher, "POST /fetch {urls} → poll", "HTTP")
   Rel(fetcher, sources, "Download/update chapters", "FanFicFare")
   Rel(fetcher, calibre, "Add / replace EPUB", "calibredb RW")
   Rel(reader, beacon, "Configures channels/slots/budget", "HTTPS admin UI")
@@ -95,7 +95,7 @@ C4Container
     Container(app, "Web/API app (beacon)", "FastAPI, Jinja+HTMX", "Admin UI, per-slot feeds, feedback, reader pages, WebSub hub")
     Container(sched, "Scheduler / engine", "APScheduler", "Drop cycle on cadence (polls triggers first); daily feedless sweep; WebSub push")
     ContainerDb(db, "App database", "SQLite + SQLAlchemy", "Channels, sources, cursors, drops, tokens, subscriptions, config")
-    Container(fetcher, "Fetcher", "FanFicFare + calibredb", "POST /fetch: download/update a story EPUB into Calibre; archive-on-stub")
+    Container(fetcher, "Fetcher", "FanFicFare + calibredb", "POST /fetch {urls}→202 job_id; async batch download/update into Calibre; archive-on-stub")
   }
 
   Rel(reader, app, "Manage channels / view status", "HTTPS")
@@ -104,7 +104,7 @@ C4Container
   Rel(sched, db, "Read/write")
   Rel(sched, calibre, "Read metadata.db + EPUBs", "RO")
   Rel(sched, ongoing, "Read newest GUID", "HTTPS")
-  Rel(sched, fetcher, "POST /fetch on update / sweep", "HTTP")
+  Rel(sched, fetcher, "POST /fetch (batch) + poll GET /fetch/{id}", "HTTP")
   Rel(fetcher, calibre, "Add / replace EPUB", "calibredb RW")
 ```
 
@@ -122,7 +122,7 @@ C4Component
   Component(adapter, "Calibre Adapter", "metadata.db RO; books, identifiers, tags; EPUB paths")
   Component(chapterizer, "EPUB Chapterizer", "ebooklib + BS4; spine → chapters + word counts; cached")
   Component(poller, "Update Poller", "feedparser; newest-GUID change → trigger a fetch (no content stored)")
-  Component(fetchcl, "Fetch Client", "httpx → POST /fetch; folds result into the book; applies stub offset/floor")
+  Component(fetchcl, "Fetch Client", "httpx → submit_fetch/poll_fetch (async 202+poll); apply_result folds into book; stub offset/floor")
   Component(planner, "Drop Planner", "Per-channel stochastic budget over EPUB-chapter units; cursors; promote/drop")
   Component(feed, "Feed Builder", "feedgen; per-slot RSS/Atom; chapter HTML; feedback links; rel=hub")
   Component(fb, "Feedback Handler", "Tokenized GET; up/down instant+idempotent; extra/drop confirmed")
@@ -136,7 +136,7 @@ C4Component
   Rel(planner, db, "Read/write source/drop state")
   Rel(poller, ongoing, "Read newest GUID")
   Rel(poller, fetchcl, "Trigger fetch on change")
-  Rel(fetchcl, fetcher, "POST /fetch", "HTTP")
+  Rel(fetchcl, fetcher, "POST /fetch + GET /fetch/{id}", "HTTP")
   Rel(fetchcl, db, "Link calibre_id; last_fetch_*; stub offset/floor")
   Rel(feed, db, "Read materialized drops")
   Rel(fb, db, "Write feedback; update quota/status")
@@ -192,15 +192,20 @@ C4Component
    units rolled over are recorded in the per-broadcast skip log (`app_state`).
 5. WebSub push fires for each affected slot-feed (subscribers matched with or without the `?token=`).
 
-### 6.2 Update detection & fetch (pre-drop; daily sweep for feed-less)
+### 6.2 Update detection & fetch (pre-drop submit, async; daily sweep for feed-less)
 The poller reads each tracked, feed-backed source's `feed_url` and compares the newest entry GUID
-to `last_seen_guid`. On change it updates `last_seen_guid` and calls the **fetch client**, which
-POSTs the story URL to the fetcher; the fetcher runs FanFicFare + `calibredb` to download the new
-chapters into Calibre and returns `{calibre_id, chapter_count, stub?}`. The client folds that back
-into the book and, on a **stub** (`old > new`), bumps `chapter_label_offset` by `old − new`, sets
-the cursor to `new`, and raises `cursor_floor` to `new`. Tracked stories with **no** feed
-(auth-gated, fetchable only via `personal.ini`) are refreshed by a **daily sweep** instead. No feed
-body is ever stored — RSS is purely a trigger.
+to `last_seen_guid`. Changed sources are **batched** and handed to `scheduler.submit_and_track`,
+which POSTs all their URLs to the fetcher in one request. Because a FanFicFare run can take ~15 min,
+the call is **asynchronous**: the fetcher returns a `job_id` (HTTP 202) and works in the background
+(a single-worker pool → serialized `calibredb` writes; new stories share one warm `fanficfare -i`
+pass; existing ones update per-story with force-detection + a 3-try backoff). The app marks the
+books `fetching…`, persists the `job→book` map in `app_state`, and a transient `fetch_poll_{id}`
+interval job polls `GET /fetch/{job_id}` — surfacing each book's live `phase` on the dashboard —
+until `done`, then folds each result (`apply_result`). On a **stub** (`old > new`) it bumps
+`chapter_label_offset` by `old − new`, sets the cursor to `new`, and raises `cursor_floor` to `new`.
+The triggering broadcast does **not** wait; fetched chapters drop on the **next** cycle. Tracked
+stories with **no** feed (auth-gated, fetchable only via `personal.ini`) are refreshed by a **daily
+sweep**. No feed body is ever stored — RSS is purely a trigger.
 
 ### 6.3 Feedback (reader click)
 - `GET /fb/{token}?action=up|down` — **instant**, idempotent per `(drop, action)`. `up`: thumbs+,
