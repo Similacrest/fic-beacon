@@ -82,7 +82,9 @@ fic-beacon/
 - **Every source belongs to exactly one channel** (`book.channel_id` is NOT NULL). There is no
   global/default group: budget and slots live only on channels. A **"General" channel** is
   auto-created on first run so imports always have a home; books can be moved between channels
-  (without dropping) and channels renamed (slug/feed URLs stay stable) from the admin UI.
+  (without dropping) and channels renamed from the admin UI. The **slug is editable** (kept stable
+  on a plain rename); changing it rewrites that channel's `/feed/{slug}/{key}` URLs, so readers
+  must re-subscribe.
 - A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
   as is reading speed (`config.wpm`) and the 👎 drop threshold.
 - **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`.

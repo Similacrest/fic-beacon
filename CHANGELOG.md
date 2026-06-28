@@ -6,7 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.6.0] — 2026-06-28
+## [0.6.1] — 2026-06-28
+
+### Added
+- **Editable channel slug.** The Channels edit form now exposes the slug (defaults stable on a
+  plain rename). Changing it rewrites that channel's `/feed/{slug}/{key}` URLs — re-subscribe in
+  your reader afterwards. Uniqueness is enforced (suffixing `-2`, `-3`, …).
+
+### Changed — actions happen in place (HTMX), no full-page reload/jump
+- **Auto-save fields.** The per-book **cursor** and **weight** inputs save automatically ~0.5s
+  after a change (debounced) with a brief green flash, instead of needing an "apply" (↩) button.
+  They reply `204 No Content` to HTMX so focus and scroll are preserved.
+- **In-place dashboard actions.** Drop, move, re-queue, track on/off, ⏮/⏭ cursor jumps,
+  move-to-channel, run-drop/poll-now, batch drop, clear-dropped post via HTMX and swap only the
+  dashboard body — the page no longer reloads and scrolls to the top.
+- **In-place Tracked Stories actions.** The per-row pause/resume, fetch-now, delete and the batch
+  fetch/pause/resume/delete actions now swap the list in place too (batch endpoints tolerate an
+  empty selection). Delete uses an HTMX confirm.
+- **Section state is remembered.** Expanding/collapsing a dashboard section persists (localStorage)
+  across the in-place swaps and page loads, instead of resetting to defaults after every action.
+- All forms keep their `method`/`action`, so everything degrades gracefully without JavaScript.
 
 ### Changed — Library import driven by Calibre `#status` / `#read`
 - **One smart "Add" button.** The Library page's two inconsistent actions (batch "Add to queue"

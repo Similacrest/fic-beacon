@@ -18,25 +18,29 @@
 </p>
 {% endif %}
 
+{# In-place actions: per-row + batch forms post via HTMX and swap only this #ongoing-list
+   block, so the page never reloads/jumps. Forms keep method/action for no-JS fallback;
+   batch buttons add hx-include so the (form-associated) row checkboxes are sent. #}
+<div id="ongoing-list" hx-target="#ongoing-list" hx-select="#ongoing-list"
+     hx-swap="outerHTML scroll:none" hx-push-url="false">
 {% if sources %}
 <form method="post" action="/admin/ongoing/batch-fetch" id="ongoing-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center; flex-wrap:wrap">
-    <input type="checkbox" id="ongoing-check-all" title="Select all">
+    <input type="checkbox" data-check-all="ongoing-check" title="Select all">
     <span style="color:#888; font-size:.85em">With selected:</span>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-fetch"
-            style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchAny('ongoing-check')" title="Fetch new chapters now">⤓ Fetch</button>
+            hx-post="/admin/ongoing/batch-fetch" hx-include="[name='book_ids']"
+            style="font-size:.85em; padding:.2em .6em" title="Fetch new chapters now">⤓ Fetch</button>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-pause"
-            style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchAny('ongoing-check')">⏸ Pause</button>
+            hx-post="/admin/ongoing/batch-pause" hx-include="[name='book_ids']"
+            style="font-size:.85em; padding:.2em .6em">⏸ Pause</button>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-resume"
-            style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchAny('ongoing-check')">▶ Resume</button>
+            hx-post="/admin/ongoing/batch-resume" hx-include="[name='book_ids']"
+            style="font-size:.85em; padding:.2em .6em">▶ Resume</button>
     <button class="btn btn-danger" type="submit" formaction="/admin/ongoing/batch-delete"
-            style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('ongoing-check', 'Delete selected tracked stories?')">
-      ✕ Delete
-    </button>
+            hx-post="/admin/ongoing/batch-delete" hx-include="[name='book_ids']"
+            hx-confirm="Delete selected tracked stories?"
+            style="font-size:.85em; padding:.2em .6em">✕ Delete</button>
   </div>
 </form>
 <table>
@@ -63,17 +67,20 @@
       {% else %}—{% endif %}
     </td>
     <td>
-      <form method="post" action="/admin/ongoing/{{ s.id }}/toggle">
+      <form method="post" action="/admin/ongoing/{{ s.id }}/toggle"
+            hx-post="/admin/ongoing/{{ s.id }}/toggle">
         <button style="font-size:.8em; padding:.15em .5em" title="Pause/resume">
           {{ "▶ active" if s.status.value == 'active' else "⏸ paused" }}
         </button>
       </form>
     </td>
     <td style="white-space:nowrap">
-      <form method="post" action="/admin/ongoing/{{ s.id }}/fetch-now" style="display:inline">
+      <form method="post" action="/admin/ongoing/{{ s.id }}/fetch-now"
+            hx-post="/admin/ongoing/{{ s.id }}/fetch-now" style="display:inline">
         <button style="font-size:.8em; padding:.15em .5em" title="Fetch new chapters now">⤓</button>
       </form>
       <form method="post" action="/admin/ongoing/{{ s.id }}/delete" style="display:inline"
+            hx-post="/admin/ongoing/{{ s.id }}/delete"
             onsubmit="return confirm('Stop tracking this story?')">
         <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
       </form>
@@ -82,22 +89,10 @@
   {% endfor %}
   </tbody>
 </table>
-<script>
-function batchConfirm(checkClass, msg) {
-  const checked = document.querySelectorAll('.' + checkClass + ':checked');
-  if (!checked.length) return false;
-  return confirm(msg);
-}
-function batchAny(checkClass) {
-  return document.querySelectorAll('.' + checkClass + ':checked').length > 0;
-}
-document.getElementById('ongoing-check-all').addEventListener('change', function() {
-  document.querySelectorAll('.ongoing-check').forEach(cb => cb.checked = this.checked);
-});
-</script>
 {% else %}
 <p style="color:#888">No tracked stories yet. Add one below.</p>
 {% endif %}
+</div>{# /#ongoing-list #}
 
 <h2>Add a story</h2>
 <form method="post" action="/admin/ongoing/add"
@@ -143,4 +138,15 @@ document.getElementById('ongoing-check-all').addEventListener('change', function
   </div>
 </form>
 
+<script>
+// Delegated so it survives HTMX swaps of #ongoing-list. The check-all box declares which
+// row-checkbox class it controls via data-check-all.
+document.addEventListener('change', (e) => {
+  const all = e.target.closest('input[data-check-all]');
+  if (all) {
+    const cls = all.getAttribute('data-check-all');
+    document.querySelectorAll('.' + cls).forEach(cb => cb.checked = all.checked);
+  }
+});
+</script>
 {% endblock %}
