@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import db_session, init_db
 from app.models import Config
-from app.routers import admin, feed, feedback, ongoing, reader, websub
+from app.routers import admin, feed, feedback, media, ongoing, reader, websub
 from app import scheduler
 
 
@@ -45,6 +45,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(feed.router)
 app.include_router(feedback.router)
 app.include_router(reader.router)
+app.include_router(media.router)
 app.include_router(admin.router)
 app.include_router(ongoing.router)
 app.include_router(websub.router)

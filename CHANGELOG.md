@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — in-EPUB images render in feeds
+- **EPUB images are now served and their URLs mapped.** Chapter HTML carries relative
+  `<img src="images/…">` paths that live *inside* the EPUB zip; nothing served those bytes, so
+  readers resolved them against the beacon origin and 404'd (e.g. `GET /images/00009.jpeg`). The
+  chapterizer now rewrites every in-EPUB `<img>`/SVG `<image>`/`srcset` reference (resolving it
+  against the chapter's OPF-relative directory) to a sentinel, and `materialize_image_urls()` swaps
+  the sentinel for `{base_url}/img/{calibre_id}/{path}` when a drop's `content_html` is built — so
+  stored content stays self-contained and byte-stable (WebSub-safe). A new read-only route
+  `GET /img/{calibre_id}/{path}` (`app/routers/media.py`) streams the matching entry straight out of
+  the EPUB zip (re-anchored to the EPUB's OPF directory), never writing the library. External
+  (`http(s)://`, `data:`, root-absolute) references are left untouched; path traversal is rejected.
+
+### Added — endnotes/footnotes inlined into chapter drops
+- **Cross-file notes now travel with the chapter that cites them.** End/footnotes usually live in
+  a back-matter file separate from the chapter, so a single-chapter drop left every note marker
+  dangling (its `href` pointed at an undropped file). The chapterizer now builds a book-wide note
+  index and appends the notes a chapter cites as a styled end-of-chapter `<aside class="beacon-
+  endnotes">`, rewriting each marker to a local `#fb-note-{id}` anchor (ids are book-unique, so
+  notes never collide when several chapters share one drop). Two conventions are detected:
+  - **EPUB3 semantic** — `epub:type="noteref"` → `rearnote`/`footnote`/`endnote` (e.g.
+    *More Everything Forever*).
+  - **Plain/older** — a superscript anchor `<a href="…#id"><sup>…</sup></a>` with no note
+    semantics (e.g. Harari's *Homo Deus*). The `<sup>` wrapper is the discriminator, so bare-text
+    Part/chapter cross-links in nav-heavy books are *not* misread as notes.
+  Only **cross-file** notes are inlined; **same-file** footnotes (e.g. Tim Urban's *What's Our
+  Problem*) are already self-contained and left untouched. The note's own number/back-link anchors
+  are unwrapped (dangling links removed, authored number kept) and any in-EPUB note images go
+  through the same image route.
+
 ### Fixed — WebSub validation
 - **Tokened `rel=self`/topic.** The advertised WebSub topic was token-free, but the feed route
   gates on `?token=`, so a subscriber fetching the topic URL got a 422 — failing WebSub content

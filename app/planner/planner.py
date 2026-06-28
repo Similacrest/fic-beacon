@@ -29,7 +29,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter, CalibreBook
-from app.epub.chapterizer import Chapter, chapterize
+from app.config import settings
+from app.epub.chapterizer import Chapter, chapterize, materialize_image_urls
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
     FeedbackEvent,
@@ -311,6 +312,11 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int) -> Drop |
     last = plan.chapters[-1]
     combined_html = "\n".join(
         f'<section class="chapter">\n{ch.html}\n</section>' for ch in plan.chapters
+    )
+    # Resolve in-EPUB image references to this book's read-only image route so the
+    # stored HTML is self-contained (and byte-stable for WebSub).
+    combined_html = materialize_image_urls(
+        combined_html, plan.book.calibre_id, settings.base_url
     )
     titles = "; ".join(ch.title for ch in plan.chapters)
 

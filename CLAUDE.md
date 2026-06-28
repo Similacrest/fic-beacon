@@ -162,6 +162,29 @@ This applies uniformly — tracked stories are FanFicFare EPUBs and carry per-ch
 **GUID ≠ link.** The item `guid`/`id` is always `urn:fic-beacon:drop:{reader_slug}` (per-drop
 uuid4) so multiple drops never collide on a shared work URL.
 
+### In-EPUB images (served read-only)
+Chapter HTML references images that live *inside* the EPUB zip (`<img src="images/…">`); nothing
+else serves them, so readers 404 against the beacon origin. The chapterizer rewrites every relative
+`<img>`/SVG `<image>`/`srcset` URL — resolved against the chapter's OPF-relative directory — to a
+sentinel (`app/epub/chapterizer.py`); `materialize_image_urls()` swaps it for
+`{base_url}/img/{calibre_id}/{path}` when a drop's `content_html` is materialised, so stored content
+is self-contained and byte-stable (WebSub-safe). `GET /img/{calibre_id}/{path}`
+(`app/routers/media.py`) streams the entry from the EPUB zip RO (re-anchored to the EPUB's OPF dir);
+external (`http(s)`/`data:`/root-absolute) URLs pass through, traversal is rejected.
+
+### Endnotes/footnotes (inlined per chapter)
+Notes usually live in a back-matter file separate from the chapter that cites them, so a
+single-chapter drop would dangle every note marker. `_build_note_index` (a two-pass scan: collect
+referenced ids, then resolve them) maps each cited note's id → inline-ready HTML, and
+`_inline_footnotes` appends them as a styled end-of-chapter `<aside class="beacon-endnotes">`,
+rewriting each marker to a local `#fb-note-{id}` anchor (ids are book-unique → no collision across
+chapters in one drop). Two marker conventions are detected (`_is_noteref`): EPUB3 semantic
+(`epub:type="noteref"`/`rearnote`/`footnote`) and the plain superscript-anchor form
+(`<a href="…#id"><sup>…</sup></a>`, no epub:type — the `<sup>` is the discriminator, so bare-text
+Part/chapter nav links aren't misread as notes). **Only cross-file notes are inlined** — same-file
+footnotes already resolve inside the dropped item. The note's own number/back-link anchors are
+unwrapped (links dropped, authored number kept); note images use the image route above.
+
 ### Feedback contract (plain hyperlinks, any reader)
 Four ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ❌ drop**.
 - `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
