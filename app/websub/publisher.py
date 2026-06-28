@@ -62,7 +62,14 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
     # Tokened to mirror the advertised rel=self (app/routers/feed.py) so the topic is
     # fetchable and the pushed body is byte-identical to a GET of the topic URL.
     topic = f"{settings.base_url}/feed/{channel.slug}/{feed_key}?token={secret}"
-    atom, _ = build_feed(drops, self_url=topic, title=f"Fic Beacon — {channel.name} · {slot_label}")
+    # title/description must mirror app/routers/feed.py exactly so the pushed body is
+    # byte-identical to a GET of the topic (WebSub compares the two).
+    atom, _ = build_feed(
+        drops,
+        self_url=topic,
+        title=f"Fic Beacon — {channel.name} · {slot_label}",
+        description=f"{channel.name} — {slot_label}",
+    )
     return topic, atom
 
 

@@ -45,6 +45,13 @@ def build_feed(
     for drop in drops:
         _add_entry(fg, drop)
 
+    # Pin the feed-level <updated> to data (newest drop), not wall-clock render time —
+    # otherwise every render differs and a WebSub push never byte-matches a GET of the
+    # topic. feedgen would otherwise default this to datetime.now().
+    if drops:
+        newest = max(d.published_at for d in drops)
+        fg.updated(newest.replace(tzinfo=timezone.utc))
+
     return fg.atom_str(pretty=True), fg.rss_str(pretty=True)
 
 
