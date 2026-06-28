@@ -180,10 +180,15 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
-The advertised `rel=self` / topic is **token-free** (`{base}/feed/{slug}/{key}`), but a reader may
-register the topic **with** the `?token=…` it polls; the publisher matches both forms so tokened
-subscriptions still receive push. The admin dashboard lists current subscribers + last/next cron
-runs for diagnosing "feed not updating".
+The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
+URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
+the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
+the feed URL the reader holds, so advertising it inside the (already token-gated) feed body leaks
+nothing new. The publisher still matches subscriptions registered both with and without the
+`?token=…` (some readers subscribe with their poll URL, others with the bare `rel=self`), so push is
+never silently dropped. `hub._is_own_topic` accepts any `{base}/feed…` topic regardless of query.
+The admin dashboard lists current subscribers + last/next cron runs for diagnosing "feed not
+updating".
 
 ### Calibre access
 Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), **tags**, and the custom

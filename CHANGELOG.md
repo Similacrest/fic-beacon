@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — WebSub validation
+- **Tokened `rel=self`/topic.** The advertised WebSub topic was token-free, but the feed route
+  gates on `?token=`, so a subscriber fetching the topic URL got a 422 — failing WebSub content
+  distribution ("notification body did not match the contents of the topic URL"). The advertised
+  `rel=self` and the publisher's push topic now carry the token, so the topic is fetchable and
+  byte-identical to the pushed body. Push still matches subscriptions registered with *or* without
+  the `?token=`.
+- **`HEAD` on slot feeds.** The `/feed/{slug}/{key}` route answered `HEAD` with `405`; WebSub
+  validators and some proxies probe with `HEAD` first. It now allows `GET`+`HEAD` (Starlette
+  strips the body), returning `200`.
+
 ## [0.6.1] — 2026-06-28
 
 ### Added

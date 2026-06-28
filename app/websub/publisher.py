@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.feed.builder import build_feed
-from app.models import Channel, Drop, WebSubSubscription, utcnow
+from app.models import Channel, Config, Drop, WebSubSubscription, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,11 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
         .filter(Drop.channel_id == channel_id, Drop.feed_key == feed_key)
     )
     slot_label = f"Slot {feed_key}"
-    topic = f"{settings.base_url}/feed/{channel.slug}/{feed_key}"
+    cfg = session.get(Config, 1)
+    secret = cfg.feed_secret if cfg else settings.feed_secret
+    # Tokened to mirror the advertised rel=self (app/routers/feed.py) so the topic is
+    # fetchable and the pushed body is byte-identical to a GET of the topic URL.
+    topic = f"{settings.base_url}/feed/{channel.slug}/{feed_key}?token={secret}"
     atom, _ = build_feed(drops, self_url=topic, title=f"Fic Beacon — {channel.name} · {slot_label}")
     return topic, atom
 
@@ -67,16 +71,16 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
 
 def _notify_topic(session: Session, topic_url: str, atom_bytes: bytes) -> None:
     now = utcnow()
-    # A subscriber may have registered the topic *with* the ?token=… query string
-    # (the URL the user pasted into their reader) while our advertised rel=self —
-    # and thus topic_url here — is token-free. Match both forms so realtime push
-    # isn't silently dropped for tokened subscriptions.
+    # Our advertised rel=self (and thus topic_url here) is tokened, but a subscriber may
+    # have registered either the bare token-free URL or a ?token=… poll URL. Match every
+    # form sharing the token-free base so realtime push isn't silently dropped.
+    base = topic_url.split("?", 1)[0]
     subs = (
         session.query(WebSubSubscription)
         .filter(
             or_(
-                WebSubSubscription.topic_url == topic_url,
-                WebSubSubscription.topic_url.like(topic_url + "?%"),
+                WebSubSubscription.topic_url == base,
+                WebSubSubscription.topic_url.like(base + "?%"),
             ),
             WebSubSubscription.verified.is_(True),
         )

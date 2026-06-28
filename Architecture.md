@@ -236,7 +236,9 @@ Uniform across all sources (every book is a FanFicFare EPUB): (1) the drop's fir
 Feeds advertise `<link rel="hub">`. A reader's hub subscribes via `POST /websub/hub`; Fic-Beacon
 verifies intent (GET callback with `hub.challenge`) and stores the subscription. On each new drop,
 the publisher POSTs the Atom body to verified subscribers (with `X-Hub-Signature` when a secret
-was registered). Readers without WebSub simply keep polling.
+was registered). Readers without WebSub simply keep polling. The advertised `rel=self`/topic is
+**tokened** (`?token=…`) so the topic URL is fetchable and byte-identical to the pushed body;
+subscriptions registered with or without the `?token=` are both matched on push.
 
 ## 7. Security & Access
 

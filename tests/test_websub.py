@@ -113,6 +113,24 @@ class TestPublisher:
         assert "https://r/cb" in urls
         assert "https://r/other" not in urls
 
+    def test_matches_tokened_and_bare_topic_forms(self, in_memory_db, monkeypatch):
+        """rel=self is now tokened; subscribers registered with or without ?token= both match."""
+        _FakeClient.posts = []
+        drop = self._setup_drop(in_memory_db)
+        base = publisher.settings.base_url
+        topic = f"{base}/feed/fantasy/1"
+        in_memory_db.add(WebSubSubscription(
+            topic_url=topic, callback_url="https://r/bare", verified=True))
+        in_memory_db.add(WebSubSubscription(
+            topic_url=f"{topic}?token=abc", callback_url="https://r/tokened", verified=True))
+        in_memory_db.commit()
+        monkeypatch.setattr(publisher.httpx, "Client", _FakeClient)
+
+        publisher.publish_updates(in_memory_db, [drop])
+
+        urls = [u for u, _ in _FakeClient.posts]
+        assert "https://r/bare" in urls and "https://r/tokened" in urls
+
     def test_skips_unverified_and_expired(self, in_memory_db, monkeypatch):
         _FakeClient.posts = []
         drop = self._setup_drop(in_memory_db)

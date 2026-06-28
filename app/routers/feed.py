@@ -45,7 +45,9 @@ def get_feed_slot(
         .all()
     )
     slot_label = f"Slot {feed_key}"
-    self_url = f"{settings.base_url}/feed/{channel_slug}/{feed_key}"
+    # Tokened so the advertised topic is actually fetchable (WebSub compares the pushed
+    # body against the topic URL's content, and this route gates on ?token=).
+    self_url = f"{settings.base_url}/feed/{channel_slug}/{feed_key}?token={token}"
     title = f"Fic Beacon — {channel.name} · {slot_label}"
     return _render(drops, fmt, self_url=self_url, title=title,
                    description=f"{channel.name} — {slot_label}")
