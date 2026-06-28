@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-28
+
 ### Changed — Library import driven by Calibre `#status` / `#read`
 - **One smart "Add" button.** The Library page's two inconsistent actions (batch "Add to queue"
   + a per-row "📡 Track updates" button) are replaced by a single batch **Add selected** that

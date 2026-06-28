@@ -1,6 +1,6 @@
 [project]
 name = "fic-beacon"
-version = "0.5.0"
+version = "0.6.0"
 description = "Re-serializes Calibre backlog EPUBs into a paced RSS feed"
 requires-python = ">=3.11"
 dependencies = [
