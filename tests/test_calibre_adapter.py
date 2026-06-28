@@ -42,6 +42,17 @@ def _build_calibre_db(library_path: Path) -> None:
     INSERT INTO custom_column_4 VALUES (1, 'LitRPG');
     INSERT INTO books_custom_column_4_link VALUES (1, 2, 1);
 
+    -- Single-value custom columns: #status (id 2, text) and #read (id 3, bool 0/1).
+    INSERT INTO custom_columns VALUES (2, 'status', 'Status', 'text', 0);
+    INSERT INTO custom_columns VALUES (3, 'read', 'Read', 'bool', 0);
+    CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
+    CREATE TABLE custom_column_3 (id INTEGER PRIMARY KEY, book INTEGER, value BOOL);
+    -- Book 1: In-Progress + read; Book 2: Completed + unread.
+    INSERT INTO custom_column_2 VALUES (1, 1, 'In-Progress');
+    INSERT INTO custom_column_2 VALUES (2, 2, 'Completed');
+    INSERT INTO custom_column_3 VALUES (1, 1, 1);
+    INSERT INTO custom_column_3 VALUES (2, 2, 0);
+
     INSERT INTO books VALUES (1, 'Story One', 'story one', 'AuthorA/Story One (1)', 'AuthorA', '2026-01-01 10:00:00');
     INSERT INTO books VALUES (2, 'Story Two', 'story two', 'AuthorB/Story Two (2)', 'AuthorB', '2026-06-01 10:00:00');
     INSERT INTO authors VALUES (1, 'Author A', 'A, Author');
@@ -107,6 +118,19 @@ class TestListBooks:
         assert books[1].genre_tags == []
         assert books[2].genres == []
         assert books[2].genre_tags == ["LitRPG"]
+
+    def test_status_and_read_columns(self, library_path):
+        adapter = CalibreAdapter(library_path)
+        books = {b.calibre_id: b for b in adapter.list_books()}
+        assert books[1].source_status == "In-Progress"
+        assert books[1].read is True
+        assert books[2].source_status == "Completed"
+        assert books[2].read is False  # bool value 0 ⇒ not read
+
+    def test_status_map(self, library_path):
+        adapter = CalibreAdapter(library_path)
+        assert adapter.status_map([1, 2]) == {1: "In-Progress", 2: "Completed"}
+        assert adapter.status_map([]) == {}
 
     def test_ordered_by_last_modified_desc(self, library_path):
         adapter = CalibreAdapter(library_path)

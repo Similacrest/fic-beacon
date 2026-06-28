@@ -19,12 +19,23 @@
 {% endif %}
 
 {% if sources %}
-<form method="post" action="/admin/ongoing/batch-delete" id="ongoing-batch-form">
-  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
+<form method="post" action="/admin/ongoing/batch-fetch" id="ongoing-batch-form">
+  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center; flex-wrap:wrap">
     <input type="checkbox" id="ongoing-check-all" title="Select all">
-    <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
+    <span style="color:#888; font-size:.85em">With selected:</span>
+    <button class="btn" type="submit" formaction="/admin/ongoing/batch-fetch"
+            style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchAny('ongoing-check')" title="Fetch new chapters now">⤓ Fetch</button>
+    <button class="btn" type="submit" formaction="/admin/ongoing/batch-pause"
+            style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchAny('ongoing-check')">⏸ Pause</button>
+    <button class="btn" type="submit" formaction="/admin/ongoing/batch-resume"
+            style="font-size:.85em; padding:.2em .6em"
+            onclick="return batchAny('ongoing-check')">▶ Resume</button>
+    <button class="btn btn-danger" type="submit" formaction="/admin/ongoing/batch-delete"
+            style="font-size:.85em; padding:.2em .6em"
             onclick="return batchConfirm('ongoing-check', 'Delete selected tracked stories?')">
-      Delete selected
+      ✕ Delete
     </button>
   </div>
 </form>
@@ -42,6 +53,9 @@
       {% if s.last_fetch_status %}
         <span style="color:{{ '#a00' if s.last_fetch_status.startswith('error') else ('#856404' if s.last_fetch_status == 'pending' or s.last_fetch_status.startswith('fetching') else '#155724') }}">{{ s.last_fetch_status }}</span>
       {% else %}—{% endif %}
+      {% if s.last_fetch_at %}
+        <span style="color:#999; white-space:nowrap"> · {{ s.last_fetch_at.strftime('%Y-%m-%d %H:%M') }}</span>
+      {% endif %}
     </td>
     <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
       {% if s.feed_url %}<a href="{{ s.feed_url }}" target="_blank" title="RSS notify feed">🔔 {{ s.feed_url }}</a>
@@ -73,6 +87,9 @@ function batchConfirm(checkClass, msg) {
   const checked = document.querySelectorAll('.' + checkClass + ':checked');
   if (!checked.length) return false;
   return confirm(msg);
+}
+function batchAny(checkClass) {
+  return document.querySelectorAll('.' + checkClass + ':checked').length > 0;
 }
 document.getElementById('ongoing-check-all').addEventListener('change', function() {
   document.querySelectorAll('.ongoing-check').forEach(cb => cb.checked = this.checked);

@@ -34,9 +34,14 @@ reader with plain feedback links.
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — a finite backlog book streams in a slot
   and rolls to the next when it finishes, while **tracked** (auto-updating) stories ride alongside
   it in the same slot feeds. There's no separate ongoing feed.
-- **Tracked stories** are added by URL. The fetcher container runs FanFicFare to download them into
-  Calibre; if the URL has an RSS feed it's used only to *notice* updates fast (checked pre-drop),
-  otherwise a daily sweep refreshes it. From there they're ordinary EPUBs.
+- **Importing from the Library** uses one **Add** button that routes each book by its Calibre
+  `#status`: ongoing serials (In-Progress / Incomplete / Hiatus) become **tracked** auto-updating
+  sources; finished/blank ones join the **backlog** queue. A tracked book you've marked `#read=Yes`
+  starts at the current end (only *new* chapters drop); an unread one starts at chapter 1.
+- **Tracked stories** can also be added by URL. The fetcher container runs FanFicFare to download
+  them into Calibre; if the URL has an RSS feed it's used only to *notice* updates fast (checked
+  pre-drop), otherwise a daily sweep refreshes it. From there they're ordinary EPUBs. Stories the
+  source site marks done (`#status` Completed / Abandoned / Published) are skipped on fetch.
 - **Stochastic budget** packs whole chapters up to a per-channel word (or reading-minute) budget;
   the further over budget, the more likely a unit rolls to the next cycle. Votes bias the draw; the
   long-run mean tracks your budget. Chapters are never split.

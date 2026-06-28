@@ -111,10 +111,18 @@ fic-beacon/
   FanFicFare fetch URL. All sources hold `quota_weight`, votes, `status`, and live in a channel.
 - A **unit** is one drop-able chunk: a whole EPUB chapter (`chapterize(epub)[cursor]`). Unit shape:
   `{title, html, word_count, source_url}`. There is no separate ongoing-entry path.
+- **Library import (`POST /admin/library/add`) is routed by Calibre `#status`** (see
+  `app/calibre/status.py`): an *updating* status (In-Progress / Incomplete / Hiatus) → a **tracked**
+  source; a *done* status (Completed / Abandoned / Published) or blank → a **backlog** queue entry.
+  A tracked book marked **`#read=Yes`** starts its `cursor_chapter_index` at the current EPUB end
+  (caught up → only new chapters drop); otherwise it starts at chapter 1. One batched **Add** button
+  in the Library UI — there is no separate per-row track action.
 - **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
   into one **async** fetch job (`scheduler.submit_and_track`) that downloads the new chapters into
   Calibre in the background. The triggering broadcast does **not** wait — new chapters land in the
-  *next* one. Feed-less tracked stories are refreshed by a daily sweep.
+  *next* one. Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
+  **skip** stories whose `#status` is done (Completed / Abandoned / Published) — their EPUBs are
+  already complete, so re-fetching is wasted.
 - **Stub handling (chapter labels & cursor floor):** if the site removed chapters, the fetcher
   archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
   `stub {old,new}`. Fic-Beacon then bumps `book.chapter_label_offset` by `old−new` (so the next
@@ -176,9 +184,12 @@ subscriptions still receive push. The admin dashboard lists current subscribers 
 runs for diagnosing "feed not updating".
 
 ### Calibre access
-Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), and **tags** come from
-there; EPUB paths derive from the library folder structure. Do not require a running Calibre. The
-fetcher container is what *writes* (via `calibredb`); the app only ever reads.
+Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), **tags**, and the custom
+columns **`#genre_manual`**/**`#genre`** (channel routing), **`#status`** (publication state →
+import routing + fetch-skip), and **`#read`** (caught-up → cursor placement) come from there; EPUB
+paths derive from the library folder structure. Missing custom columns degrade gracefully (empty).
+Do not require a running Calibre. The fetcher container is what *writes* (via `calibredb`); the app
+only ever reads.
 
 ### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`) — batched & async
 FanFicFare runs can take **~15 min**, so fetches are batched and asynchronous; they never block a

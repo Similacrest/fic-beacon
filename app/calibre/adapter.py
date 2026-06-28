@@ -6,6 +6,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _first(values: list | None) -> str | None:
+    """First value of a custom-column list as a stripped string, or None."""
+    if not values:
+        return None
+    text = str(values[0]).strip()
+    return text or None
+
+
+def _is_yes(values: list | None) -> bool:
+    """Interpret a Calibre Yes/No (bool) custom column. Bool columns store 0/1; text
+    columns may store "Yes"/"True". Anything else (incl. unset/0/No) is falsy."""
+    first = _first(values)
+    return first is not None and first.lower() in ("1", "yes", "true")
+
+
 @dataclass
 class CalibreBook:
     calibre_id: int
@@ -18,6 +33,8 @@ class CalibreBook:
     tags: list[str] = field(default_factory=list)          # Calibre tags
     genres: list[str] = field(default_factory=list)        # #genre_manual (curated, hierarchical)
     genre_tags: list[str] = field(default_factory=list)    # #genre (raw, for auto-classification)
+    source_status: str | None = None  # #status (In-Progress/Completed/Hiatus/… — publication state)
+    read: bool = False                # #read (Yes ⇒ finished / caught up to the current end)
 
 
 class CalibreAdapter:
@@ -47,6 +64,8 @@ class CalibreAdapter:
             tags = self._fetch_tags(conn, ids)
             genres = self._fetch_custom_text(conn, "genre_manual", ids)
             genre_tags = self._fetch_custom_text(conn, "genre", ids)
+            statuses = self._fetch_custom_text(conn, "status", ids)
+            reads = self._fetch_custom_text(conn, "read", ids)
             return [
                 CalibreBook(
                     calibre_id=r["id"],
@@ -59,6 +78,8 @@ class CalibreAdapter:
                     tags=tags.get(r["id"], []),
                     genres=genres.get(r["id"], []),
                     genre_tags=genre_tags.get(r["id"], []),
+                    source_status=_first(statuses.get(r["id"])),
+                    read=_is_yes(reads.get(r["id"])),
                 )
                 for r in rows
             ]
@@ -82,6 +103,8 @@ class CalibreAdapter:
             tags = self._fetch_tags(conn, [calibre_id])
             genres = self._fetch_custom_text(conn, "genre_manual", [calibre_id])
             genre_tags = self._fetch_custom_text(conn, "genre", [calibre_id])
+            statuses = self._fetch_custom_text(conn, "status", [calibre_id])
+            reads = self._fetch_custom_text(conn, "read", [calibre_id])
             return CalibreBook(
                 calibre_id=row["id"],
                 title=row["title"],
@@ -93,10 +116,25 @@ class CalibreAdapter:
                 tags=tags.get(calibre_id, []),
                 genres=genres.get(calibre_id, []),
                 genre_tags=genre_tags.get(calibre_id, []),
+                source_status=_first(statuses.get(calibre_id)),
+                read=_is_yes(reads.get(calibre_id)),
             )
 
     def epub_path(self, book: CalibreBook) -> Path:
         return self.library_path / book.path / f"{book.epub_name}.epub"
+
+    def status_map(self, calibre_ids: list[int]) -> dict[int, str | None]:
+        """Return {calibre_id: #status value} for the given books (None where unset).
+
+        Used by the fetch sweep/poller to skip stories the source site marks done without
+        re-reading every column — see app/calibre/status.py.
+        """
+        ids = [i for i in calibre_ids if i is not None]
+        if not ids:
+            return {}
+        with self._connect() as conn:
+            statuses = self._fetch_custom_text(conn, "status", ids)
+        return {i: _first(statuses.get(i)) for i in ids}
 
     def _fetch_authors(
         self, conn: sqlite3.Connection, book_ids: list[int]

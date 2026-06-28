@@ -22,9 +22,33 @@ import logging
 import feedparser
 from sqlalchemy.orm import Session
 
+from app.calibre.adapter import CalibreAdapter
+from app.calibre.status import is_done
+from app.config import settings
 from app.models import Book
 
 logger = logging.getLogger(__name__)
+
+
+def _drop_done(sources: list[Book]) -> list[Book]:
+    """Filter out tracked stories the source site marks done (#status Completed/Abandoned/…).
+
+    Their EPUBs are already complete in Calibre, so re-fetching them just burns fetcher time;
+    already-downloaded chapters still drop through the normal cursor path. Books without a
+    calibre_id (never fetched) or an unknown status are kept. #status is read live from
+    metadata.db so the user's Calibre status edits take effect without a restart.
+    """
+    have_id = [s for s in sources if s.calibre_id is not None]
+    if not have_id:
+        return sources
+    try:
+        statuses = CalibreAdapter(settings.calibre_library_path).status_map(
+            [s.calibre_id for s in have_id]
+        )
+    except Exception:  # never let a metadata read break the cycle
+        logger.exception("Failed to read #status for fetch-skip; fetching all")
+        return sources
+    return [s for s in sources if not is_done(statuses.get(s.calibre_id))]
 
 
 def _newest_guid(parsed) -> str | None:
@@ -64,6 +88,7 @@ def poll_all_feeds(session: Session) -> int:
             logger.exception(
                 "Failed to poll tracked source '%s' (%s)", source.title, source.feed_url
             )
+    changed = _drop_done(changed)
     if changed:
         submit_and_track(session, changed)
     from app.state import LAST_POLL_RUN, mark_run
@@ -95,7 +120,7 @@ def sweep_feedless(session: Session) -> int:
     """Submit a fetch for every tracked book that has no feed (auth-gated). Runs daily."""
     from app.scheduler import submit_and_track
 
-    sources = (
+    sources = _drop_done(
         session.query(Book)
         .filter(Book.tracked.is_(True), Book.feed_url.is_(None))
         .all()
