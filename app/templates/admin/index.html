@@ -98,7 +98,7 @@
 </div>
 
 {# ── Now broadcasting: per-channel slot feeds (post + chapter level) ───────── #}
-<details class="section" open>
+<details class="section" data-section="now-broadcasting" open>
   <summary>📺 Now broadcasting <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
   {% for cv in slot_view %}
   <h3 style="margin:.6em 0 .2em">{{ cv.channel.name }}
@@ -141,7 +141,7 @@
 </details>
 
 {# ── Next broadcast: queued backlog EPUBs + tracked stories with chapters past cursor ── #}
-<details class="section">
+<details class="section" data-section="next-broadcast">
   <summary>⏭ Next broadcast — waiting &amp; held out</summary>
   <p class="muted" style="font-size:.85em">
     Queued backlog books enter a slot when one frees. Tracked stories with chapters past
@@ -188,7 +188,7 @@
 
 {# ── Fetches in progress: async FanFicFare downloads (phase + elapsed) ──────── #}
 {% if fetch_progress %}
-<details class="section" open>
+<details class="section" data-section="fetches" open>
   <summary>⏳ Fetches in progress <span class="count">— {{ fetch_progress|length }}</span></summary>
   <p class="muted" style="font-size:.85em">
     FanFicFare downloads run in the background (up to ~15 min). Phase advances each poll;
@@ -210,7 +210,7 @@
 {% endif %}
 
 {# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
-<details class="section">
+<details class="section" data-section="system-status">
   <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
   <div class="kv" style="margin:.5em 0 1em">
     <span class="muted">Last broadcast (drop cron)</span><span>{{ fmt_dt(status.last_drop) }}</span>
@@ -243,7 +243,7 @@
   {% endif %}
 </details>
 
-<details class="section" open>
+<details class="section" data-section="active" open>
 <summary>📚 Active sources <span class="count">— {{ active|length }}</span></summary>
 {% if active %}
 <form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="active-batch-form">
@@ -288,7 +288,7 @@
 {% endif %}
 </details>
 
-<details class="section">
+<details class="section" data-section="queue">
 <summary>📋 Queue <span class="count">— {{ queued|length }}</span></summary>
 {% if queued %}
 <form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="queue-batch-form">
@@ -342,7 +342,7 @@
 </details>
 
 {% if completed %}
-<details class="section">
+<details class="section" data-section="completed">
 <summary>✅ Recently completed <span class="count">— {{ completed|length }}</span></summary>
 <table>
   <thead><tr><th>Title</th><th>Author</th><th>Actions</th></tr></thead>
@@ -364,7 +364,7 @@
 {% endif %}
 
 {% if dropped %}
-<details class="section">
+<details class="section" data-section="dropped">
 <summary>🗑 Dropped <span class="count">— {{ dropped|length }}</span></summary>
 <p>
   <form method="post" action="/admin/dropped/clear" hx-post="/admin/dropped/clear" style="display:inline"
@@ -416,5 +416,19 @@ document.addEventListener('htmx:afterRequest', (e) => {
     setTimeout(() => el.classList.remove('saved-flash'), 700);
   }
 });
+// Preserve each section's expanded/collapsed state across in-place #dash-main swaps
+// (and page loads), since swapping resets <details> to their template defaults.
+function restoreSections() {
+  document.querySelectorAll('details[data-section]').forEach((d) => {
+    const v = localStorage.getItem('sec:' + d.dataset.section);
+    if (v !== null) d.open = v === '1';
+  });
+}
+document.addEventListener('toggle', (e) => {
+  const d = e.target.closest && e.target.closest('details[data-section]');
+  if (d) localStorage.setItem('sec:' + d.dataset.section, d.open ? '1' : '0');
+}, true);
+document.addEventListener('htmx:afterSwap', restoreSections);
+restoreSections();
 </script>
 {% endblock %}

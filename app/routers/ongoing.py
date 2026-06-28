@@ -155,10 +155,10 @@ def delete_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResp
 
 @router.post("/batch-delete")
 def batch_delete_sources(
-    book_ids: list[int] = Form(...),
+    book_ids: list[int] | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    for book_id in book_ids:
+    for book_id in (book_ids or []):
         source = db.get(Book, book_id)
         if source is not None:
             _delete_source(db, source)
@@ -166,17 +166,17 @@ def batch_delete_sources(
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
 
-def _selected_tracked(db: Session, book_ids: list[int]) -> list[Book]:
-    """Resolve a batch of ids to the tracked Books that exist."""
+def _selected_tracked(db: Session, book_ids: list[int] | None) -> list[Book]:
+    """Resolve a batch of ids to the tracked Books that exist (None ⇒ empty selection)."""
     return [
-        b for b in (db.get(Book, i) for i in book_ids)
+        b for b in (db.get(Book, i) for i in (book_ids or []))
         if b is not None and b.tracked
     ]
 
 
 @router.post("/batch-pause")
 def batch_pause_sources(
-    book_ids: list[int] = Form(...),
+    book_ids: list[int] | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Pause (exclude from polling/broadcast) every selected tracked story."""
@@ -188,7 +188,7 @@ def batch_pause_sources(
 
 @router.post("/batch-resume")
 def batch_resume_sources(
-    book_ids: list[int] = Form(...),
+    book_ids: list[int] | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Resume every selected tracked story."""
@@ -200,7 +200,7 @@ def batch_resume_sources(
 
 @router.post("/batch-fetch")
 def batch_fetch_sources(
-    book_ids: list[int] = Form(...),
+    book_ids: list[int] | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Queue an async fetch for every selected tracked story (one batched job)."""

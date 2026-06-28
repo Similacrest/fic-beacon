@@ -14,6 +14,7 @@ from feedparser.util import FeedParserDict
 from app.models import Book, BookStatus, Channel, absolute_chapter_number
 from app.ongoing.poller import _newest_guid, poll_all_feeds, sweep_feedless
 from app.fetch.client import apply_result
+from app.routers.ongoing import batch_pause_sources, batch_resume_sources
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -157,6 +158,22 @@ class TestApplyResult:
         apply_result(src, {"calibre_id": 42, "chapter_count": 90,
                            "stub": {"old": 101, "new": 90}, "error": None})
         assert src.chapter_label_offset == 51   # 40 + (101-90)
+
+
+class TestBatchActions:
+    def test_pause_then_resume(self, in_memory_db):
+        a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
+        b = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
+        batch_pause_sources(book_ids=[a.id, b.id], db=in_memory_db)
+        assert a.status == BookStatus.dropped and b.status == BookStatus.dropped
+        batch_resume_sources(book_ids=[a.id], db=in_memory_db)
+        assert a.status == BookStatus.active and b.status == BookStatus.dropped
+
+    def test_empty_selection_is_a_noop(self, in_memory_db):
+        # The HTMX path posts with no book_ids when nothing is selected; must not error.
+        a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
+        batch_pause_sources(book_ids=None, db=in_memory_db)
+        assert a.status == BookStatus.active
 
 
 class TestAbsoluteChapterNumber:
