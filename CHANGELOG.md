@@ -28,6 +28,13 @@ All notable changes to this project are documented here. The format is based on
   - **Echo `hub.verify_token`.** The verification GET dropped the subscriber-supplied
     `hub.verify_token`; PuSH 0.3 subscribers match a pending subscription on *both* `hub.topic` and
     `hub.verify_token` before echoing the challenge. It's now forwarded.
+  - **Preserve the callback's own query params (the real Inoreader blocker).** The verification GET
+    passed `params=` to `httpx.get(callback, …)`, but httpx (≥0.28) *replaces* a URL's existing query
+    rather than merging — wiping the `?feed_id=…&hub_id=…` Inoreader puts in its callback to key the
+    pending verification. With those gone, Inoreader couldn't match the request and answered a bare
+    empty `200` (no challenge echo) — identically for sync, async, and with/without `verify_token`,
+    which is why earlier handshake fixes didn't land. The hub now **merges** `hub.*` into the
+    callback URL (`httpx.URL(callback).copy_merge_params(...)`), keeping the subscriber's params.
   - **Diagnosability.** Failed verification logs the subscriber's response (status + body snippet) at
     `WARNING`, and the full inbound hub form (key + value) is debug-logged, so a dropped/required
     param can't hide again.

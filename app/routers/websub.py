@@ -69,10 +69,16 @@ async def _verify_intent(
     }
     if verify_token:
         params["hub.verify_token"] = verify_token
-    logger.debug("WebSub verify → GET %s params=%s", callback, params)
+    # MERGE our verification params into the callback's existing query string — do NOT pass
+    # `params=` to client.get(), which (httpx ≥0.28) *replaces* the callback's query. Readers
+    # like Inoreader key their pending verification on params already in the callback URL
+    # (e.g. ?feed_id=…&hub_id=…); clobbering those makes the callback unable to match the
+    # request and it answers a bare empty 200 (verification silently fails).
+    target = httpx.URL(callback).copy_merge_params(params)
+    logger.debug("WebSub verify → GET %s", target)
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(callback, params=params)
+            resp = await client.get(target)
     except httpx.HTTPError as exc:
         return False, f"request error: {exc!r}"
     body = resp.text

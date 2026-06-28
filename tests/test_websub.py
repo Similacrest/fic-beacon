@@ -52,8 +52,13 @@ class TestHub:
         # (PuSH 0.3 subscribers match on it before echoing the challenge).
         assert bg.tasks[0].args[-1] == "vt0ken"
 
-    async def test_verify_intent_echoes_verify_token(self, monkeypatch):
-        """The verification GET must include hub.verify_token when the subscriber sent one."""
+    async def test_verify_intent_merges_into_callback_query(self, monkeypatch):
+        """The verification GET must carry hub.* AND preserve the callback's own query.
+
+        httpx (≥0.28) *replaces* a URL's query when you pass params=, so we merge into the
+        callback URL instead. Readers (Inoreader) key their pending verification on params
+        already in the callback (e.g. feed_id/hub_id); dropping them → bare empty 200.
+        """
         captured = {}
 
         class _AsyncClient:
@@ -64,15 +69,23 @@ class TestHub:
             async def __aexit__(self, *a):
                 return False
             async def get(self, url, params=None):
+                captured["url"] = str(url)
+                # We must NOT also pass params= (that would re-clobber the merged query).
                 captured["params"] = params
                 return MagicMock(status_code=200, text="challenge123")
 
         monkeypatch.setattr(websub.httpx, "AsyncClient", _AsyncClient)
         ok, _ = await websub._verify_intent(
-            "https://r/cb", "subscribe", "https://t/1", "challenge123", 3600, "vt0ken")
+            "https://incoming.example/cb?feed_id=42&hub_id=7",
+            "subscribe", "https://t/1", "challenge123", 3600, "vt0ken")
         assert ok is True
-        assert captured["params"]["hub.verify_token"] == "vt0ken"
-        assert captured["params"]["hub.challenge"] == "challenge123"
+        assert captured["params"] is None
+        url = captured["url"]
+        # The subscriber's own params survive the merge…
+        assert "feed_id=42" in url and "hub_id=7" in url
+        # …alongside our verification params.
+        assert "hub.verify_token=vt0ken" in url
+        assert "hub.challenge=challenge123" in url
 
     async def test_sync_verify_stores_and_returns_204(self, in_memory_db, monkeypatch):
         """A hub.verify=sync subscriber (Inoreader) is verified inline → 204 + stored."""
