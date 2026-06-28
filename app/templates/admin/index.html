@@ -5,7 +5,9 @@
 {% macro channel_select(book) %}
 <form method="post" action="/admin/books/{{ book.id }}/set-channel" style="display:inline"
       title="Move to another channel">
-  <select name="channel_id" onchange="this.form.submit()" style="font-size:.85em; padding:.1em .2em">
+  <select name="channel_id" style="font-size:.85em; padding:.1em .2em"
+          hx-post="/admin/books/{{ book.id }}/set-channel" hx-trigger="change"
+          onchange="if(!window.htmx) this.form.submit()">
     {% for ch in channels %}
     <option value="{{ ch.id }}" {% if ch.id == book.channel_id %}selected{% endif %}>{{ ch.name }}</option>
     {% endfor %}
@@ -18,22 +20,25 @@
 {% macro progress_cell(book) %}
 <span style="white-space:nowrap">
   <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
+        hx-post="/admin/books/{{ book.id }}/set-cursor" hx-swap="none"
         style="display:inline; margin-right:.4em"
-        title="Set chapter cursor (rewind/skip ahead){% if book.cursor_floor %} — can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">
+        title="Set chapter cursor (auto-saves; rewind/skip ahead){% if book.cursor_floor %} — can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">
     <input type="number" name="chapter_index"
            value="{{ book.cursor_chapter_index }}"
            min="{{ book.cursor_floor }}"
            {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
+           hx-post="/admin/books/{{ book.id }}/set-cursor" hx-trigger="change delay:500ms"
+           hx-swap="none" class="autosave"
            style="width:52px; padding:.2em .3em; font-size:.85em">
     {% if book.total_chapters %}<span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>{% endif %}
     {% if book.chapter_label_offset %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
-    <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
   </form>
-  <form method="post" action="/admin/books/{{ book.id }}/cursor-start" style="display:inline"
-        title="Read from the start (chapter 1)">
+  <form method="post" action="/admin/books/{{ book.id }}/cursor-start" hx-post="/admin/books/{{ book.id }}/cursor-start"
+        style="display:inline" title="Read from the start (chapter 1)">
     <button type="submit" style="padding:.15em .4em; font-size:.8em">⏮</button>
   </form>
-  <form method="post" action="/admin/books/{{ book.id }}/cursor-latest" style="display:inline; margin-right:.4em"
+  <form method="post" action="/admin/books/{{ book.id }}/cursor-latest" hx-post="/admin/books/{{ book.id }}/cursor-latest"
+        style="display:inline; margin-right:.4em"
         title="Jump to latest — only new chapters drop (ongoing handling)">
     <button type="submit" style="padding:.15em .4em; font-size:.8em">⏭</button>
   </form>
@@ -51,18 +56,22 @@
 
 {# Inline weight adjustment #}
 {% macro weight_cell(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/set-weight" style="display:inline">
+<form method="post" action="/admin/books/{{ book.id }}/set-weight"
+      hx-post="/admin/books/{{ book.id }}/set-weight" hx-swap="none" style="display:inline">
   <input type="number" name="weight"
          value="{{ '%.2f'|format(book.quota_weight) }}"
          min="0.1" max="10" step="0.05"
+         hx-post="/admin/books/{{ book.id }}/set-weight" hx-trigger="change delay:500ms"
+         hx-swap="none" class="autosave"
+         title="Auto-saves on change"
          style="width:60px; padding:.2em .3em; font-size:.85em">
-  <button type="submit" style="padding:.15em .4em; font-size:.8em" title="Apply weight">↩</button>
 </form>
 {% endmacro %}
 
 {# Toggle a source between ongoing (tracked, auto-updating) and finite-backlog handling. #}
 {% macro track_toggle(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/track" style="display:inline"
+<form method="post" action="/admin/books/{{ book.id }}/track"
+      hx-post="/admin/books/{{ book.id }}/track" style="display:inline"
       title="{{ 'Stop auto-updating — treat as finite backlog' if book.tracked else 'Auto-update from source — treat as ongoing serial' }}">
   <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
   <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '📡 on' if book.tracked else '📡 off' }}</button>
@@ -74,11 +83,16 @@
 <p style="color:#888">
   Per-channel feed URLs live on the <a href="/admin/channels">Channels</a> page.
 </p>
+
+{# In-place actions: forms below post via HTMX and swap only this #dash-main block, so the
+   page never reloads or jumps to the top. Value inputs (cursor/weight) override hx-swap to
+   "none" and auto-save on change. Forms keep method/action so they still work without JS. #}
+<div id="dash-main" hx-target="#dash-main" hx-select="#dash-main" hx-swap="outerHTML scroll:none" hx-push-url="false">
 <div style="display:flex; gap:.6em; flex-wrap:wrap; margin-bottom:1.5em">
-  <form method="post" action="/admin/trigger-drop">
+  <form method="post" action="/admin/trigger-drop" hx-post="/admin/trigger-drop">
     <button class="btn btn-primary">▶ Run drop cycle now</button>
   </form>
-  <form method="post" action="/admin/poll-now">
+  <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now">
     <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
   </form>
 </div>
@@ -232,9 +246,9 @@
 <details class="section" open>
 <summary>📚 Active sources <span class="count">— {{ active|length }}</span></summary>
 {% if active %}
-<form method="post" action="/admin/books/batch-drop" id="active-batch-form">
+<form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="active-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
-    <input type="checkbox" id="active-check-all" title="Select all">
+    <input type="checkbox" data-check-all="active-check" title="Select all">
     <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
             onclick="return batchConfirm('active-check', 'Drop selected active books?')">
       Drop selected
@@ -261,7 +275,7 @@
     <td>{{ weight_cell(book) }}</td>
     <td style="white-space:nowrap">
       {{ track_toggle(book) }}
-      <form method="post" action="/admin/books/{{ book.id }}/drop" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>
     </td>
@@ -277,9 +291,9 @@
 <details class="section">
 <summary>📋 Queue <span class="count">— {{ queued|length }}</span></summary>
 {% if queued %}
-<form method="post" action="/admin/books/batch-drop" id="queue-batch-form">
+<form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="queue-batch-form">
   <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
-    <input type="checkbox" id="queue-check-all" title="Select all">
+    <input type="checkbox" data-check-all="queue-check" title="Select all">
     <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
             onclick="return batchConfirm('queue-check', 'Drop selected queued items?')">
       Drop selected
@@ -305,16 +319,16 @@
     <td>{{ weight_cell(book) }}</td>
     <td>{% if book.source_url %}<a href="{{ book.source_url }}" target="_blank">↗</a>{% endif %}</td>
     <td>
-      <form method="post" action="/admin/books/{{ book.id }}/move" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/move" hx-post="/admin/books/{{ book.id }}/move" style="display:inline">
         <input type="hidden" name="direction" value="up">
         <button>↑</button>
       </form>
-      <form method="post" action="/admin/books/{{ book.id }}/move" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/move" hx-post="/admin/books/{{ book.id }}/move" style="display:inline">
         <input type="hidden" name="direction" value="down">
         <button>↓</button>
       </form>
       {{ track_toggle(book) }}
-      <form method="post" action="/admin/books/{{ book.id }}/drop" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>
     </td>
@@ -338,7 +352,7 @@
     <td>{{ book.title }}</td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>
-      <form method="post" action="/admin/books/{{ book.id }}/requeue" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/requeue" hx-post="/admin/books/{{ book.id }}/requeue" style="display:inline">
         <button>Re-queue</button>
       </form>
     </td>
@@ -353,7 +367,7 @@
 <details class="section">
 <summary>🗑 Dropped <span class="count">— {{ dropped|length }}</span></summary>
 <p>
-  <form method="post" action="/admin/dropped/clear" style="display:inline"
+  <form method="post" action="/admin/dropped/clear" hx-post="/admin/dropped/clear" style="display:inline"
         onsubmit="return confirm('Permanently remove all dropped sources and their drops?')">
     <button class="btn btn-danger" style="font-size:.8em; padding:.15em .6em">Clear dropped</button>
   </form>
@@ -367,7 +381,7 @@
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ book.thumbs_down }}</td>
     <td>
-      <form method="post" action="/admin/books/{{ book.id }}/requeue" style="display:inline">
+      <form method="post" action="/admin/books/{{ book.id }}/requeue" hx-post="/admin/books/{{ book.id }}/requeue" style="display:inline">
         <button>Re-queue</button>
       </form>
     </td>
@@ -377,6 +391,7 @@
 </table>
 </details>
 {% endif %}
+</div>{# /#dash-main #}
 
 <script>
 function batchConfirm(checkClass, msg) {
@@ -384,14 +399,22 @@ function batchConfirm(checkClass, msg) {
   if (!checked.length) return false;
   return confirm(msg);
 }
-function wireSelectAll(allId, checkClass) {
-  const all = document.getElementById(allId);
-  if (!all) return;
-  all.addEventListener('change', () => {
-    document.querySelectorAll('.' + checkClass).forEach(cb => cb.checked = all.checked);
-  });
-}
-wireSelectAll('active-check-all', 'active-check');
-wireSelectAll('queue-check-all', 'queue-check');
+// Delegated so it keeps working after HTMX swaps #dash-main in place. The check-all boxes
+// declare which row-checkbox class they control via data-check-all.
+document.addEventListener('change', (e) => {
+  const all = e.target.closest('input[data-check-all]');
+  if (all) {
+    const cls = all.getAttribute('data-check-all');
+    document.querySelectorAll('.' + cls).forEach(cb => cb.checked = all.checked);
+  }
+});
+// Brief "saved" flash for the auto-saving cursor/weight inputs.
+document.addEventListener('htmx:afterRequest', (e) => {
+  const el = e.detail.elt;
+  if (el && el.classList && el.classList.contains('autosave') && e.detail.successful) {
+    el.classList.add('saved-flash');
+    setTimeout(() => el.classList.remove('saved-flash'), 700);
+  }
+});
 </script>
 {% endblock %}

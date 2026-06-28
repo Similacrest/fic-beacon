@@ -6,7 +6,7 @@ import re
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
@@ -313,6 +313,20 @@ def _slugify(name: str) -> str:
     return slug or "channel"
 
 
+def _unique_slug(db: Session, base: str, exclude_id: int | None = None) -> str:
+    """A slug not used by any other channel, suffixing -2, -3, … on collision."""
+    base = _slugify(base)
+    slug, n = base, 2
+    while True:
+        clash = db.query(Channel).filter(Channel.slug == slug)
+        if exclude_id is not None:
+            clash = clash.filter(Channel.id != exclude_id)
+        if clash.first() is None:
+            return slug
+        slug = f"{base}-{n}"
+        n += 1
+
+
 @router.get("/channels", response_class=HTMLResponse)
 def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
@@ -342,11 +356,7 @@ def create_channel(
     name = name.strip()
     if not name:
         return RedirectResponse(url="/admin/channels", status_code=303)
-    slug = _slugify(name)
-    base_slug, n = slug, 2
-    while db.query(Channel).filter(Channel.slug == slug).first() is not None:
-        slug = f"{base_slug}-{n}"
-        n += 1
+    slug = _unique_slug(db, name)
     max_order = db.query(func.max(Channel.queue_order)).scalar() or 0
     mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
     db.add(Channel(
@@ -366,17 +376,24 @@ def create_channel(
 def edit_channel(
     channel_id: int,
     name: str = Form(...),
+    slug: str = Form(""),
     genre_match: str = Form(""),
     parallel_slots: int = Form(1),
     budget_mode: str = Form("words"),
     budget: int = Form(5000),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    """Edit channel settings. The slug (and thus feed URLs) stays fixed."""
+    """Edit channel settings, including the slug.
+
+    Changing the slug rewrites this channel's feed URLs (`/feed/{slug}/{key}`), so any reader
+    already subscribed to the old URL stops updating until re-subscribed. Blank ⇒ keep current.
+    """
     channel = db.get(Channel, channel_id)
     name = name.strip()
     if channel and name:
         channel.name = name
+        if slug.strip():
+            channel.slug = _unique_slug(db, slug, exclude_id=channel.id)
         channel.genre_match = genre_match.strip() or None
         channel.parallel_slots = max(1, parallel_slots)
         channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
@@ -452,19 +469,28 @@ def move_book(
     return RedirectResponse(url="/admin/", status_code=303)
 
 
+def _saved(request: Request) -> Response:
+    """Reply to an inline auto-save: a bodyless 204 for HTMX (no swap, keeps focus),
+    or the usual dashboard redirect for a plain form submit (no-JS fallback)."""
+    if request.headers.get("HX-Request"):
+        return Response(status_code=204)
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
 @router.post("/books/{book_id}/set-cursor")
 def set_cursor(
     book_id: int,
+    request: Request,
     chapter_index: int = Form(...),
     db: Session = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     book = db.get(Book, book_id)
     if book is not None:
         upper = book.total_chapters if book.total_chapters is not None else chapter_index
         # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
         book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _saved(request)
 
 
 def _book_chapter_count(book: Book) -> int | None:
@@ -511,14 +537,15 @@ def cursor_start(book_id: int, db: Session = Depends(get_db)) -> RedirectRespons
 @router.post("/books/{book_id}/set-weight")
 def set_weight(
     book_id: int,
+    request: Request,
     weight: float = Form(...),
     db: Session = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     book = db.get(Book, book_id)
     if book is not None:
         book.quota_weight = max(0.1, min(10.0, round(weight, 3)))
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _saved(request)
 
 
 @router.post("/books/batch-drop")

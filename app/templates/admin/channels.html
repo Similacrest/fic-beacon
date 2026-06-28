@@ -28,6 +28,12 @@
         <label style="font-size:.8em; display:block">Name</label>
         <input type="text" name="name" value="{{ ch.name }}" required style="width:100%">
       </div>
+      <div style="flex:1; min-width:120px">
+        <label style="font-size:.8em; display:block">Slug (feed URL)</label>
+        <input type="text" name="slug" value="{{ ch.slug }}" style="width:100%"
+               pattern="[A-Za-z0-9 _-]+"
+               title="Changing this rewrites this channel's feed URLs — re-subscribe in your reader afterwards.">
+      </div>
       <div style="flex:3; min-width:180px">
         <label style="font-size:.8em; display:block">Genre match (comma-separated)</label>
         <input type="text" name="genre_match" value="{{ ch.genre_match or '' }}"

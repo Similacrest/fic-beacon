@@ -30,7 +30,8 @@ reader with plain feedback links.
   column into one of Fanfiction / Sci-Fi / Fantasy / Classical / Non-fiction. Each channel has its
   own reading budget and parallel **slots**; one global cron sets the cadence. Every source belongs
   to a channel — a **"General"** channel is created automatically and catches anything unmatched,
-  and you can move books between channels or rename a channel anytime (feed URLs stay stable).
+  and you can move books between channels or rename a channel anytime (the slug — and thus the
+  feed URL — is editable too, but changing it means re-subscribing in your reader).
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — a finite backlog book streams in a slot
   and rolls to the next when it finishes, while **tracked** (auto-updating) stories ride alongside
   it in the same slot feeds. There's no separate ongoing feed.
