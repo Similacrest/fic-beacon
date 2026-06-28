@@ -40,5 +40,9 @@ class Settings(BaseSettings):
     # Misc
     feed_item_limit: int = 50
 
+    # Root log level for the app's own loggers (e.g. "DEBUG" to trace the WebSub
+    # subscribe/verify/push flow). Anything Python's logging accepts: DEBUG/INFO/WARNING/…
+    log_level: str = "INFO"
+
 
 settings = Settings()

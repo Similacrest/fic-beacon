@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,8 +12,23 @@ from app.routers import admin, feed, feedback, ongoing, reader, websub
 from app import scheduler
 
 
+def _configure_logging() -> None:
+    """Set the app's log level from BEACON_LOG_LEVEL (default INFO).
+
+    Set BEACON_LOG_LEVEL=DEBUG to trace the WebSub subscribe → verify → store → push
+    flow (app/routers/websub.py, app/websub/publisher.py). We raise only the `app`
+    logger so uvicorn's access/error logs keep their own level.
+    """
+    level = logging.getLevelName(settings.log_level.upper())
+    if not isinstance(level, int):
+        level = logging.INFO
+    logging.basicConfig(level=level)  # ensure a root handler exists
+    logging.getLogger("app").setLevel(level)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _configure_logging()
     init_db()
     with db_session() as session:
         cfg = session.get(Config, 1)

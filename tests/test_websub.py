@@ -66,6 +66,7 @@ class TestHub:
 
     async def test_verify_and_store_persists_on_success(self, in_memory_db, monkeypatch):
         topic = f"{websub.settings.base_url}/feed/fantasy/1"
+        monkeypatch.setattr(websub, "_VERIFY_DELAYS", (0.0,))
 
         async def _ok(*a, **k):
             return True
@@ -79,8 +80,27 @@ class TestHub:
         assert sub is not None and sub.verified is True and sub.secret == "s3cr3t"
         assert sub.lease_expires_at is not None
 
+    async def test_verify_and_store_retries_then_succeeds(self, in_memory_db, monkeypatch):
+        """A first verification miss (arming race) is retried, not dropped."""
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
+        monkeypatch.setattr(websub, "_VERIFY_DELAYS", (0.0, 0.0, 0.0))
+        calls = {"n": 0}
+
+        async def _flaky(*a, **k):
+            calls["n"] += 1
+            return calls["n"] >= 2  # fails once, then succeeds
+        monkeypatch.setattr(websub, "_verify_intent", _flaky)
+        monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
+
+        await websub._verify_and_store("subscribe", topic, "https://reader.example/cb",
+                                       3600, None)
+
+        assert calls["n"] == 2
+        assert in_memory_db.query(WebSubSubscription).filter_by(topic_url=topic).count() == 1
+
     async def test_verify_and_store_skips_on_failed_verification(self, in_memory_db, monkeypatch):
         topic = f"{websub.settings.base_url}/feed/fantasy/1"
+        monkeypatch.setattr(websub, "_VERIFY_DELAYS", (0.0, 0.0))
 
         async def _fail(*a, **k):
             return False

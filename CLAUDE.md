@@ -184,6 +184,9 @@ plan; degrades to polling for readers without WebSub.
 foreign topic → 4xx), returns **`202` immediately**, then verifies intent + persists in a background
 task with its own DB session. A synchronous verify-before-respond races subscribers like Inoreader,
 which only arm their verification callback *after* receiving the 202 (it returned `409`s otherwise).
+The background verify **retries with backoff** (`_VERIFY_DELAYS`) to absorb the remaining arming race
+(the subscriber may not be ready the instant it gets the 202). The whole subscribe→verify→store→push
+path is **debug-logged**; set `BEACON_LOG_LEVEL=DEBUG` to trace it.
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
 URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
 the feed route gates on `token`. The token is the single global `feed_secret` already embedded in

@@ -38,6 +38,7 @@ def publish_updates(session: Session, drops: list[Drop]) -> None:
         built = _channel_slot_feed(session, drop.channel_id, drop.feed_key)
         if built:
             _notify_topic(session, *built)
+    logger.debug("WebSub publish: %d drop(s) touched %d slot feed(s)", len(drops), len(seen))
 
 
 # ── feed builders (mirror app/routers/feed.py) ────────────────────────────────
@@ -93,15 +94,21 @@ def _notify_topic(session: Session, topic_url: str, atom_bytes: bytes) -> None:
         )
         .all()
     )
+    logger.debug(
+        "WebSub push: topic=%s (%d bytes) → %d verified subscriber(s)",
+        topic_url, len(atom_bytes), len(subs),
+    )
     for sub in subs:
         exp = sub.lease_expires_at
         if exp is not None:
             if exp.tzinfo is None:  # SQLite returns naive datetimes; treat as UTC
                 exp = exp.replace(tzinfo=timezone.utc)
             if exp < now:
+                logger.debug("WebSub push: skip expired subscriber %s (lease %s)", sub.callback_url, exp)
                 continue
         try:
             _post(sub, topic_url, atom_bytes)
+            logger.debug("WebSub push → %s ok", sub.callback_url)
         except httpx.HTTPError as exc:
             logger.warning("WebSub push to %s failed: %s", sub.callback_url, exc)
 

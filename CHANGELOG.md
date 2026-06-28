@@ -21,6 +21,13 @@ All notable changes to this project are documented here. The format is based on
   receives the `202`, so our pre-202 callback was rejected and the subscribe returned `409`. The hub
   now validates the request (bad mode / foreign topic → 4xx), returns `202` immediately, and verifies
   + persists in a background task (own DB session) — per WebSub spec §5.3.
+- **Verification retry.** Even after the `202`, the subscriber may not have armed its callback the
+  instant our background task fires, so a single verification attempt could still miss. Verification
+  now retries with backoff (`_VERIFY_DELAYS`, default 0/2/5s) before giving up.
+
+### Added
+- **`BEACON_LOG_LEVEL`** (default `INFO`). Set to `DEBUG` to trace the full WebSub
+  subscribe → verify → store → push flow (and other app logs); configured at startup.
 
 ## [0.6.1] — 2026-06-28
 

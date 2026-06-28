@@ -9,6 +9,7 @@ WebSub is a W3C standard and degrades gracefully — readers without it just kee
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from datetime import timedelta
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/websub")
 
 _DEFAULT_LEASE = 10 * 24 * 3600  # 10 days when the subscriber doesn't specify one
+# Backoff before/between verification callbacks. A subscriber (e.g. Inoreader) arms its
+# verification endpoint only after it receives our 202, so the very first callback can
+# race ahead of that. Retry a few times before giving up.
+_VERIFY_DELAYS = (0.0, 2.0, 5.0)
 
 
 def _is_own_topic(topic: str) -> bool:
@@ -50,12 +55,28 @@ async def _verify_intent(callback: str, mode: str, topic: str, challenge: str, l
         "hub.challenge": challenge,
         "hub.lease_seconds": str(lease),
     }
+    logger.debug("WebSub verify → GET %s params=%s", callback, params)
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             resp = await client.get(callback, params=params)
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.debug("WebSub verify GET to %s errored: %r", callback, exc)
         return False
-    return resp.status_code // 100 == 2 and challenge in resp.text
+    body = resp.text
+    logger.debug(
+        "WebSub verify ← %s status=%s len=%d echo=%s",
+        callback, resp.status_code, len(body), challenge in body,
+    )
+    if resp.status_code // 100 != 2:
+        logger.debug("WebSub verify GET to %s returned non-2xx %s", callback, resp.status_code)
+        return False
+    if challenge not in body:
+        logger.debug(
+            "WebSub verify callback %s did not echo the challenge (body[:200]=%r)",
+            callback, body[:200],
+        )
+        return False
+    return True
 
 
 @router.post("/hub")
@@ -72,12 +93,23 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
     mode = form.get("hub.mode")
     topic = form.get("hub.topic")
     callback = form.get("hub.callback")
+    lease_raw = form.get("hub.lease_seconds")
+    has_secret = bool(form.get("hub.secret"))
+    logger.debug(
+        "WebSub hub ← mode=%r topic=%r callback=%r lease=%r secret=%s",
+        mode, topic, callback, lease_raw, has_secret,
+    )
     if mode not in ("subscribe", "unsubscribe") or not topic or not callback:
+        logger.debug("WebSub hub → 400 (mode/topic/callback invalid)")
         raise HTTPException(status_code=400, detail="invalid hub request")
     if not _is_own_topic(topic):
+        logger.debug("WebSub hub → 404 (foreign topic %r)", topic)
         raise HTTPException(status_code=404, detail="unknown topic")
 
-    lease = int(form.get("hub.lease_seconds") or 0) or _DEFAULT_LEASE
+    lease = int(lease_raw or 0) or _DEFAULT_LEASE
+    logger.debug(
+        "WebSub hub → 202; scheduled verify (mode=%s lease=%ds) for %s", mode, lease, callback
+    )
     background.add_task(
         _verify_and_store, mode, topic, callback, lease, form.get("hub.secret")
     )
@@ -89,16 +121,31 @@ async def _verify_and_store(
 ) -> None:
     """Verify intent against the subscriber's callback, then persist (own DB session).
 
-    Runs after the 202 has been sent. A failed verification is logged and dropped —
-    there's no live request to return an error to.
+    Runs after the 202 has been sent. Verification is retried with backoff to absorb the
+    arming race (a subscriber may not be ready for our callback the instant it gets the
+    202). A still-failing verification is logged and dropped — there's no live request to
+    return an error to.
     """
     challenge = secrets.token_urlsafe(32)
-    if not await _verify_intent(callback, mode, topic, challenge, lease):
-        logger.info("WebSub %s verification failed for callback %s", mode, callback)
-        return
-    with db_session() as db:
-        _store_subscription(db, mode, topic, callback, lease, secret)
-        db.commit()
+    for attempt, delay in enumerate(_VERIFY_DELAYS, start=1):
+        if delay:
+            logger.debug(
+                "WebSub verify backoff %.1fs before attempt %d for %s", delay, attempt, callback
+            )
+            await asyncio.sleep(delay)
+        logger.debug(
+            "WebSub verify attempt %d/%d (%s) for %s", attempt, len(_VERIFY_DELAYS), mode, callback
+        )
+        if await _verify_intent(callback, mode, topic, challenge, lease):
+            with db_session() as db:
+                _store_subscription(db, mode, topic, callback, lease, secret)
+                db.commit()
+            logger.info("WebSub %s verified for %s (attempt %d)", mode, callback, attempt)
+            return
+    logger.warning(
+        "WebSub %s verification failed for callback %s after %d attempts",
+        mode, callback, len(_VERIFY_DELAYS),
+    )
 
 
 def _store_subscription(
@@ -107,10 +154,16 @@ def _store_subscription(
     sub = _get_sub(db, topic, callback)
     if mode == "subscribe":
         if sub is None:
+            logger.debug("WebSub store: new subscription topic=%s callback=%s", topic, callback)
             sub = WebSubSubscription(topic_url=topic, callback_url=callback)
             db.add(sub)
+        else:
+            logger.debug("WebSub store: refresh subscription topic=%s callback=%s", topic, callback)
         sub.secret = secret
         sub.verified = True
         sub.lease_expires_at = utcnow() + timedelta(seconds=lease)
     elif sub is not None:
+        logger.debug("WebSub store: delete subscription topic=%s callback=%s", topic, callback)
         db.delete(sub)
+    else:
+        logger.debug("WebSub store: unsubscribe for unknown topic=%s callback=%s (noop)", topic, callback)
