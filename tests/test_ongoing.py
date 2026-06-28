@@ -101,6 +101,22 @@ class TestPollTriggers:
         assert queued == 1
         assert list(mock_submit.call_args[0][1]) == [feedless]
 
+    def test_sweep_skips_done_status(self, in_memory_db):
+        """A Completed/Abandoned #status story is skipped — its EPUB is already complete."""
+        ongoing = _tracked(in_memory_db, feed_url=None, source_url="https://o/story",
+                           calibre_id=next(_next_calibre_id))
+        done = _tracked(in_memory_db, feed_url=None, source_url="https://d/story",
+                        calibre_id=next(_next_calibre_id))
+        adapter = MagicMock()
+        adapter.status_map.return_value = {
+            ongoing.calibre_id: "In-Progress", done.calibre_id: "Completed"
+        }
+        with patch("app.ongoing.poller.CalibreAdapter", return_value=adapter), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = sweep_feedless(in_memory_db)
+        assert queued == 1
+        assert list(mock_submit.call_args[0][1]) == [ongoing]
+
 
 # ── fetch result folding + stub mechanic ────────────────────────────────────────
 

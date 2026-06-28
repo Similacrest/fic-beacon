@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
+from app.calibre.status import classify_status
 from app.config import settings
+from app.epub.chapterizer import chapterize
 from app.database import ensure_default_channel, get_db
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop,
@@ -186,13 +188,14 @@ def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
-    # Offer "track for updates" only where we can derive an update feed from the source URL.
-    inferred_feeds = {b.calibre_id: infer_feed_url(b.source_url) for b in importable}
+    # The single "Add" button routes each book by its #status (see classify_status); expose
+    # the verdict so the row can show whether it will be tracked or queued.
+    routing = {b.calibre_id: classify_status(b.source_status) for b in importable}
     return templates.TemplateResponse(
         request, "admin/library.html", {
             "books": importable,
             "channels": channels,
-            "inferred_feeds": inferred_feeds,
+            "routing": routing,
         }
     )
 
@@ -203,17 +206,43 @@ def import_redirect() -> RedirectResponse:
     return RedirectResponse(url="/admin/library", status_code=301)
 
 
-@router.post("/import")
-def do_import(
+def _epub_chapter_count(adapter: CalibreAdapter, cbook) -> int:
+    """Number of content chapters in a book's current EPUB (0 if missing/unreadable).
+
+    Falls back to 0 (start at chapter 1) rather than failing the whole batch import on a
+    single malformed EPUB.
+    """
+    try:
+        return len(chapterize(adapter.epub_path(cbook)))
+    except Exception:
+        return 0
+
+
+@router.post("/library/add")
+def add_from_library(
     calibre_ids: list[int] = Form(...),
     channel_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    """Add selected Calibre books, routing each by its #status custom column.
+
+    - #status updating (In-Progress/Incomplete/Hiatus) → a **tracked** auto-updating source.
+      If the book is marked #read=Yes (caught up) the cursor starts at the current EPUB end so
+      only *new* chapters drop; otherwise it starts at chapter 1.
+    - #status done (Completed/Abandoned/Published) or blank → a **backlog** queue entry read
+      from chapter 1.
+
+    The books already live in Calibre, so tracked ones need no initial fetch; future updates
+    are RSS-triggered (inferred feed) or picked up by the daily feedless sweep.
+    """
     adapter = CalibreAdapter(settings.calibre_library_path)
     default_channel_id = ensure_default_channel(db).id
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
+    existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     for cid in calibre_ids:
+        if cid in existing_ids:
+            continue
         cbook = adapter.get_book(cid)
         if cbook is None:
             continue
@@ -223,58 +252,33 @@ def do_import(
             genres = effective_genres(cbook.genres, cbook.genre_tags, cbook.source_url)
             target_id = pick_channel_id(genres, channels, default_channel_id)
         max_pos += 1
-        db.add(Book(
-            calibre_id=cid,
-            title=cbook.title,
-            author=cbook.author,
-            source_url=cbook.source_url,
-            status=BookStatus.queued,
-            queue_position=max_pos,
-            channel_id=target_id,
-        ))
-    db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
-
-
-@router.post("/library/track")
-def track_from_library(
-    calibre_id: int = Form(...),
-    channel_id: int | None = Form(None),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    """Import a Calibre book AND mark it tracked (auto-updating) in one step.
-
-    The book already lives in the library, so no fetch is needed now; future updates are
-    RSS-triggered (inferred feed) or picked up by the daily feedless sweep.
-    """
-    adapter = CalibreAdapter(settings.calibre_library_path)
-    cbook = adapter.get_book(calibre_id)
-    if cbook is None:
-        return RedirectResponse(url="/admin/library", status_code=303)
-    existing = db.query(Book).filter(Book.calibre_id == calibre_id).first()
-    if existing is None:
-        target_id = channel_id or _auto_channel_id(db, cbook)
-        max_pos = (db.query(func.max(Book.queue_position)).scalar() or 0) + 1
-        db.add(Book(
-            calibre_id=calibre_id,
-            title=cbook.title,
-            author=cbook.author,
-            source_url=cbook.source_url,
-            tracked=True,
-            feed_url=infer_feed_url(cbook.source_url),
-            status=BookStatus.active,
-            queue_position=max_pos,
-            channel_id=target_id,
-        ))
+        if classify_status(cbook.source_status) == "updating":
+            count = _epub_chapter_count(adapter, cbook) if cbook.read else 0
+            db.add(Book(
+                calibre_id=cid,
+                title=cbook.title,
+                author=cbook.author,
+                source_url=cbook.source_url,
+                tracked=True,
+                feed_url=infer_feed_url(cbook.source_url),
+                status=BookStatus.active,
+                queue_position=max_pos,
+                channel_id=target_id,
+                cursor_chapter_index=count,
+                total_chapters=count or None,
+            ))
+        else:
+            db.add(Book(
+                calibre_id=cid,
+                title=cbook.title,
+                author=cbook.author,
+                source_url=cbook.source_url,
+                status=BookStatus.queued,
+                queue_position=max_pos,
+                channel_id=target_id,
+            ))
     db.commit()
     return RedirectResponse(url="/admin/library", status_code=303)
-
-
-def _auto_channel_id(db: Session, cbook) -> int:
-    default_channel_id = ensure_default_channel(db).id
-    channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all()
-    genres = effective_genres(cbook.genres, cbook.genre_tags, cbook.source_url)
-    return pick_channel_id(genres, channels, default_channel_id)
 
 
 @router.post("/books/{book_id}/track")
@@ -293,6 +297,11 @@ def set_book_tracked(
             if book.status == BookStatus.queued:
                 book.status = BookStatus.active
                 book.slot_index = None
+        elif book.status == BookStatus.active:
+            # Untracked ⇒ finite backlog: re-enter the queue so the one-per-slot
+            # rebalance treats it like any other backlog book (cursor is preserved).
+            book.status = BookStatus.queued
+            book.slot_index = None
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
@@ -454,6 +463,47 @@ def set_cursor(
         upper = book.total_chapters if book.total_chapters is not None else chapter_index
         # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
         book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
+        db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+def _book_chapter_count(book: Book) -> int | None:
+    """Content-chapter count of a book's current EPUB, computed on demand (None if no EPUB)."""
+    if book.calibre_id is None:
+        return None
+    adapter = CalibreAdapter(settings.calibre_library_path)
+    cbook = adapter.get_book(book.calibre_id)
+    if cbook is None:
+        return None
+    return _epub_chapter_count(adapter, cbook)
+
+
+@router.post("/books/{book_id}/cursor-latest")
+def cursor_latest(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Jump the cursor to the current EPUB end — 'ongoing' handling, only new chapters drop.
+
+    Computes the chapter count on demand, so it works immediately after adding a book (before
+    any drop cycle has populated total_chapters).
+    """
+    book = db.get(Book, book_id)
+    if book is not None:
+        count = _book_chapter_count(book)
+        if count is not None:
+            book.total_chapters = count
+            book.cursor_chapter_index = max(book.cursor_floor, count)
+            db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/books/{book_id}/cursor-start")
+def cursor_start(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Rewind the cursor to the start — 'from-start' handling, read the whole work."""
+    book = db.get(Book, book_id)
+    if book is not None:
+        count = _book_chapter_count(book)
+        if count is not None:  # populate the count so the UI can show progress
+            book.total_chapters = count
+        book.cursor_chapter_index = book.cursor_floor
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 

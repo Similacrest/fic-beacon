@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-28
+
+### Changed — Library import driven by Calibre `#status` / `#read`
+- **One smart "Add" button.** The Library page's two inconsistent actions (batch "Add to queue"
+  + a per-row "📡 Track updates" button) are replaced by a single batch **Add selected** that
+  routes each book by its Calibre **`#status`** custom column: ongoing serials (In-Progress /
+  Incomplete / Hiatus) become **tracked** auto-updating sources; everything else (Completed /
+  Abandoned / Published / blank) joins the **backlog** queue. New `Status` / `Read` columns show
+  each book's verdict. Endpoint: `POST /admin/library/add` (replaces `/admin/import` +
+  `/admin/library/track`). See `app/calibre/status.py`.
+- **Cursor fix — caught-up serials start at the end.** A tracked book marked **`#read=Yes`**
+  starts its cursor at the current EPUB end so only *new* chapters drop; previously a freshly
+  tracked story replayed from chapter 1. Unread (`#read` unset) tracked books still start at
+  chapter 1 and auto-update.
+- **Skip done stories on fetch.** The feedless sweep and feed poller now skip tracked stories
+  whose `#status` is Completed / Abandoned / Published (read live from `metadata.db`), so the
+  fetcher isn't run on finished works; their already-downloaded chapters still drop.
+- **Tracked Stories page.** The "Last fetch" cell now shows the `last_fetch_at` timestamp, and
+  batch **Fetch / Pause / Resume / Delete** actions act on the selected rows.
+- The Calibre adapter now reads the `#status` and `#read` custom columns
+  (`CalibreBook.source_status` / `CalibreBook.read`, plus `CalibreAdapter.status_map`).
+- **Switch handling per book.** Each dashboard row gains a **📡 on/off** toggle (ongoing
+  auto-update vs finite backlog — untracking re-queues an active book) and **⏮ / ⏭** cursor
+  jumps (read from start / jump to latest). The chapter count is computed on demand, so the
+  switch works immediately after adding — before any drop cycle has populated `total_chapters`.
+
+### Fixed
+- **`#status` was never read** (so import routing fell back to backlog for everything): the
+  adapter chose the storage layout by `is_multiple`, but Calibre stores single-value
+  **enumeration** columns like `#status` in the *normalized* link table. It now branches on
+  `normalized`, matching how genre / enumeration / bool columns are actually stored.
+
 ## [0.5.0] — 2026-06-25
 
 ### Changed — RSS is now a trigger, not a content source (major redesign)

@@ -207,6 +207,19 @@ The triggering broadcast does **not** wait; fetched chapters drop on the **next*
 stories with **no** feed (auth-gated, fetchable only via `personal.ini`) are refreshed by a **daily
 sweep**. No feed body is ever stored — RSS is purely a trigger.
 
+Both the poller and the sweep **skip** tracked stories whose Calibre **`#status`** is done
+(Completed / Abandoned / Published — see `app/calibre/status.py`, read live via
+`CalibreAdapter.status_map`): their EPUBs are already complete, so re-fetching just burns fetcher
+time; already-downloaded chapters still drop through the cursor path.
+
+### 6.3 Library import — routed by `#status` / `#read`
+The Library page's single **Add** button (`POST /admin/library/add`) routes each selected Calibre
+book by its `#status`: an **updating** status (In-Progress / Incomplete / Hiatus) creates a
+**tracked** auto-updating source; a **done**/blank status creates a **backlog** queue entry. The
+books already live in Calibre, so tracked ones need no initial fetch. For a tracked book the cursor
+starts at the **current EPUB end** when `#read=Yes` (the user has caught up → only new chapters
+drop) and at chapter 1 otherwise. Chapter count comes from chapterizing the existing EPUB.
+
 ### 6.3 Feedback (reader click)
 - `GET /fb/{token}?action=up|down` — **instant**, idempotent per `(drop, action)`. `up`: thumbs+,
   weight ×1.25. `down`: thumbs+, weight ×0.8; at threshold → `dropped` + promote next.

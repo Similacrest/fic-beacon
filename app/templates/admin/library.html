@@ -6,7 +6,10 @@
 
 {% if books %}
 <p>
-  Select books to add to the queue
+  Select books to add. Each is routed by its Calibre <code>#status</code>: ongoing serials
+  (In-Progress / Incomplete / Hiatus) become <strong>tracked</strong> auto-updating sources;
+  everything else joins the <strong>backlog</strong> queue. A tracked book marked
+  <code>#read=Yes</code> starts at the current chapter end (only new chapters drop).
   <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
 </p>
 
@@ -21,7 +24,7 @@
   </span>
 </div>
 
-<form method="post" action="/admin/import" id="import-form">
+<form method="post" action="/admin/library/add" id="import-form">
   {# ── Controls at top (sticky while scrolling) ─────────────────────────── #}
   <div style="position:sticky; top:0; background:#fafafa; z-index:10;
               padding:.5em 0; border-bottom:1px solid #ddd; margin-bottom:.75em;
@@ -35,41 +38,36 @@
       {% endfor %}
     </select>
     {% endif %}
-    <button class="btn btn-primary" type="submit">Add selected to queue</button>
+    <button class="btn btn-primary" type="submit">Add selected</button>
     <span id="selected-count" style="color:#888; font-size:.85em"></span>
   </div>
 
   <table>
     <thead><tr>
       <th><input type="checkbox" id="check-all" title="Select all visible"></th>
-      <th>Title</th><th>Author</th><th>Genre (manual)</th><th>Last updated</th><th>Source</th><th>Feed</th>
+      <th>Title</th><th>Author</th><th>Genre (manual)</th><th>Status</th><th>Read</th><th>Last updated</th><th>Source</th>
     </tr></thead>
     <tbody id="book-rows">
     {% for book in books %}
     {% set genre_display = book.genres if book.genres else book.genre_tags %}
-    {% set feed = inferred_feeds.get(book.calibre_id) %}
+    {% set route = routing.get(book.calibre_id) %}
     <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ genre_display|join(' '))|lower }}">
       <td><input type="checkbox" name="calibre_ids" value="{{ book.calibre_id }}" class="row-check"></td>
       <td>{{ book.title }}</td>
       <td>{{ book.author }}</td>
       <td style="font-size:.8em; color:#666">{{ genre_display|join(", ") }}</td>
+      <td style="font-size:.8em; white-space:nowrap"
+          title="{% if route == 'updating' %}Will be tracked (auto-updates){% else %}Will join the backlog queue{% endif %}">
+        {{ book.source_status or "—" }}
+        {% if route == 'updating' %}<span style="color:#155724">📡</span>{% endif %}
+      </td>
+      <td style="font-size:.8em; text-align:center; color:#666">{{ "✓" if book.read else "" }}</td>
       <td style="font-size:.85em; color:#666; white-space:nowrap">
         {% if book.last_modified %}{{ book.last_modified[:10] }}{% else %}—{% endif %}
       </td>
       <td>
         {% if book.source_url %}
         <a href="{{ book.source_url }}" target="_blank" style="font-size:.85em">↗</a>
-        {% endif %}
-      </td>
-      <td style="white-space:nowrap">
-        {% if feed %}
-          <form method="post" action="/admin/library/track" style="display:inline">
-            <input type="hidden" name="calibre_id" value="{{ book.calibre_id }}">
-            <button class="btn" style="font-size:.8em; padding:.15em .5em"
-                    title="Import and auto-update from {{ feed }}">📡 Track updates</button>
-          </form>
-        {% else %}
-          <span style="color:#ccc; font-size:.8em">—</span>
         {% endif %}
       </td>
     </tr>

@@ -164,3 +164,49 @@ def batch_delete_sources(
             _delete_source(db, source)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
+
+
+def _selected_tracked(db: Session, book_ids: list[int]) -> list[Book]:
+    """Resolve a batch of ids to the tracked Books that exist."""
+    return [
+        b for b in (db.get(Book, i) for i in book_ids)
+        if b is not None and b.tracked
+    ]
+
+
+@router.post("/batch-pause")
+def batch_pause_sources(
+    book_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Pause (exclude from polling/broadcast) every selected tracked story."""
+    for source in _selected_tracked(db, book_ids):
+        source.status = BookStatus.dropped
+    db.commit()
+    return RedirectResponse(url="/admin/ongoing/", status_code=303)
+
+
+@router.post("/batch-resume")
+def batch_resume_sources(
+    book_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Resume every selected tracked story."""
+    for source in _selected_tracked(db, book_ids):
+        source.status = BookStatus.active
+    db.commit()
+    return RedirectResponse(url="/admin/ongoing/", status_code=303)
+
+
+@router.post("/batch-fetch")
+def batch_fetch_sources(
+    book_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Queue an async fetch for every selected tracked story (one batched job)."""
+    from app import scheduler
+    sources = _selected_tracked(db, book_ids)
+    if sources:
+        scheduler.submit_and_track(db, sources)
+    db.commit()
+    return RedirectResponse(url="/admin/ongoing/", status_code=303)
