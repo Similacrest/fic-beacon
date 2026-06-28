@@ -1,196 +1,150 @@
-"""Tests for ongoing-serial syndication.
+"""Tests for tracked-story update detection and the async fetch path.
 
-Covers OPML parsing, poller helpers, and the buffer-and-release pipeline (the poller
-buffers new entries; the planner releases them, weighted in the channel budget).
+RSS feeds are only a *notification* that new chapters exist; the fetcher container downloads
+them into Calibre asynchronously (a batch job the scheduler polls). These tests cover
+GUID-change detection, that the poller *batches* due sources into one submit, and the
+fetch-result folding (chapter-label offset + cursor floor on a stub).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from feedparser.util import FeedParserDict
 
-from app.ongoing.opml import parse_opml
-from app.ongoing.poller import (
-    poll_all_feeds, poll_source, _entry_published, _entry_content, _count_words,
-)
-from app.models import Book, BookKind, BookStatus, OngoingEntry
+from app.models import Book, BookStatus, Channel, absolute_chapter_number
+from app.ongoing.poller import _newest_guid, poll_all_feeds, sweep_feedless
+from app.fetch.client import apply_result
 
 
-# ── OPML parsing ─────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-OPML_SIMPLE = b"""<?xml version="1.0" encoding="utf-8"?>
-<opml version="2.0">
-  <head><title>My feeds</title></head>
-  <body>
-    <outline text="Practical Villainy" xmlUrl="https://pv.example.com/feed" type="rss"/>
-    <outline text="He Who Fights With Monsters" xmlUrl="https://hwfwm.example.com/atom" type="rss"/>
-  </body>
-</opml>"""
-
-OPML_NESTED = b"""<?xml version="1.0"?>
-<opml version="1.0">
-  <body>
-    <outline text="Fiction" title="Fiction">
-      <outline text="Serial A" xmlUrl="https://a.example.com/feed"/>
-      <outline text="Serial B" xmlUrl="https://b.example.com/feed"/>
-    </outline>
-  </body>
-</opml>"""
-
-OPML_CASE_INSENSITIVE = b"""<opml><body>
-  <outline text="T" xmlurl="https://lowercase.example.com/feed"/>
-</body></opml>"""
+_next_calibre_id = iter(range(1000, 100000))
 
 
-class TestOPMLParsing:
-    def test_simple_opml(self):
-        results = parse_opml(OPML_SIMPLE)
-        assert len(results) == 2
-        assert ("Practical Villainy", "https://pv.example.com/feed") in results
-
-    def test_nested_opml_flattened(self):
-        urls = [r[1] for r in parse_opml(OPML_NESTED)]
-        assert "https://a.example.com/feed" in urls
-        assert "https://b.example.com/feed" in urls
-
-    def test_xmlurl_case_insensitive(self):
-        assert parse_opml(OPML_CASE_INSENSITIVE)[0][1] == "https://lowercase.example.com/feed"
-
-    def test_invalid_xml_raises(self):
-        with pytest.raises(ValueError, match="Invalid OPML"):
-            parse_opml(b"not xml at all <<<")
-
-    def test_empty_opml_returns_empty(self):
-        assert parse_opml(b"<opml><body></body></opml>") == []
-
-
-# ── Poller helpers ────────────────────────────────────────────────────────────
-
-class TestPollerHelpers:
-    def test_entry_published_parsed(self):
-        entry = MagicMock()
-        entry.published_parsed = (2025, 6, 1, 10, 0, 0, 0, 0, 0)
-        entry.updated_parsed = None
-        assert _entry_published(entry).year == 2025
-
-    def test_entry_published_fallback_to_updated(self):
-        entry = MagicMock()
-        entry.published_parsed = None
-        entry.updated_parsed = (2025, 5, 15, 8, 0, 0, 0, 0, 0)
-        assert _entry_published(entry).month == 5
-
-    def test_entry_published_none_when_absent(self):
-        entry = MagicMock()
-        entry.published_parsed = None
-        entry.updated_parsed = None
-        assert _entry_published(entry) is None
-
-    def test_entry_word_count_from_content(self):
-        entry = MagicMock()
-        entry.content = [{"value": "<p>" + " ".join(["word"] * 200) + "</p>"}]
-        assert _count_words(_entry_content(entry)) == 200
-
-
-# ── Buffering ─────────────────────────────────────────────────────────────────
-
-def _ongoing_source(db, feed_url="https://s.example.com/feed"):
-    from app.models import Channel
+def _tracked(db, feed_url="https://s.example.com/feed", source_url="https://s.example.com/story",
+             last_seen_guid=None, calibre_id=42) -> Book:
     channel_id = db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
     src = Book(
-        kind=BookKind.ongoing, feed_url=feed_url, title="Serial", author="(ongoing)",
-        status=BookStatus.active, queue_position=1, channel_id=channel_id,
+        tracked=True, feed_url=feed_url, source_url=source_url, calibre_id=calibre_id,
+        title="Serial", author="A", status=BookStatus.active, queue_position=1,
+        channel_id=channel_id, last_seen_guid=last_seen_guid, total_chapters=10,
+        cursor_chapter_index=10,
     )
     db.add(src)
     db.flush()
     return src
 
 
-def _mock_feed(*entries):
+def _feed(*guids):
     parsed = MagicMock()
-    parsed.entries = list(entries)
+    parsed.entries = [FeedParserDict(id=g, link=f"https://s/{g}", title=g) for g in guids]
     return parsed
 
 
-def _entry(guid, words, when=(2025, 6, 1, 10, 0, 0, 0, 0, 0)):
-    # FeedParserDict mirrors real feedparser entries (attribute + key access).
-    return FeedParserDict(
-        id=guid,
-        link=f"https://s.example.com/{guid}",
-        title=guid,
-        content=[FeedParserDict(value="<p>" + " ".join(["word"] * words) + "</p>")],
-        published_parsed=when,
-    )
+# ── GUID-change detection ──────────────────────────────────────────────────────
+
+class TestNewestGuid:
+    def test_picks_first_entry(self):
+        assert _newest_guid(_feed("c3", "c2", "c1")) == "c3"
+
+    def test_empty_feed_is_none(self):
+        assert _newest_guid(_feed()) is None
 
 
-class TestBuffering:
-    def test_poll_buffers_new_entries(self, in_memory_db):
-        src = _ongoing_source(in_memory_db)
-        feed = _mock_feed(_entry("c1", 100), _entry("c2", 200))
-        with patch("app.ongoing.poller.feedparser.parse", return_value=feed):
-            new = poll_source(in_memory_db, src)
-        assert new == 2
-        entries = in_memory_db.query(OngoingEntry).filter_by(source_id=src.id).all()
-        assert {e.guid for e in entries} == {"c1", "c2"}
-        assert all(e.released is False for e in entries)
-        assert {e.word_count for e in entries} == {100, 200}
+class TestPollTriggers:
+    def test_first_sight_seeds_without_fetch(self, in_memory_db):
+        src = _tracked(in_memory_db, last_seen_guid=None)
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 0
+        mock_submit.assert_not_called()
+        assert src.last_seen_guid == "c5"
 
-    def test_poll_dedupes_by_guid(self, in_memory_db):
-        src = _ongoing_source(in_memory_db)
-        feed1 = _mock_feed(_entry("c1", 100))
-        feed2 = _mock_feed(_entry("c1", 100), _entry("c2", 150))
-        with patch("app.ongoing.poller.feedparser.parse", return_value=feed1):
-            poll_source(in_memory_db, src)
-        with patch("app.ongoing.poller.feedparser.parse", return_value=feed2):
-            new = poll_source(in_memory_db, src)
-        assert new == 1  # only c2 is new
-        assert in_memory_db.query(OngoingEntry).count() == 2
+    def test_new_guid_queues_fetch(self, in_memory_db):
+        src = _tracked(in_memory_db, last_seen_guid="c4")
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 1
+        mock_submit.assert_called_once()
+        assert list(mock_submit.call_args[0][1]) == [src]
+        assert src.last_seen_guid == "c5"
 
-    def test_poll_all_skips_epub_and_survives_errors(self, in_memory_db):
-        src = _ongoing_source(in_memory_db, feed_url="https://ok.example.com/feed")
-        # Pre-seed one entry so the source is not "never polled"; poll_all_feeds then
-        # calls poll_source (not seed_source_as_read) and the new entry counts.
-        in_memory_db.add(OngoingEntry(
-            source_id=src.id, guid="existing", title="Old",
-            content_html="", word_count=0,
-            published_at=datetime(2025, 1, 1, tzinfo=timezone.utc), released=True,
-        ))
-        # An epub book must be ignored by the poller.
-        in_memory_db.add(Book(calibre_id=1, kind=BookKind.epub, title="E", author="A",
-                              status=BookStatus.active, queue_position=2,
-                              channel_id=src.channel_id))
-        in_memory_db.flush()
-        with patch("app.ongoing.poller.feedparser.parse", return_value=_mock_feed(_entry("x", 50))):
-            new = poll_all_feeds(in_memory_db)
-        assert new == 1
+    def test_unchanged_guid_no_fetch(self, in_memory_db):
+        _tracked(in_memory_db, last_seen_guid="c5")
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 0
+        mock_submit.assert_not_called()
+
+    def test_changed_feeds_submit_in_one_batch(self, in_memory_db):
+        a = _tracked(in_memory_db, feed_url="https://a/feed", source_url="https://a/s",
+                     last_seen_guid="old", calibre_id=next(_next_calibre_id))
+        b = _tracked(in_memory_db, feed_url="https://b/feed", source_url="https://b/s",
+                     last_seen_guid="old", calibre_id=next(_next_calibre_id))
+        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("new")), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = poll_all_feeds(in_memory_db)
+        assert queued == 2
+        mock_submit.assert_called_once()  # one batch, not two calls
+        assert set(mock_submit.call_args[0][1]) == {a, b}
+
+    def test_sweep_submits_feedless_only(self, in_memory_db):
+        feedless = _tracked(in_memory_db, feed_url=None, source_url="https://x/story",
+                            calibre_id=next(_next_calibre_id))
+        _tracked(in_memory_db, feed_url="https://y/feed", source_url="https://y/story",
+                 calibre_id=next(_next_calibre_id))
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = sweep_feedless(in_memory_db)
+        assert queued == 1
+        assert list(mock_submit.call_args[0][1]) == [feedless]
 
 
-class TestOngoingDrops:
-    def test_planner_releases_buffered_entries(self, in_memory_db):
-        from app.planner.planner import run_drop_cycle
-        from app.models import Drop
-        src = _ongoing_source(in_memory_db)
-        # Three buffered chapters, ~100 words each; small budget releases a subset.
-        from app.models import Channel
-        channel = in_memory_db.get(Channel, src.channel_id)
-        channel.budget = 200  # 100-word chapters → exactly 2 fit, 1 rolls over
-        for i in range(1, 4):
-            in_memory_db.add(OngoingEntry(
-                source_id=src.id, guid=f"c{i}", title=f"Ch {i}",
-                link=f"https://s/{i}", content_html="<p>x</p>", word_count=100,
-                published_at=datetime(2025, 6, i, tzinfo=timezone.utc), released=False,
-            ))
-        in_memory_db.commit()
+# ── fetch result folding + stub mechanic ────────────────────────────────────────
 
-        drops = run_drop_cycle(in_memory_db, Path("/fake"))
+class TestApplyResult:
+    def test_ok_updates_fields(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.calibre_id = None
+        apply_result(src, {"calibre_id": 99, "chapter_count": 12, "stub": None, "error": None})
+        assert src.calibre_id == 99
+        assert src.total_chapters == 12
+        assert src.last_fetch_status == "ok"
+        assert src.last_fetch_at is not None
 
-        assert drops, "expected at least one ongoing drop"
-        assert all(d.feed_key is not None and d.feed_key != "ongoing" for d in drops)
-        released = in_memory_db.query(OngoingEntry).filter_by(released=True).count()
-        unreleased = in_memory_db.query(OngoingEntry).filter_by(released=False).count()
-        assert released == 2 and unreleased == 1  # batched: 2 fit the budget, 1 rolls over
-        # Released entries are linked to a drop.
-        linked = in_memory_db.query(OngoingEntry).filter(OngoingEntry.drop_id.isnot(None)).count()
-        assert linked == released
+    def test_error_leaves_book_untouched(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        before = src.cursor_chapter_index
+        apply_result(src, {"error": "boom"})
+        assert src.cursor_chapter_index == before
+        assert src.last_fetch_status.startswith("error")
+
+    def test_stub_offsets_labels_and_floors_cursor(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 130
+        src.total_chapters = 141
+        apply_result(src, {"calibre_id": 42, "chapter_count": 101,
+                           "stub": {"old": 141, "new": 101}, "error": None})
+        # 40 chapters removed → next chapter still labels continuously.
+        assert src.chapter_label_offset == 40
+        assert src.cursor_chapter_index == 101   # caught up to the rewritten body
+        assert src.cursor_floor == 101           # cannot rewind into it
+        # Physical chapter 101 (the next new one) reads as absolute chapter 142.
+        assert absolute_chapter_number(src, 101) == 142
+        assert "stub" in src.last_fetch_status
+
+    def test_offsets_compose_across_stubs(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.chapter_label_offset = 40
+        apply_result(src, {"calibre_id": 42, "chapter_count": 90,
+                           "stub": {"old": 101, "new": 90}, "error": None})
+        assert src.chapter_label_offset == 51   # 40 + (101-90)
+
+
+class TestAbsoluteChapterNumber:
+    def test_no_offset_is_one_based(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        assert absolute_chapter_number(src, 0) == 1
+        assert absolute_chapter_number(src, 9) == 10

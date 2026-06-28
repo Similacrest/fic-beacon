@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.models import Book, BookKind, BookStatus, BudgetMode, Drop, FeedbackAction
+from app.models import Book, BookStatus, BudgetMode, Drop, FeedbackAction
 from app.planner.planner import (
     run_drop_cycle,
     apply_feedback,
@@ -418,7 +418,9 @@ class TestAssignSlots:
         from sqlalchemy import func
         max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
         book = Book(
-            kind=BookKind.ongoing,
+            tracked=True,
+            calibre_id=max_pos + 1000,  # unique placeholder; slot tests don't read the EPUB
+            source_url=f"https://example.com/{title}",
             feed_url=f"https://example.com/{title}.rss",
             title=title,
             author="Author",

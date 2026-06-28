@@ -1,0 +1,18 @@
+# FanFicFare configuration for the fetcher container.
+# Copy to personal.ini (mounted at /config/personal.ini) and add your site logins.
+# Full reference: https://github.com/JimmXinu/FanFicFare/wiki/INI-File
+
+[defaults]
+# Keep the per-chapter canonical URL in each chapter's <head> so Fic-Beacon can use it
+# as the item permalink (see app/epub/chapterizer.py).
+include_subject_tags: false
+keep_html_attrs: true
+
+# Example: a site that needs a login.
+# [www.fimfiction.net]
+# username: your-user
+# password: your-pass
+
+# [archiveofourown.org]
+# username: your-user
+# password: your-pass

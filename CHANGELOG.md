@@ -6,6 +6,45 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-25
+
+### Changed — RSS is now a trigger, not a content source (major redesign)
+- **Ongoing serials become real Calibre books.** Web serials only syndicate a *preview* in
+  RSS, not full chapter text — the old buffer-the-feed-body model was structurally broken.
+  Now RSS is used *only* to notice that a story updated; a separate **fetcher container**
+  runs FanFicFare + `calibredb` to download the new chapters into the Calibre library, and
+  Fic-Beacon serves them as a normal EPUB through the existing chapterizer/cursor path.
+- **Unified source model.** The `epub`/`ongoing` `BookKind` split is gone. Every source is a
+  library EPUB; a `tracked` flag (with an optional `feed_url` for fast RSS notification) marks
+  the ones that auto-update. One code path through the planner, feed builder, and cursor logic.
+- **Calibre is read-only *from Fic-Beacon*.** The app's library mount is `:ro`; only the
+  isolated fetcher container writes. Coexists with an external calibre-web on the same library.
+- **Fetch scheduling — batched & async.** Feeds are polled **pre-drop** (the hourly poll job is
+  gone). Because a FanFicFare run can take ~15 min, fetches are **asynchronous**: `POST /fetch
+  {urls}` returns a `job_id` immediately and the app polls `GET /fetch/{job_id}`; the triggering
+  broadcast never waits, so freshly fetched chapters land in the **next** cycle. Changed feeds are
+  submitted in **one batch** (new stories share a single warm `fanficfare -i` pass); the fetcher
+  runs them in a single-worker pool (serialized `calibredb` writes) with **force-detection** and a
+  **3-try exponential backoff** borrowed (trimmed) from AutomatedFanfic. Tracked stories without a
+  feed (auth-gated) are refreshed by a **daily sweep**. The dashboard shows an *in-progress* panel
+  (per-story phase + elapsed); the job→book map is persisted so a restart resumes polling.
+- **Stub handling.** When the site removes old chapters (FanFicFare: "Existing epub contains N
+  chapters, web site only has M"), the fetcher archives the old EPUB as a separate Calibre
+  entry and overwrites the book; Fic-Beacon keeps chapter labels continuous via a new
+  `chapter_label_offset` and forbids rewinding into the rewritten body via `cursor_floor`.
+- **Admin UI.** "Ongoing Serials" → **Tracked Stories**: add by story URL (single or a paste
+  of URLs, one per line), per-source last-fetch status and "fetch now". The Library page gains
+  a **"📡 Track updates"** action. OPML file upload removed.
+
+### Removed
+- The `ongoing_entry` table and all RSS-body buffering: entry content extraction, chapter-number
+  regex, `seed_source_as_read`, OPML parsing (`app/ongoing/opml.py`), the hourly poll job, and
+  the `BookKind` / `linked_calibre_id` / `chapter_num` fields.
+
+### Migration
+- Schema-changing upgrade — **recreate the app DB volume** (no migration path). Re-add tracked
+  stories by URL. Stand up the new `fetcher` container (see `docker-compose.yml`, `./fetcher`).
+
 ## [0.4.0] — 2026-06-25
 
 ### Added
@@ -126,7 +165,8 @@ the user's real ongoing serials. Landing incrementally:
   configurable Calibre library path.
 - v2-designed (not built) ongoing-feed balancing scaffolding (later superseded — see Unreleased).
 
-[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Similacrest/fic-beacon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Similacrest/fic-beacon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Similacrest/fic-beacon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Similacrest/fic-beacon/compare/v0.1.0...v0.2.0

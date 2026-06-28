@@ -13,53 +13,30 @@
 </form>
 {% endmacro %}
 
-{# Progress cell — works for both EPUB and ongoing sources #}
+{# Progress cell — every source is an EPUB now (backlog or tracked). The cursor is a
+   physical chapter index; cursor_floor blocks rewinding into a stub-rewritten body. #}
 {% macro progress_cell(book) %}
-{% if book.kind.value == 'ongoing' %}
-  <span style="white-space:nowrap">
-    <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
-          style="display:inline; margin-right:.4em"
-          title="Set chapter cursor (rewind to re-read)">
-      <input type="number" name="chapter_index"
-             value="{{ book.cursor_chapter_index }}"
-             min="0"
-             style="width:52px; padding:.2em .3em; font-size:.85em">
-      <span style="color:#888; font-size:.85em">
-        {% set buf = buffered.get(book.id, 0) %}
-        {% if buf %} +{{ buf }} buffered{% endif %}
-      </span>
-      <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
-    </form>
-  </span>
-{% elif book.total_chapters %}
-  <span style="white-space:nowrap">
-    <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
-          style="display:inline; margin-right:.4em"
-          title="Set chapter cursor (rewind/skip ahead)">
-      <input type="number" name="chapter_index"
-             value="{{ book.cursor_chapter_index }}"
-             min="0" max="{{ book.total_chapters }}"
-             style="width:52px; padding:.2em .3em; font-size:.85em">
-      <span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>
-      <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
-    </form>
-    <span class="progress-bar-wrap">
-      <span class="progress-bar-fill"
-        style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%">
-      </span>
-    </span>
-  </span>
-{% else %}
+<span style="white-space:nowrap">
   <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
-        style="display:inline"
-        title="Set chapter cursor">
+        style="display:inline; margin-right:.4em"
+        title="Set chapter cursor (rewind/skip ahead){% if book.cursor_floor %} — can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">
     <input type="number" name="chapter_index"
            value="{{ book.cursor_chapter_index }}"
-           min="0"
+           min="{{ book.cursor_floor }}"
+           {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
            style="width:52px; padding:.2em .3em; font-size:.85em">
+    {% if book.total_chapters %}<span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>{% endif %}
+    {% if book.chapter_label_offset %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
     <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
   </form>
-{% endif %}
+  {% if book.total_chapters %}
+  <span class="progress-bar-wrap">
+    <span class="progress-bar-fill"
+      style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%">
+    </span>
+  </span>
+  {% endif %}
+</span>
 {% endmacro %}
 
 {% macro fmt_dt(dt) %}{% if dt %}{{ dt.strftime('%Y-%m-%d %H:%M %Z') or dt.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}<span class="muted">never</span>{% endif %}{% endmacro %}
@@ -85,7 +62,7 @@
     <button class="btn btn-primary">▶ Run drop cycle now</button>
   </form>
   <form method="post" action="/admin/poll-now">
-    <button class="btn">🔄 Poll feeds now</button>
+    <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
   </form>
 </div>
 
@@ -132,24 +109,24 @@
   {% endfor %}
 </details>
 
-{# ── Next broadcast: queued EPUBs + ongoings holding buffered chapters ─────── #}
+{# ── Next broadcast: queued backlog EPUBs + tracked stories with chapters past cursor ── #}
 <details class="section">
   <summary>⏭ Next broadcast — waiting &amp; held out</summary>
   <p class="muted" style="font-size:.85em">
-    Queued EPUBs enter a slot when one frees. Ongoings with buffered chapters are eligible
-    every broadcast but may be held out by the stochastic budget / lower weight.
+    Queued backlog books enter a slot when one frees. Tracked stories with chapters past
+    their cursor are eligible every broadcast but may be held out by the stochastic budget / lower weight.
   </p>
   {% for cv in slot_view %}
   {% if cv.queued_epubs or cv.waiting_ongoings %}
   <h4 style="margin:.5em 0 .2em">{{ cv.channel.name }}</h4>
   {% if cv.queued_epubs %}
-  <div style="margin-bottom:.3em"><strong style="font-size:.85em">Queued EPUBs:</strong>
+  <div style="margin-bottom:.3em"><strong style="font-size:.85em">Queued backlog:</strong>
     {% for b in cv.queued_epubs %}<span class="pill pill-epub">📖 {{ b.title }}</span>{% endfor %}
   </div>
   {% endif %}
   {% if cv.waiting_ongoings %}
-  <div><strong style="font-size:.85em">Ongoings with buffered chapters:</strong>
-    {% for b in cv.waiting_ongoings %}<span class="pill pill-ongoing">📡 {{ b.title }} (+{{ buffered.get(b.id, 0) }})</span>{% endfor %}
+  <div><strong style="font-size:.85em">Tracked stories with chapters waiting:</strong>
+    {% for b in cv.waiting_ongoings %}<span class="pill pill-ongoing">📡 {{ b.title }} (+{{ b.total_chapters - b.cursor_chapter_index }})</span>{% endfor %}
   </div>
   {% endif %}
   {% endif %}
@@ -166,7 +143,7 @@
     <tbody>
     {% for s in last_skips %}
     <tr>
-      <td>{{ s.title }}{% if s.kind == 'ongoing' %} <span class="pill pill-ongoing">📡</span>{% endif %}</td>
+      <td>{{ s.title }}{% if s.kind == 'tracked' %} <span class="pill pill-ongoing">📡</span>{% endif %}</td>
       <td class="muted">{{ s.channel }}</td>
       <td>{{ s.weight }}</td>
       <td>{% if s.held_out %}<span class="badge badge-queued">held out</span> ({{ s.remaining }} pending)
@@ -178,14 +155,37 @@
   {% endif %}
 </details>
 
+{# ── Fetches in progress: async FanFicFare downloads (phase + elapsed) ──────── #}
+{% if fetch_progress %}
+<details class="section" open>
+  <summary>⏳ Fetches in progress <span class="count">— {{ fetch_progress|length }}</span></summary>
+  <p class="muted" style="font-size:.85em">
+    FanFicFare downloads run in the background (up to ~15 min). Phase advances each poll;
+    fetched chapters drop on the next broadcast.
+  </p>
+  <table style="font-size:.9em">
+    <thead><tr><th>Story</th><th>Phase</th><th>Elapsed</th></tr></thead>
+    <tbody>
+    {% for f in fetch_progress %}
+    <tr>
+      <td>📡 {{ f.book.title }}</td>
+      <td><span class="badge badge-queued">{{ f.status }}</span></td>
+      <td class="muted">{% if f.elapsed is not none %}{{ (f.elapsed // 60) }}m {{ (f.elapsed % 60) }}s{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
+
 {# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
 <details class="section">
   <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
   <div class="kv" style="margin:.5em 0 1em">
     <span class="muted">Last broadcast (drop cron)</span><span>{{ fmt_dt(status.last_drop) }}</span>
     <span class="muted">Next broadcast</span><span>{{ fmt_dt(status.next_drop) }}</span>
-    <span class="muted">Last feed poll</span><span>{{ fmt_dt(status.last_poll) }}</span>
-    <span class="muted">Next feed poll</span><span>{{ fmt_dt(status.next_poll) }}</span>
+    <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
+    <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
   </div>
   <h4 style="margin:.3em 0">WebSub subscribers (realtime push)</h4>
   {% if subscribers %}
@@ -212,57 +212,6 @@
   {% endif %}
 </details>
 
-{% if inbox_books %}
-<h2 style="color:#856404">Inbox — unassigned ({{ inbox_books|length }})</h2>
-<p style="color:#888; font-size:.9em">
-  These sources were imported without a channel assignment. Select and assign before they appear in drops.
-</p>
-<form method="post" action="/admin/books/batch-set-channel" id="inbox-assign-form">
-  <div style="display:flex; gap:.5em; align-items:center; flex-wrap:wrap; margin-bottom:.6em">
-    <input type="checkbox" id="inbox-check-all" title="Select all">
-    <select name="channel_id" style="width:auto">
-      {% for ch in channels %}
-      <option value="{{ ch.id }}">{{ ch.name }}</option>
-      {% endfor %}
-    </select>
-    <button class="btn btn-primary" type="submit" style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('inbox-check', 'Assign selected to channel?')">
-      Assign selected
-    </button>
-    <button class="btn btn-danger" type="submit" formaction="/admin/ongoing/batch-delete"
-            style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('inbox-check', 'Remove selected from inbox entirely?')">
-      Remove selected
-    </button>
-  </div>
-</form>
-<table>
-  <thead><tr>
-    <th></th><th>Title</th><th>Feed URL</th><th>Actions</th>
-  </tr></thead>
-  <tbody>
-  {% for book in inbox_books %}
-  <tr>
-    <td>
-      <input type="checkbox" name="book_ids" value="{{ book.id }}"
-             class="inbox-check" id="ic-{{ book.id }}" form="inbox-assign-form">
-    </td>
-    <td><label for="ic-{{ book.id }}" style="cursor:pointer; font-weight:normal">{{ book.title }}</label></td>
-    <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
-      {% if book.feed_url %}<a href="{{ book.feed_url }}" target="_blank">{{ book.feed_url }}</a>{% else %}—{% endif %}
-    </td>
-    <td>
-      <form method="post" action="/admin/ongoing/{{ book.id }}/delete" style="display:inline"
-            onsubmit="return confirm('Remove this source?')">
-        <button class="btn btn-danger" style="font-size:.8em; padding:.15em .5em">✕</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
-
 <details class="section" open>
 <summary>📚 Active sources <span class="count">— {{ active|length }}</span></summary>
 {% if active %}
@@ -285,7 +234,7 @@
     <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="active-check" form="active-batch-form"></td>
     <td>
       {{ book.title }}
-      {% if book.kind.value == 'ongoing' %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em">ongoing</span>{% endif %}
+      {% if book.tracked %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
     </td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ channel_select(book) }}</td>
@@ -330,7 +279,7 @@
     <td>{{ loop.index }}</td>
     <td>
       {{ book.title }}
-      {% if book.kind.value == 'ongoing' %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em">ongoing</span>{% endif %}
+      {% if book.tracked %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
     </td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ channel_select(book) }}</td>
@@ -423,7 +372,6 @@ function wireSelectAll(allId, checkClass) {
     document.querySelectorAll('.' + checkClass).forEach(cb => cb.checked = all.checked);
   });
 }
-wireSelectAll('inbox-check-all', 'inbox-check');
 wireSelectAll('active-check-all', 'active-check');
 wireSelectAll('queue-check-all', 'queue-check');
 </script>

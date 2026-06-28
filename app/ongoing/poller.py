@@ -1,185 +1,106 @@
-"""Poll ongoing serial RSS/Atom feeds and buffer new chapters.
+"""Detect ongoing-serial updates and submit fetches.
 
-Each ongoing source (a Book with kind=ongoing and a feed_url) is polled on a schedule.
-New entries are appended to the OngoingEntry buffer with released=False; the drop
-planner releases the oldest unreleased entries at drop time, weighted in the channel
-budget like EPUB chapters. So ongoing chapters arrive batched at drop time, not whenever
-the author posts.
+RSS feeds are used **only as a notification** that new chapters exist — never for their
+content. For each tracked book with a feed_url we read the newest entry's GUID; if it
+changed since we last looked, we submit an async fetch to the fetcher container, which
+downloads the new chapters into Calibre. The chapters are then served from the EPUB through
+the normal chapterizer/cursor path, exactly like the backlog.
+
+Fetches are **batched and asynchronous**: each function collects the books that need
+fetching and hands them to `scheduler.submit_and_track`, which submits a single batch job to
+the fetcher (one warm FanFicFare process for the new ones) and polls for completion in the
+background — broadcasts never block on a slow (~15 min) download.
+
+Polling runs **pre-drop** (the drop cycle submits fetches first); freshly fetched chapters
+land in the *next* broadcast. Tracked books *without* a feed (auth-gated stories fetchable
+only via FanFicFare's personal.ini) have no RSS signal and are handled by the daily sweep.
 """
 from __future__ import annotations
 
 import logging
-import re
-from datetime import datetime, timezone
 
 import feedparser
-from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
-from app.models import Book, BookKind, OngoingEntry, utcnow
+from app.models import Book
 
 logger = logging.getLogger(__name__)
 
-# ── Chapter number extraction ─────────────────────────────────────────────────
 
-_CHAPTER_NUM_RE = re.compile(
-    r"\b(?:chapter|ch\.?|episode|part)\s+(\d+)\b", re.IGNORECASE
-)
-_CHAPTER_WORD_RE = re.compile(
-    r"\b(?:chapter|ch\.?)\s+"
-    r"((?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
-    r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?"
-    r"|one|two|three|four|five|six|seven|eight|nine|ten"
-    r"|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)\b",
-    re.IGNORECASE,
-)
-_WORD_TO_INT: dict[str, int] = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
-}
-
-
-def _word_ordinal_to_int(word: str) -> int | None:
-    parts = re.split(r"[\s-]+", word.lower().strip())
-    if len(parts) == 1:
-        return _WORD_TO_INT.get(parts[0])
-    if len(parts) == 2:
-        tens = _WORD_TO_INT.get(parts[0])
-        ones = _WORD_TO_INT.get(parts[1])
-        if tens is not None and ones is not None:
-            return tens + ones
+def _newest_guid(parsed) -> str | None:
+    """The GUID of a feed's newest entry (feeds are conventionally newest-first)."""
+    for entry in parsed.entries:
+        guid = entry.get("id") or entry.get("link")
+        if guid:
+            return guid
     return None
-
-
-def _extract_chapter_num(title: str) -> int | None:
-    """Extract a chapter number from an entry title, or None if not found."""
-    m = _CHAPTER_NUM_RE.search(title)
-    if m:
-        return int(m.group(1))
-    m = _CHAPTER_WORD_RE.search(title)
-    if m:
-        return _word_ordinal_to_int(m.group(1))
-    return None
-
-
-# ── Feed polling ─────────────────────────────────────────────────────────────
 
 
 def poll_all_feeds(session: Session) -> int:
-    """Poll every ongoing source and buffer new entries. Returns count of new entries."""
+    """Check every feed-backed tracked book; submit a batch fetch for those showing something new.
+
+    Returns the number of books queued for fetch. First sight of a feed only *seeds* the
+    last-seen GUID (the book was already downloaded when it was added), so we don't refetch
+    on the very first poll.
+    """
+    from app.scheduler import submit_and_track
+
     sources = (
         session.query(Book)
-        .filter(Book.kind == BookKind.ongoing, Book.feed_url.isnot(None))
+        .filter(Book.tracked.is_(True), Book.feed_url.isnot(None))
         .all()
     )
-    total_new = 0
+    changed: list[Book] = []
     for source in sources:
         try:
-            never_polled = (
-                session.query(OngoingEntry.id)
-                .filter(OngoingEntry.source_id == source.id)
-                .first() is None
-            )
-            if never_polled:
-                # First poll: mark the whole archive as already-read so the reader
-                # only receives chapters released after they added the source.
-                seed_source_as_read(session, source)
-            else:
-                total_new += poll_source(session, source)
+            newest = _newest_guid(feedparser.parse(source.feed_url))
+            if newest is None or newest == source.last_seen_guid:
+                continue
+            first_sight = source.last_seen_guid is None
+            source.last_seen_guid = newest
+            if not first_sight:  # genuine new chapter → queue a fetch
+                changed.append(source)
         except Exception:  # never let one bad feed break the cycle
             logger.exception(
-                "Failed to poll ongoing source '%s' (%s)", source.title, source.feed_url
+                "Failed to poll tracked source '%s' (%s)", source.title, source.feed_url
             )
+    if changed:
+        submit_and_track(session, changed)
     from app.state import LAST_POLL_RUN, mark_run
     mark_run(session, LAST_POLL_RUN)
     session.flush()
-    return total_new
+    return len(changed)
 
 
-def poll_source(session: Session, source: Book) -> int:
-    """Fetch one source's feed and append any new entries to the buffer."""
-    parsed = feedparser.parse(source.feed_url)
-    existing = {
-        guid
-        for (guid,) in session.query(OngoingEntry.guid).filter(
-            OngoingEntry.source_id == source.id
-        )
-    }
-    new_count = 0
-    for entry in parsed.entries:
-        guid = entry.get("id") or entry.get("link")
-        if not guid or guid in existing:
-            continue
-        existing.add(guid)
-        title = entry.get("title", "") or ""
-        html = _entry_content(entry)
-        session.add(OngoingEntry(
-            source_id=source.id,
-            guid=guid,
-            title=title,
-            link=entry.get("link"),
-            content_html=html,
-            word_count=_count_words(html),
-            published_at=_entry_published(entry) or utcnow(),
-            released=False,
-            chapter_num=_extract_chapter_num(title),
-        ))
-        new_count += 1
-    return new_count
+def fetch_pending(session: Session) -> int:
+    """Submit an initial download for every tracked book that has no Calibre EPUB yet.
 
-
-def seed_source_as_read(session: Session, source: Book) -> None:
-    """Poll a freshly-added source and immediately mark all entries as already read.
-
-    This implements the "assume I've read everything before adding" contract: the full
-    feed is buffered, then every entry is released without a drop_id (no item emitted).
-    cursor_chapter_index is set to the last known chapter number (from title extraction
-    or sequential counting), so the dashboard can show the right progress baseline and
-    the user can rewind from there.
+    Run in the background after stories are added by URL (which only creates the rows).
+    A failed fetch leaves calibre_id NULL, so it is retried on the next call. Returns count.
     """
-    poll_source(session, source)
-    session.flush()
-    entries = (
-        session.query(OngoingEntry)
-        .filter(OngoingEntry.source_id == source.id, OngoingEntry.released.is_(False))
-        .order_by(OngoingEntry.published_at, OngoingEntry.id)
+    from app.scheduler import submit_and_track
+
+    sources = (
+        session.query(Book)
+        .filter(Book.tracked.is_(True), Book.calibre_id.is_(None))
         .all()
     )
-    last_chapter = 0
-    for i, entry in enumerate(entries, start=1):
-        entry.released = True
-        if entry.chapter_num is not None:
-            last_chapter = entry.chapter_num
-        else:
-            last_chapter = i
-    source.cursor_chapter_index = last_chapter
+    if sources:
+        submit_and_track(session, sources)
+    session.flush()
+    return len(sources)
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+def sweep_feedless(session: Session) -> int:
+    """Submit a fetch for every tracked book that has no feed (auth-gated). Runs daily."""
+    from app.scheduler import submit_and_track
 
-
-def _entry_content(entry) -> str:
-    """Full HTML of an entry: prefer content[0], fall back to summary/description."""
-    content_list = getattr(entry, "content", None)
-    if content_list:
-        return content_list[0].get("value", "") or ""
-    return getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
-
-
-def _count_words(html: str) -> int:
-    text = BeautifulSoup(html or "", "lxml").get_text(" ")
-    return len(re.findall(r"\S+", text))
-
-
-def _entry_published(entry) -> datetime | None:
-    t = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-    if t is None:
-        return None
-    try:
-        return datetime(*t[:6], tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
+    sources = (
+        session.query(Book)
+        .filter(Book.tracked.is_(True), Book.feed_url.is_(None))
+        .all()
+    )
+    if sources:
+        submit_and_track(session, sources)
+    session.flush()
+    return len(sources)

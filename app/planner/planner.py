@@ -31,8 +31,8 @@ from sqlalchemy.orm import Session
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.epub.chapterizer import Chapter, chapterize
 from app.models import (
-    Book, BookKind, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
-    FeedbackEvent, OngoingEntry,
+    Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
+    FeedbackEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,18 +40,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Unit:
-    """One drop-able chunk — an EPUB chapter or a buffered ongoing entry.
+    """One drop-able chunk — a whole EPUB chapter.
 
-    Field-compatible with Chapter (title/html/word_count/source_url/index) so the
-    planner and feed builder treat both source kinds identically. entry_id is set
-    only for ongoing units, so materialising can mark the buffered entry released.
+    Field-compatible with Chapter (title/html/word_count/source_url/index). Both backlog
+    and tracked (auto-updating) books are EPUBs now, so there is a single unit shape.
     """
     title: str
     html: str
     word_count: int
     source_url: str | None
     index: int
-    entry_id: int | None = None
 
 
 @dataclass
@@ -79,17 +77,6 @@ class SkippedSource:
 
 def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
     """Remaining units for a source. None = source unresolvable (warned); [] = none now."""
-    if book.kind == BookKind.ongoing:
-        entries = sorted(
-            (e for e in book.ongoing_entries if not e.released),
-            key=lambda e: (e.published_at, e.id),
-        )
-        return [
-            Unit(title=e.title or f"Update {i + 1}", html=e.content_html,
-                 word_count=e.word_count, source_url=e.link, index=i, entry_id=e.id)
-            for i, e in enumerate(entries)
-        ]
-
     calibre_book = adapter.get_book(book.calibre_id)
     if calibre_book is None:
         logger.warning(
@@ -117,7 +104,6 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
 
     channels = (
         session.query(Channel)
-        .filter(Channel.is_inbox.is_(False))
         .order_by(Channel.queue_order, Channel.id)
         .all()
     )
@@ -152,7 +138,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
             skip_log.append({
                 "channel": channel.name,
                 "title": skip.book.title,
-                "kind": skip.book.kind.value,
+                "kind": "tracked" if skip.book.tracked else "backlog",
                 "weight": round(skip.book.quota_weight, 2),
                 "dropped": skip.dropped_count,
                 "remaining": skip.remaining_count,
@@ -199,7 +185,7 @@ def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop 
     if not units:
         return None
     plan = PlannedDrop(book=book, chapters=[units[0]], word_count=units[0].word_count)
-    drop = _materialise(session, plan, book.channel_id)  # sets feed_key from book.kind/slot
+    drop = _materialise(session, plan, book.channel_id)  # sets feed_key from book.slot_index
     if drop:
         _advance_cursor(session, plan, adapter, cfg)
     session.flush()
@@ -344,13 +330,6 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int) -> Drop |
         reader_slug=str(uuid.uuid4()),
     )
     session.add(drop)
-    # For ongoing sources, mark the buffered entries this drop released.
-    entry_ids = [u.entry_id for u in plan.chapters if u.entry_id is not None]
-    if entry_ids:
-        session.flush()
-        for entry in session.query(OngoingEntry).filter(OngoingEntry.id.in_(entry_ids)):
-            entry.released = True
-            entry.drop_id = drop.id
     return drop
 
 
@@ -361,8 +340,6 @@ def _advance_cursor(
     cfg: Config,
 ) -> None:
     book = plan.book
-    if book.kind == BookKind.ongoing:
-        return  # ongoing sources never "complete"; entries are released in _materialise
     calibre_book = adapter.get_book(book.calibre_id)
     if calibre_book is None:
         return
@@ -371,14 +348,18 @@ def _advance_cursor(
         return
     all_chapters = chapterize(epub_path)
     new_cursor = book.cursor_chapter_index + len(plan.chapters)
+    book.total_chapters = len(all_chapters)
     if new_cursor >= len(all_chapters):
-        book.status = BookStatus.completed
         book.cursor_chapter_index = len(all_chapters)
-        book.total_chapters = len(all_chapters)
+        if book.tracked:
+            # Tracked stories never "complete" — they self-gate at the end of the current
+            # EPUB and resume when the next fetch adds chapters (mtime-cached chapterizer
+            # picks them up automatically). Keep the slot pinned.
+            return
+        book.status = BookStatus.completed
         book.slot_index = None  # free the slot for the next queued book
     else:
         book.cursor_chapter_index = new_cursor
-        book.total_chapters = len(all_chapters)
 
 
 def _lowest_free_slot(used: set[int], parallel_slots: int) -> int:
@@ -395,13 +376,13 @@ def _assign_slots(
 
     A slot is a feed *bucket*, not a single-book reservation:
 
-    - **EPUBs** stream one-at-a-time per slot. At most `parallel_slots` EPUBs are active
-      (one per slot); any extra active EPUBs are demoted back to `queued`, and queued
-      EPUBs are promoted into slots with no active EPUB.
-    - **Ongoings** are uncapped and never queued. Each active ongoing is load-balanced
-      onto a slot — the slot with the fewest pinned works, tie-broken by the fewest
-      chapters ever dropped there — so several ongoings may share a slot alongside the
-      slot's EPUB.
+    - **Backlog (untracked) EPUBs** stream one-at-a-time per slot. At most `parallel_slots`
+      are active (one per slot); any extra active ones are demoted back to `queued`, and
+      queued ones are promoted into slots with no active backlog book.
+    - **Tracked (auto-updating) books** are uncapped and never queued. Each is load-balanced
+      onto a slot — the slot with the fewest pinned works, tie-broken by the fewest chapters
+      ever dropped there — so several tracked stories may share a slot alongside the slot's
+      backlog book.
 
     Assignment is sticky: a source with a valid, unique-where-required slot keeps it;
     only sources lacking one are (re)placed. Drops carry the source's slot as feed_key.
@@ -409,18 +390,18 @@ def _assign_slots(
     def _valid(idx: int | None) -> bool:
         return idx is not None and 1 <= idx <= parallel_slots
 
-    # ── EPUBs: one active per slot, capped at parallel_slots ───────────────────
+    # ── Backlog (untracked) books: one active per slot, capped at parallel_slots ──
     active_epubs = (
         session.query(Book)
         .filter(
             Book.channel_id == channel_id,
-            Book.kind == BookKind.epub,
+            Book.tracked.is_(False),
             Book.status == BookStatus.active,
         )
         .order_by(Book.queue_position)
         .all()
     )
-    # Demote any active EPUBs beyond the cap (e.g. after shrinking parallel_slots).
+    # Demote any active backlog books beyond the cap (e.g. after shrinking parallel_slots).
     for book in active_epubs[parallel_slots:]:
         book.status = BookStatus.queued
         book.slot_index = None
@@ -445,7 +426,7 @@ def _assign_slots(
             session.query(Book)
             .filter(
                 Book.channel_id == channel_id,
-                Book.kind == BookKind.epub,
+                Book.tracked.is_(False),
                 Book.status == BookStatus.queued,
             )
             .order_by(Book.queue_position)
@@ -457,12 +438,12 @@ def _assign_slots(
             book.slot_index = _lowest_free_slot(epub_slots, parallel_slots)
             epub_slots.add(book.slot_index)
 
-    # ── Ongoings: uncapped, load-balanced across all slots (sticky) ────────────
+    # ── Tracked books: uncapped, load-balanced across all slots (sticky) ───────
     ongoings = (
         session.query(Book)
         .filter(
             Book.channel_id == channel_id,
-            Book.kind == BookKind.ongoing,
+            Book.tracked.is_(True),
             Book.status == BookStatus.active,
         )
         .all()
