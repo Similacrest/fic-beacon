@@ -109,7 +109,9 @@ def _notify_topic(session: Session, topic_url: str, atom_bytes: bytes) -> None:
 def _post(sub: WebSubSubscription, topic_url: str, atom_bytes: bytes) -> None:
     hub_url = f"{settings.base_url}/websub/hub"
     headers = {
-        "Content-Type": "application/atom+xml",
+        # Must match the topic's Content-Type exactly, charset included — WebSub
+        # validators compare them (see app/routers/feed.py:_render).
+        "Content-Type": "application/atom+xml; charset=utf-8",
         "Link": f'<{hub_url}>; rel="hub", <{topic_url}>; rel="self"',
     }
     if sub.secret:
