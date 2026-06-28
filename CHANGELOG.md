@@ -24,6 +24,8 @@ All notable changes to this project are documented here. The format is based on
 - **Verification retry.** Even after the `202`, the subscriber may not have armed its callback the
   instant our background task fires, so a single verification attempt could still miss. Verification
   now retries with backoff (`_VERIFY_DELAYS`, default 0/2/5s) before giving up.
+- **Failed verification logs the subscriber's response** (status + body snippet) at `WARNING`, so a
+  callback that returns `2xx` without echoing the challenge is diagnosable at the default log level.
 
 ### Added
 - **`BEACON_LOG_LEVEL`** (default `INFO`). Set to `DEBUG` to trace the full WebSub

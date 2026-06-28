@@ -47,8 +47,14 @@ def _get_sub(db: Session, topic: str, callback: str) -> WebSubSubscription | Non
     )
 
 
-async def _verify_intent(callback: str, mode: str, topic: str, challenge: str, lease: int) -> bool:
-    """WebSub verification of intent: GET the callback; it must echo the challenge."""
+async def _verify_intent(
+    callback: str, mode: str, topic: str, challenge: str, lease: int
+) -> tuple[bool, str]:
+    """WebSub verification of intent: GET the callback; it must echo the challenge.
+
+    Returns (ok, detail). `detail` summarises the outcome (status / body snippet / error)
+    so the caller can log *why* a verification failed without re-issuing the request.
+    """
     params = {
         "hub.mode": mode,
         "hub.topic": topic,
@@ -60,23 +66,16 @@ async def _verify_intent(callback: str, mode: str, topic: str, challenge: str, l
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             resp = await client.get(callback, params=params)
     except httpx.HTTPError as exc:
-        logger.debug("WebSub verify GET to %s errored: %r", callback, exc)
-        return False
+        return False, f"request error: {exc!r}"
     body = resp.text
-    logger.debug(
-        "WebSub verify ← %s status=%s len=%d echo=%s",
-        callback, resp.status_code, len(body), challenge in body,
-    )
+    echo = challenge in body
+    detail = f"status={resp.status_code} len={len(body)} echo={echo} body[:300]={body[:300]!r}"
+    logger.debug("WebSub verify ← %s %s", callback, detail)
     if resp.status_code // 100 != 2:
-        logger.debug("WebSub verify GET to %s returned non-2xx %s", callback, resp.status_code)
-        return False
-    if challenge not in body:
-        logger.debug(
-            "WebSub verify callback %s did not echo the challenge (body[:200]=%r)",
-            callback, body[:200],
-        )
-        return False
-    return True
+        return False, detail
+    if not echo:
+        return False, detail
+    return True, detail
 
 
 @router.post("/hub")
@@ -127,6 +126,7 @@ async def _verify_and_store(
     return an error to.
     """
     challenge = secrets.token_urlsafe(32)
+    last_detail = ""
     for attempt, delay in enumerate(_VERIFY_DELAYS, start=1):
         if delay:
             logger.debug(
@@ -136,15 +136,18 @@ async def _verify_and_store(
         logger.debug(
             "WebSub verify attempt %d/%d (%s) for %s", attempt, len(_VERIFY_DELAYS), mode, callback
         )
-        if await _verify_intent(callback, mode, topic, challenge, lease):
+        ok, last_detail = await _verify_intent(callback, mode, topic, challenge, lease)
+        if ok:
             with db_session() as db:
                 _store_subscription(db, mode, topic, callback, lease, secret)
                 db.commit()
             logger.info("WebSub %s verified for %s (attempt %d)", mode, callback, attempt)
             return
+    # Surface the last response at WARNING (visible at the default INFO level) so the
+    # reason is diagnosable without re-running under DEBUG.
     logger.warning(
-        "WebSub %s verification failed for callback %s after %d attempts",
-        mode, callback, len(_VERIFY_DELAYS),
+        "WebSub %s verification failed for callback %s after %d attempts; last %s",
+        mode, callback, len(_VERIFY_DELAYS), last_detail,
     )
 
 

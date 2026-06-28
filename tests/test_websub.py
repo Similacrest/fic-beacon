@@ -69,7 +69,7 @@ class TestHub:
         monkeypatch.setattr(websub, "_VERIFY_DELAYS", (0.0,))
 
         async def _ok(*a, **k):
-            return True
+            return True, "ok"
         monkeypatch.setattr(websub, "_verify_intent", _ok)
         monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
 
@@ -88,7 +88,7 @@ class TestHub:
 
         async def _flaky(*a, **k):
             calls["n"] += 1
-            return calls["n"] >= 2  # fails once, then succeeds
+            return calls["n"] >= 2, "detail"  # fails once, then succeeds
         monkeypatch.setattr(websub, "_verify_intent", _flaky)
         monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
 
@@ -103,7 +103,7 @@ class TestHub:
         monkeypatch.setattr(websub, "_VERIFY_DELAYS", (0.0, 0.0))
 
         async def _fail(*a, **k):
-            return False
+            return False, "status=200 echo=False"
         monkeypatch.setattr(websub, "_verify_intent", _fail)
         monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
 
