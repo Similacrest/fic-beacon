@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-29
+
 ### Added — in-EPUB images render in feeds
 - **EPUB images are now served and their URLs mapped.** Chapter HTML carries relative
   `<img src="images/…">` paths that live *inside* the EPUB zip; nothing served those bytes, so
