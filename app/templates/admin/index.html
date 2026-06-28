@@ -29,6 +29,14 @@
     {% if book.chapter_label_offset %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
     <button type="submit" style="padding:.15em .5em; font-size:.8em" title="Apply cursor">↩</button>
   </form>
+  <form method="post" action="/admin/books/{{ book.id }}/cursor-start" style="display:inline"
+        title="Read from the start (chapter 1)">
+    <button type="submit" style="padding:.15em .4em; font-size:.8em">⏮</button>
+  </form>
+  <form method="post" action="/admin/books/{{ book.id }}/cursor-latest" style="display:inline; margin-right:.4em"
+        title="Jump to latest — only new chapters drop (ongoing handling)">
+    <button type="submit" style="padding:.15em .4em; font-size:.8em">⏭</button>
+  </form>
   {% if book.total_chapters %}
   <span class="progress-bar-wrap">
     <span class="progress-bar-fill"
@@ -49,6 +57,15 @@
          min="0.1" max="10" step="0.05"
          style="width:60px; padding:.2em .3em; font-size:.85em">
   <button type="submit" style="padding:.15em .4em; font-size:.8em" title="Apply weight">↩</button>
+</form>
+{% endmacro %}
+
+{# Toggle a source between ongoing (tracked, auto-updating) and finite-backlog handling. #}
+{% macro track_toggle(book) %}
+<form method="post" action="/admin/books/{{ book.id }}/track" style="display:inline"
+      title="{{ 'Stop auto-updating — treat as finite backlog' if book.tracked else 'Auto-update from source — treat as ongoing serial' }}">
+  <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
+  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '📡 on' if book.tracked else '📡 off' }}</button>
 </form>
 {% endmacro %}
 
@@ -242,7 +259,8 @@
     <td>{{ book.thumbs_up }}</td>
     <td>{{ book.thumbs_down }}</td>
     <td>{{ weight_cell(book) }}</td>
-    <td>
+    <td style="white-space:nowrap">
+      {{ track_toggle(book) }}
       <form method="post" action="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>
@@ -295,6 +313,7 @@
         <input type="hidden" name="direction" value="down">
         <button>↓</button>
       </form>
+      {{ track_toggle(book) }}
       <form method="post" action="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>

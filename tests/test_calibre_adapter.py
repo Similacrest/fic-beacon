@@ -28,10 +28,12 @@ def _build_calibre_db(library_path: Path) -> None:
     CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
 
-    -- Custom columns: #genre_manual (id 1) and #genre (id 4), both multi-value text.
-    CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple BOOL);
-    INSERT INTO custom_columns VALUES (1, 'genre_manual', 'Genre (manual)', 'text', 1);
-    INSERT INTO custom_columns VALUES (4, 'genre', 'Genre', 'text', 1);
+    -- custom_columns matches Calibre: `normalized` decides the storage layout (link table
+    -- for normalized columns, direct (book,value) for non-normalized).
+    CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple BOOL, normalized BOOL);
+    -- #genre_manual (1) and #genre (4): multi-value text → normalized link layout.
+    INSERT INTO custom_columns VALUES (1, 'genre_manual', 'Genre (manual)', 'text', 1, 1);
+    INSERT INTO custom_columns VALUES (4, 'genre', 'Genre', 'text', 1, 1);
     CREATE TABLE custom_column_1 (id INTEGER PRIMARY KEY, value TEXT);
     CREATE TABLE books_custom_column_1_link (id INTEGER PRIMARY KEY, book INTEGER, value INTEGER);
     CREATE TABLE custom_column_4 (id INTEGER PRIMARY KEY, value TEXT);
@@ -42,14 +44,16 @@ def _build_calibre_db(library_path: Path) -> None:
     INSERT INTO custom_column_4 VALUES (1, 'LitRPG');
     INSERT INTO books_custom_column_4_link VALUES (1, 2, 1);
 
-    -- Single-value custom columns: #status (id 2, text) and #read (id 3, bool 0/1).
-    INSERT INTO custom_columns VALUES (2, 'status', 'Status', 'text', 0);
-    INSERT INTO custom_columns VALUES (3, 'read', 'Read', 'bool', 0);
-    CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
-    CREATE TABLE custom_column_3 (id INTEGER PRIMARY KEY, book INTEGER, value BOOL);
+    -- #status (2): single-value ENUMERATION → normalized link layout (the #status bug).
+    -- #read (3): bool → non-normalized direct (book,value) layout.
+    INSERT INTO custom_columns VALUES (2, 'status', 'Status', 'enumeration', 0, 1);
+    INSERT INTO custom_columns VALUES (3, 'read', 'Read', 'bool', 0, 0);
+    CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, value TEXT, link TEXT);
+    CREATE TABLE books_custom_column_2_link (id INTEGER PRIMARY KEY, book INTEGER, value INTEGER);
+    CREATE TABLE custom_column_3 (id INTEGER PRIMARY KEY, book INTEGER, value BOOL, UNIQUE(book));
     -- Book 1: In-Progress + read; Book 2: Completed + unread.
-    INSERT INTO custom_column_2 VALUES (1, 1, 'In-Progress');
-    INSERT INTO custom_column_2 VALUES (2, 2, 'Completed');
+    INSERT INTO custom_column_2 VALUES (1, 'In-Progress', ''), (2, 'Completed', '');
+    INSERT INTO books_custom_column_2_link VALUES (1, 1, 1), (2, 2, 2);
     INSERT INTO custom_column_3 VALUES (1, 1, 1);
     INSERT INTO custom_column_3 VALUES (2, 2, 0);
 

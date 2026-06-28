@@ -25,6 +25,16 @@ All notable changes to this project are documented here. The format is based on
   batch **Fetch / Pause / Resume / Delete** actions act on the selected rows.
 - The Calibre adapter now reads the `#status` and `#read` custom columns
   (`CalibreBook.source_status` / `CalibreBook.read`, plus `CalibreAdapter.status_map`).
+- **Switch handling per book.** Each dashboard row gains a **📡 on/off** toggle (ongoing
+  auto-update vs finite backlog — untracking re-queues an active book) and **⏮ / ⏭** cursor
+  jumps (read from start / jump to latest). The chapter count is computed on demand, so the
+  switch works immediately after adding — before any drop cycle has populated `total_chapters`.
+
+### Fixed
+- **`#status` was never read** (so import routing fell back to backlog for everything): the
+  adapter chose the storage layout by `is_multiple`, but Calibre stores single-value
+  **enumeration** columns like `#status` in the *normalized* link table. It now branches on
+  `normalized`, matching how genre / enumeration / bool columns are actually stored.
 
 ## [0.5.0] — 2026-06-25
 

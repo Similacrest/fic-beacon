@@ -14,7 +14,7 @@ import pytest
 
 from app.config import settings
 from app.models import Book, BookStatus
-from app.routers.admin import add_from_library
+from app.routers.admin import add_from_library, cursor_latest, cursor_start
 from tests.make_epub import make_epub
 
 _BOOK_DIR = "AuthorA/Story (1)"
@@ -40,18 +40,21 @@ def _build_library(tmp: Path, status: str | None, read: int | None) -> None:
     CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INTEGER, type TEXT, val TEXT);
     CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
     CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
-    CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple BOOL);
-    INSERT INTO custom_columns VALUES (2, 'status', 'Status', 'text', 0);
-    INSERT INTO custom_columns VALUES (3, 'read', 'Read', 'bool', 0);
-    CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
-    CREATE TABLE custom_column_3 (id INTEGER PRIMARY KEY, book INTEGER, value BOOL);
+    CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple BOOL, normalized BOOL);
+    -- #status: single-value enumeration → normalized link layout (matches real Calibre).
+    INSERT INTO custom_columns VALUES (2, 'status', 'Status', 'enumeration', 0, 1);
+    INSERT INTO custom_columns VALUES (3, 'read', 'Read', 'bool', 0, 0);
+    CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, value TEXT, link TEXT);
+    CREATE TABLE books_custom_column_2_link (id INTEGER PRIMARY KEY, book INTEGER, value INTEGER);
+    CREATE TABLE custom_column_3 (id INTEGER PRIMARY KEY, book INTEGER, value BOOL, UNIQUE(book));
     INSERT INTO books VALUES (1, 'Story', 'story', '{_BOOK_DIR}', 'AuthorA', '2026-01-01 10:00:00');
     INSERT INTO authors VALUES (1, 'Author A', 'A, Author');
     INSERT INTO books_authors_link VALUES (1, 1);
     INSERT INTO data VALUES (1, 1, 'EPUB', '{_EPUB_NAME}', 0);
     """)
     if status is not None:
-        conn.execute("INSERT INTO custom_column_2 VALUES (1, 1, ?)", (status,))
+        conn.execute("INSERT INTO custom_column_2 VALUES (1, ?, '')", (status,))
+        conn.execute("INSERT INTO books_custom_column_2_link VALUES (1, 1, 1)")
     if read is not None:
         conn.execute("INSERT INTO custom_column_3 VALUES (1, 1, ?)", (read,))
     conn.commit()
@@ -97,3 +100,21 @@ def test_blank_status_goes_to_backlog_queue(add):
     book = add(None, None)
     assert book.tracked is False
     assert book.status == BookStatus.queued
+
+
+def test_cursor_latest_jumps_to_end_on_demand(add, in_memory_db):
+    """A freshly-queued backlog book (total_chapters unset) can switch to ongoing handling."""
+    book = add("Completed", None)
+    assert book.cursor_chapter_index == 0
+    assert book.total_chapters is None  # not computed at add time for backlog
+    cursor_latest(book.id, db=in_memory_db)
+    assert book.cursor_chapter_index == N_CHAPTERS  # computed on demand
+    assert book.total_chapters == N_CHAPTERS
+
+
+def test_cursor_start_rewinds_to_floor(add, in_memory_db):
+    book = add("In-Progress", 1)  # tracked, cursor at end
+    assert book.cursor_chapter_index == N_CHAPTERS
+    cursor_start(book.id, db=in_memory_db)
+    assert book.cursor_chapter_index == 0
+    assert book.total_chapters == N_CHAPTERS

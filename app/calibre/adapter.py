@@ -177,25 +177,28 @@ class CalibreAdapter:
     ) -> dict[int, list[str]]:
         """Return {calibre_id: [values]} for a custom text column by its lookup label.
 
-        Resolves the column id from `custom_columns`, then reads either the multi-value
-        link layout (`books_custom_column_N_link` → `custom_column_N`) or the single-value
-        layout (`custom_column_N(book, value)`). Missing column / tables → empty (a library
-        without these custom columns just yields no genres).
+        Resolves the column id from `custom_columns`, then reads the appropriate layout.
+        Calibre stores **normalized** columns (multi-value *and* enumeration/category, even
+        when single-valued) in a link table (`books_custom_column_N_link` → `custom_column_N`),
+        and **non-normalized** columns (free text, int, bool, datetime) directly as
+        `custom_column_N(book, value)`. Branching on `is_multiple` alone misses single-value
+        enumerations like `#status`, so we branch on `normalized`. Missing column / tables →
+        empty (a library without these custom columns just yields nothing).
         """
         if not book_ids:
             return {}
         try:
             meta = conn.execute(
-                "SELECT id, is_multiple FROM custom_columns WHERE label = ?", (label,)
+                "SELECT id, normalized FROM custom_columns WHERE label = ?", (label,)
             ).fetchone()
         except sqlite3.OperationalError:
             return {}  # library without custom columns
         if meta is None:
             return {}
 
-        col, is_multiple = meta["id"], meta["is_multiple"]
+        col, normalized = meta["id"], meta["normalized"]
         placeholders = ",".join("?" * len(book_ids))
-        if is_multiple:
+        if normalized:
             sql = f"""
                 SELECT l.book AS book, v.value AS value
                 FROM books_custom_column_{col}_link l

@@ -297,6 +297,11 @@ def set_book_tracked(
             if book.status == BookStatus.queued:
                 book.status = BookStatus.active
                 book.slot_index = None
+        elif book.status == BookStatus.active:
+            # Untracked ⇒ finite backlog: re-enter the queue so the one-per-slot
+            # rebalance treats it like any other backlog book (cursor is preserved).
+            book.status = BookStatus.queued
+            book.slot_index = None
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
@@ -458,6 +463,47 @@ def set_cursor(
         upper = book.total_chapters if book.total_chapters is not None else chapter_index
         # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
         book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
+        db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+def _book_chapter_count(book: Book) -> int | None:
+    """Content-chapter count of a book's current EPUB, computed on demand (None if no EPUB)."""
+    if book.calibre_id is None:
+        return None
+    adapter = CalibreAdapter(settings.calibre_library_path)
+    cbook = adapter.get_book(book.calibre_id)
+    if cbook is None:
+        return None
+    return _epub_chapter_count(adapter, cbook)
+
+
+@router.post("/books/{book_id}/cursor-latest")
+def cursor_latest(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Jump the cursor to the current EPUB end — 'ongoing' handling, only new chapters drop.
+
+    Computes the chapter count on demand, so it works immediately after adding a book (before
+    any drop cycle has populated total_chapters).
+    """
+    book = db.get(Book, book_id)
+    if book is not None:
+        count = _book_chapter_count(book)
+        if count is not None:
+            book.total_chapters = count
+            book.cursor_chapter_index = max(book.cursor_floor, count)
+            db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/books/{book_id}/cursor-start")
+def cursor_start(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Rewind the cursor to the start — 'from-start' handling, read the whole work."""
+    book = db.get(Book, book_id)
+    if book is not None:
+        count = _book_chapter_count(book)
+        if count is not None:  # populate the count so the UI can show progress
+            book.total_chapters = count
+        book.cursor_chapter_index = book.cursor_floor
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
