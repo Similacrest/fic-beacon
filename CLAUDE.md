@@ -180,6 +180,10 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
+**Verification is asynchronous (spec §5.3):** `POST /websub/hub` validates the request (bad mode /
+foreign topic → 4xx), returns **`202` immediately**, then verifies intent + persists in a background
+task with its own DB session. A synchronous verify-before-respond races subscribers like Inoreader,
+which only arm their verification callback *after* receiving the 202 (it returned `409`s otherwise).
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
 URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
 the feed route gates on `token`. The token is the single global `feed_secret` already embedded in

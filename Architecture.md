@@ -234,7 +234,9 @@ Uniform across all sources (every book is a FanFicFare EPUB): (1) the drop's fir
 
 ### 6.5 WebSub
 Feeds advertise `<link rel="hub">`. A reader's hub subscribes via `POST /websub/hub`; Fic-Beacon
-verifies intent (GET callback with `hub.challenge`) and stores the subscription. On each new drop,
+returns **`202` immediately** then verifies intent out of band (GET callback with `hub.challenge`)
+and stores the subscription in a background task — async verification is what the spec mandates and
+what subscribers like Inoreader require (they arm their callback only after the 202). On each new drop,
 the publisher POSTs the Atom body to verified subscribers (with `X-Hub-Signature` when a secret
 was registered). Readers without WebSub simply keep polling. The advertised `rel=self`/topic is
 **tokened** (`?token=…`) so the topic URL is fetchable and byte-identical to the pushed body;

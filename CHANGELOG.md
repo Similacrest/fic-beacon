@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The format is based on
 - **`HEAD` on slot feeds.** The `/feed/{slug}/{key}` route answered `HEAD` with `405`; WebSub
   validators and some proxies probe with `HEAD` first. It now allows `GET`+`HEAD` (Starlette
   strips the body), returning `200`.
+- **Async intent verification.** `POST /websub/hub` verified intent *synchronously* before
+  responding, which races real subscribers: Inoreader arms its verification callback only after it
+  receives the `202`, so our pre-202 callback was rejected and the subscribe returned `409`. The hub
+  now validates the request (bad mode / foreign topic → 4xx), returns `202` immediately, and verifies
+  + persists in a background task (own DB session) — per WebSub spec §5.3.
 
 ## [0.6.1] — 2026-06-28
 

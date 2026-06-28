@@ -1,9 +1,10 @@
 """Tests for the WebSub hub (subscribe/verify) and the push publisher."""
+from contextlib import contextmanager
 from datetime import timedelta
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from app.models import (
     Book, BookStatus, Channel, Drop, WebSubSubscription, utcnow,
@@ -20,47 +21,76 @@ def _form_request(form: dict):
     return req
 
 
+def _fake_db_session(session):
+    """A db_session() stand-in that hands the background task the test's session
+    without closing it (the in_memory_db fixture owns its lifecycle)."""
+    @contextmanager
+    def _factory():
+        yield session
+    return _factory
+
+
 class TestHub:
-    async def test_subscribe_verifies_and_stores(self, in_memory_db, monkeypatch):
+    async def test_accepts_and_schedules_verification(self, monkeypatch):
+        """A valid request returns 202 immediately and defers verification (spec §5.3)."""
         topic = f"{websub.settings.base_url}/feed/fantasy/1"
         req = _form_request({
             "hub.mode": "subscribe", "hub.topic": topic,
             "hub.callback": "https://reader.example/cb",
             "hub.lease_seconds": "3600", "hub.secret": "s3cr3t",
         })
-
-        async def _ok(*a, **k):
-            return True
-        monkeypatch.setattr(websub, "_verify_intent", _ok)
-
-        resp = await websub.hub(req, db=in_memory_db)
+        bg = BackgroundTasks()
+        resp = await websub.hub(req, background=bg)
         assert resp.status_code == 202
-        sub = in_memory_db.query(WebSubSubscription).filter_by(topic_url=topic).first()
-        assert sub is not None and sub.verified is True and sub.secret == "s3cr3t"
-        assert sub.lease_expires_at is not None
+        # Verification is deferred, not done inline.
+        assert len(bg.tasks) == 1
+        assert bg.tasks[0].func is websub._verify_and_store
 
-    async def test_rejects_foreign_topic(self, in_memory_db):
+    async def test_rejects_foreign_topic(self):
         req = _form_request({
             "hub.mode": "subscribe", "hub.topic": "https://evil.example/feed",
             "hub.callback": "https://reader.example/cb",
         })
         with pytest.raises(HTTPException) as ei:
-            await websub.hub(req, db=in_memory_db)
+            await websub.hub(req, background=BackgroundTasks())
         assert ei.value.status_code == 404
 
-    async def test_failed_verification_is_409(self, in_memory_db, monkeypatch):
-        topic = f"{websub.settings.base_url}/feed/fantasy/1"
+    async def test_rejects_bad_mode(self):
         req = _form_request({
-            "hub.mode": "subscribe", "hub.topic": topic,
+            "hub.mode": "bogus", "hub.topic": f"{websub.settings.base_url}/feed/fantasy/1",
             "hub.callback": "https://reader.example/cb",
         })
+        with pytest.raises(HTTPException) as ei:
+            await websub.hub(req, background=BackgroundTasks())
+        assert ei.value.status_code == 400
+
+    async def test_verify_and_store_persists_on_success(self, in_memory_db, monkeypatch):
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
+
+        async def _ok(*a, **k):
+            return True
+        monkeypatch.setattr(websub, "_verify_intent", _ok)
+        monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
+
+        await websub._verify_and_store("subscribe", topic, "https://reader.example/cb",
+                                       3600, "s3cr3t")
+
+        sub = in_memory_db.query(WebSubSubscription).filter_by(topic_url=topic).first()
+        assert sub is not None and sub.verified is True and sub.secret == "s3cr3t"
+        assert sub.lease_expires_at is not None
+
+    async def test_verify_and_store_skips_on_failed_verification(self, in_memory_db, monkeypatch):
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
 
         async def _fail(*a, **k):
             return False
         monkeypatch.setattr(websub, "_verify_intent", _fail)
-        with pytest.raises(HTTPException) as ei:
-            await websub.hub(req, db=in_memory_db)
-        assert ei.value.status_code == 409
+        monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
+
+        await websub._verify_and_store("subscribe", topic, "https://reader.example/cb",
+                                       3600, None)
+
+        assert in_memory_db.query(WebSubSubscription).count() == 0
 
 
 class _FakeClient:
