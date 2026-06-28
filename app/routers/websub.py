@@ -48,12 +48,18 @@ def _get_sub(db: Session, topic: str, callback: str) -> WebSubSubscription | Non
 
 
 async def _verify_intent(
-    callback: str, mode: str, topic: str, challenge: str, lease: int
+    callback: str, mode: str, topic: str, challenge: str, lease: int,
+    verify_token: str | None = None,
 ) -> tuple[bool, str]:
     """WebSub verification of intent: GET the callback; it must echo the challenge.
 
     Returns (ok, detail). `detail` summarises the outcome (status / body snippet / error)
     so the caller can log *why* a verification failed without re-issuing the request.
+
+    Echoes back `hub.verify_token` when the subscriber supplied one: PubSubHubbub 0.3
+    (which Inoreader/Superfeedr use) has the subscriber match a pending subscription on
+    *both* hub.topic AND hub.verify_token before echoing the challenge — drop the token
+    and it returns a bare 200 with no challenge (the empty-body 200s we saw).
     """
     params = {
         "hub.mode": mode,
@@ -61,6 +67,8 @@ async def _verify_intent(
         "hub.challenge": challenge,
         "hub.lease_seconds": str(lease),
     }
+    if verify_token:
+        params["hub.verify_token"] = verify_token
     logger.debug("WebSub verify → GET %s params=%s", callback, params)
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
@@ -93,10 +101,14 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
     topic = form.get("hub.topic")
     callback = form.get("hub.callback")
     lease_raw = form.get("hub.lease_seconds")
+    verify_token = form.get("hub.verify_token")
     has_secret = bool(form.get("hub.secret"))
+    # Log every field so an unexpected/required param (e.g. hub.verify_token) is never
+    # silently dropped again.
+    logger.debug("WebSub hub ← form keys=%s", list(form.keys()))
     logger.debug(
-        "WebSub hub ← mode=%r topic=%r callback=%r lease=%r secret=%s",
-        mode, topic, callback, lease_raw, has_secret,
+        "WebSub hub ← mode=%r topic=%r callback=%r lease=%r verify_token=%r secret=%s",
+        mode, topic, callback, lease_raw, verify_token, has_secret,
     )
     if mode not in ("subscribe", "unsubscribe") or not topic or not callback:
         logger.debug("WebSub hub → 400 (mode/topic/callback invalid)")
@@ -110,13 +122,14 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
         "WebSub hub → 202; scheduled verify (mode=%s lease=%ds) for %s", mode, lease, callback
     )
     background.add_task(
-        _verify_and_store, mode, topic, callback, lease, form.get("hub.secret")
+        _verify_and_store, mode, topic, callback, lease, form.get("hub.secret"), verify_token
     )
     return Response(status_code=202)
 
 
 async def _verify_and_store(
-    mode: str, topic: str, callback: str, lease: int, secret: str | None
+    mode: str, topic: str, callback: str, lease: int, secret: str | None,
+    verify_token: str | None = None,
 ) -> None:
     """Verify intent against the subscriber's callback, then persist (own DB session).
 
@@ -136,7 +149,9 @@ async def _verify_and_store(
         logger.debug(
             "WebSub verify attempt %d/%d (%s) for %s", attempt, len(_VERIFY_DELAYS), mode, callback
         )
-        ok, last_detail = await _verify_intent(callback, mode, topic, challenge, lease)
+        ok, last_detail = await _verify_intent(
+            callback, mode, topic, challenge, lease, verify_token
+        )
         if ok:
             with db_session() as db:
                 _store_subscription(db, mode, topic, callback, lease, secret)

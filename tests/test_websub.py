@@ -38,6 +38,7 @@ class TestHub:
             "hub.mode": "subscribe", "hub.topic": topic,
             "hub.callback": "https://reader.example/cb",
             "hub.lease_seconds": "3600", "hub.secret": "s3cr3t",
+            "hub.verify_token": "vt0ken",
         })
         bg = BackgroundTasks()
         resp = await websub.hub(req, background=bg)
@@ -45,6 +46,31 @@ class TestHub:
         # Verification is deferred, not done inline.
         assert len(bg.tasks) == 1
         assert bg.tasks[0].func is websub._verify_and_store
+        # The subscriber-supplied verify_token is carried into the deferred verification
+        # (PuSH 0.3 subscribers match on it before echoing the challenge).
+        assert bg.tasks[0].args[-1] == "vt0ken"
+
+    async def test_verify_intent_echoes_verify_token(self, monkeypatch):
+        """The verification GET must include hub.verify_token when the subscriber sent one."""
+        captured = {}
+
+        class _AsyncClient:
+            def __init__(self, *a, **k):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url, params=None):
+                captured["params"] = params
+                return MagicMock(status_code=200, text="challenge123")
+
+        monkeypatch.setattr(websub.httpx, "AsyncClient", _AsyncClient)
+        ok, _ = await websub._verify_intent(
+            "https://r/cb", "subscribe", "https://t/1", "challenge123", 3600, "vt0ken")
+        assert ok is True
+        assert captured["params"]["hub.verify_token"] == "vt0ken"
+        assert captured["params"]["hub.challenge"] == "challenge123"
 
     async def test_rejects_foreign_topic(self):
         req = _form_request({

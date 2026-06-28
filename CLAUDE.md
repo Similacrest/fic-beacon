@@ -185,8 +185,12 @@ foreign topic → 4xx), returns **`202` immediately**, then verifies intent + pe
 task with its own DB session. A synchronous verify-before-respond races subscribers like Inoreader,
 which only arm their verification callback *after* receiving the 202 (it returned `409`s otherwise).
 The background verify **retries with backoff** (`_VERIFY_DELAYS`) to absorb the remaining arming race
-(the subscriber may not be ready the instant it gets the 202). The whole subscribe→verify→store→push
-path is **debug-logged**; set `BEACON_LOG_LEVEL=DEBUG` to trace it.
+(the subscriber may not be ready the instant it gets the 202). The verification GET **echoes back the
+subscriber's `hub.verify_token`** when present: PubSubHubbub 0.3 subscribers (Inoreader/Superfeedr)
+match a pending subscription on *both* `hub.topic` and `hub.verify_token` before echoing the
+challenge — drop the token and the callback returns a bare `200` with an empty body (no challenge),
+so verification silently fails. The whole subscribe→verify→store→push path is **debug-logged**
+(including the full inbound hub form); set `BEACON_LOG_LEVEL=DEBUG` to trace it.
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
 URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
 the feed route gates on `token`. The token is the single global `feed_secret` already embedded in

@@ -26,6 +26,12 @@ All notable changes to this project are documented here. The format is based on
   now retries with backoff (`_VERIFY_DELAYS`, default 0/2/5s) before giving up.
 - **Failed verification logs the subscriber's response** (status + body snippet) at `WARNING`, so a
   callback that returns `2xx` without echoing the challenge is diagnosable at the default log level.
+- **Echo `hub.verify_token`.** The verification GET dropped the subscriber-supplied
+  `hub.verify_token`. PubSubHubbub 0.3 subscribers (Inoreader/Superfeedr) match a pending
+  subscription on *both* `hub.topic` and `hub.verify_token` before echoing the challenge, so
+  Inoreader's callback returned a bare `200` with an empty body and the subscribe never completed.
+  The token is now forwarded, and the full inbound hub form is debug-logged so a dropped param can't
+  hide again.
 
 ### Added
 - **`BEACON_LOG_LEVEL`** (default `INFO`). Set to `DEBUG` to trace the full WebSub
