@@ -23,7 +23,7 @@ def _render(drops, fmt: str, self_url=None, title=None, description=None) -> Res
     return Response(content=atom_xml, media_type="application/atom+xml; charset=utf-8")
 
 
-@router.get("/feed/{channel_slug}/{feed_key}")
+@router.api_route("/feed/{channel_slug}/{feed_key}", methods=["GET", "HEAD"])
 def get_feed_slot(
     channel_slug: str,
     feed_key: str,
