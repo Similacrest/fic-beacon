@@ -86,15 +86,32 @@ async def _verify_intent(
     return True, detail
 
 
+def _preferred_verify_mode(form) -> str:
+    """The subscriber's preferred verification mode from `hub.verify` (PuSH 0.3).
+
+    `hub.verify` lists "sync"/"async" in preference order (repeated fields and/or a
+    comma-separated value). We support both, so honour the first one listed. WebSub (0.4)
+    drops the field — absent → async. Inoreader/Superfeedr send `sync`, and a sync
+    subscriber only keeps its verification callback armed *during* its subscribe request,
+    so it must be verified inline (a deferred async callback arrives too late → empty 200).
+    """
+    flat: list[str] = []
+    for value in form.getlist("hub.verify"):
+        flat.extend(p.strip() for p in value.split(",") if p.strip())
+    for m in flat:
+        if m in ("sync", "async"):
+            return m
+    return "async"
+
+
 @router.post("/hub")
 async def hub(request: Request, background: BackgroundTasks) -> Response:
-    """Accept a (un)subscribe request and verify intent asynchronously.
+    """Accept a (un)subscribe request and verify intent (PuSH 0.3 sync / WebSub async).
 
-    WebSub requires the hub to return 202 *immediately* and verify intent out of band
-    (spec §5.3). Subscribers like Inoreader only arm their verification callback once
-    they've received this 202, so a synchronous verify-before-respond would race and
-    get rejected (the 409s we saw in the logs). We validate what we can up front (bad
-    mode / foreign topic → 4xx now) and defer the callback round-trip + DB write.
+    Validate what we can up front (bad mode / foreign topic → 4xx). Then honour the
+    subscriber's `hub.verify` preference: **sync** subscribers (Inoreader) are verified
+    inline — call their callback while their subscribe request is still open, then return
+    `204`; **async** subscribers get an immediate `202` and an out-of-band callback.
     """
     form = await request.form()
     mode = form.get("hub.mode")
@@ -102,13 +119,13 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
     callback = form.get("hub.callback")
     lease_raw = form.get("hub.lease_seconds")
     verify_token = form.get("hub.verify_token")
-    has_secret = bool(form.get("hub.secret"))
-    # Log every field so an unexpected/required param (e.g. hub.verify_token) is never
-    # silently dropped again.
-    logger.debug("WebSub hub ← form keys=%s", list(form.keys()))
+    secret = form.get("hub.secret")
+    verify_mode = _preferred_verify_mode(form)
+    # Log every field (key + value) so a required/unexpected param is never dropped unseen.
+    logger.debug("WebSub hub ← form=%s", {k: form.get(k) for k in form.keys()})
     logger.debug(
-        "WebSub hub ← mode=%r topic=%r callback=%r lease=%r verify_token=%r secret=%s",
-        mode, topic, callback, lease_raw, verify_token, has_secret,
+        "WebSub hub ← mode=%r topic=%r callback=%r lease=%r verify=%s verify_token=%r secret=%s",
+        mode, topic, callback, lease_raw, verify_mode, verify_token, bool(secret),
     )
     if mode not in ("subscribe", "unsubscribe") or not topic or not callback:
         logger.debug("WebSub hub → 400 (mode/topic/callback invalid)")
@@ -118,11 +135,28 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
         raise HTTPException(status_code=404, detail="unknown topic")
 
     lease = int(lease_raw or 0) or _DEFAULT_LEASE
+
+    if verify_mode == "sync":
+        # Verify now, while the subscriber's request is open and its callback is armed.
+        challenge = secrets.token_urlsafe(32)
+        logger.debug("WebSub hub: sync verify (mode=%s lease=%ds) for %s", mode, lease, callback)
+        ok, detail = await _verify_intent(callback, mode, topic, challenge, lease, verify_token)
+        if not ok:
+            logger.warning(
+                "WebSub sync %s verification failed for %s; %s", mode, callback, detail
+            )
+            raise HTTPException(status_code=409, detail="intent verification failed")
+        with db_session() as db:
+            _store_subscription(db, mode, topic, callback, lease, secret)
+            db.commit()
+        logger.info("WebSub %s verified (sync) for %s", mode, callback)
+        return Response(status_code=204)
+
     logger.debug(
-        "WebSub hub → 202; scheduled verify (mode=%s lease=%ds) for %s", mode, lease, callback
+        "WebSub hub → 202; scheduled async verify (mode=%s lease=%ds) for %s", mode, lease, callback
     )
     background.add_task(
-        _verify_and_store, mode, topic, callback, lease, form.get("hub.secret"), verify_token
+        _verify_and_store, mode, topic, callback, lease, secret, verify_token
     )
     return Response(status_code=202)
 

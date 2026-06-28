@@ -180,17 +180,20 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
-**Verification is asynchronous (spec §5.3):** `POST /websub/hub` validates the request (bad mode /
-foreign topic → 4xx), returns **`202` immediately**, then verifies intent + persists in a background
-task with its own DB session. A synchronous verify-before-respond races subscribers like Inoreader,
-which only arm their verification callback *after* receiving the 202 (it returned `409`s otherwise).
-The background verify **retries with backoff** (`_VERIFY_DELAYS`) to absorb the remaining arming race
-(the subscriber may not be ready the instant it gets the 202). The verification GET **echoes back the
-subscriber's `hub.verify_token`** when present: PubSubHubbub 0.3 subscribers (Inoreader/Superfeedr)
-match a pending subscription on *both* `hub.topic` and `hub.verify_token` before echoing the
-challenge — drop the token and the callback returns a bare `200` with an empty body (no challenge),
-so verification silently fails. The whole subscribe→verify→store→push path is **debug-logged**
-(including the full inbound hub form); set `BEACON_LOG_LEVEL=DEBUG` to trace it.
+**Verification honours `hub.verify` (PuSH 0.3 sync / WebSub async).** `POST /websub/hub` validates
+the request (bad mode / foreign topic → 4xx) then picks the subscriber's preferred verification mode:
+- **sync** (what Inoreader/Superfeedr request): verify **inline** — call the subscriber's callback
+  while its subscribe request is still open, then return `204`. A sync subscriber arms its callback
+  only *during* that request, so a deferred (post-response) callback arrives too late and the callback
+  returns an empty `200` (verification silently fails). Inline verification is mandatory here.
+- **async** (WebSub 0.4, or `hub.verify` absent): return **`202` immediately**, then verify + persist
+  in a background task (own DB session) with **backoff retries** (`_VERIFY_DELAYS`) to absorb the
+  arming race.
+
+The verification GET **echoes back the subscriber's `hub.verify_token`** when present: PuSH 0.3
+subscribers match a pending subscription on *both* `hub.topic` and `hub.verify_token` before echoing
+the challenge. The whole subscribe→verify→store→push path is **debug-logged** (including the full
+inbound hub form, key+value); set `BEACON_LOG_LEVEL=DEBUG` to trace it.
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
 URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
 the feed route gates on `token`. The token is the single global `feed_secret` already embedded in

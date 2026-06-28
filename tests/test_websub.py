@@ -14,9 +14,11 @@ from app.websub import publisher
 
 
 def _form_request(form: dict):
+    from starlette.datastructures import FormData
+    data = FormData(form)
     req = MagicMock()
     async def _form():
-        return form
+        return data
     req.form = _form
     return req
 
@@ -71,6 +73,42 @@ class TestHub:
         assert ok is True
         assert captured["params"]["hub.verify_token"] == "vt0ken"
         assert captured["params"]["hub.challenge"] == "challenge123"
+
+    async def test_sync_verify_stores_and_returns_204(self, in_memory_db, monkeypatch):
+        """A hub.verify=sync subscriber (Inoreader) is verified inline → 204 + stored."""
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
+        req = _form_request({
+            "hub.mode": "subscribe", "hub.topic": topic,
+            "hub.callback": "https://reader.example/cb",
+            "hub.verify": "sync", "hub.verify_token": "vt",
+        })
+
+        async def _ok(*a, **k):
+            return True, "ok"
+        monkeypatch.setattr(websub, "_verify_intent", _ok)
+        monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
+
+        resp = await websub.hub(req, background=BackgroundTasks())
+        assert resp.status_code == 204
+        sub = in_memory_db.query(WebSubSubscription).filter_by(topic_url=topic).first()
+        assert sub is not None and sub.verified is True
+
+    async def test_sync_verify_failure_is_409(self, in_memory_db, monkeypatch):
+        topic = f"{websub.settings.base_url}/feed/fantasy/1"
+        req = _form_request({
+            "hub.mode": "subscribe", "hub.topic": topic,
+            "hub.callback": "https://reader.example/cb", "hub.verify": "sync",
+        })
+
+        async def _fail(*a, **k):
+            return False, "status=200 echo=False"
+        monkeypatch.setattr(websub, "_verify_intent", _fail)
+        monkeypatch.setattr(websub, "db_session", _fake_db_session(in_memory_db))
+
+        with pytest.raises(HTTPException) as ei:
+            await websub.hub(req, background=BackgroundTasks())
+        assert ei.value.status_code == 409
+        assert in_memory_db.query(WebSubSubscription).count() == 0
 
     async def test_rejects_foreign_topic(self):
         req = _form_request({

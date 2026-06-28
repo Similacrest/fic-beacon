@@ -16,22 +16,21 @@ All notable changes to this project are documented here. The format is based on
 - **`HEAD` on slot feeds.** The `/feed/{slug}/{key}` route answered `HEAD` with `405`; WebSub
   validators and some proxies probe with `HEAD` first. It now allows `GET`+`HEAD` (Starlette
   strips the body), returning `200`.
-- **Async intent verification.** `POST /websub/hub` verified intent *synchronously* before
-  responding, which races real subscribers: Inoreader arms its verification callback only after it
-  receives the `202`, so our pre-202 callback was rejected and the subscribe returned `409`. The hub
-  now validates the request (bad mode / foreign topic → 4xx), returns `202` immediately, and verifies
-  + persists in a background task (own DB session) — per WebSub spec §5.3.
-- **Verification retry.** Even after the `202`, the subscriber may not have armed its callback the
-  instant our background task fires, so a single verification attempt could still miss. Verification
-  now retries with backoff (`_VERIFY_DELAYS`, default 0/2/5s) before giving up.
-- **Failed verification logs the subscriber's response** (status + body snippet) at `WARNING`, so a
-  callback that returns `2xx` without echoing the challenge is diagnosable at the default log level.
-- **Echo `hub.verify_token`.** The verification GET dropped the subscriber-supplied
-  `hub.verify_token`. PubSubHubbub 0.3 subscribers (Inoreader/Superfeedr) match a pending
-  subscription on *both* `hub.topic` and `hub.verify_token` before echoing the challenge, so
-  Inoreader's callback returned a bare `200` with an empty body and the subscribe never completed.
-  The token is now forwarded, and the full inbound hub form is debug-logged so a dropped param can't
-  hide again.
+- **Subscription verification now actually completes for Inoreader.** The hub's intent-verification
+  handshake had three independent defects that each made a real subscribe silently fail (the dashboard
+  stayed empty despite `202`s). All three are fixed:
+  - **Honour `hub.verify` (PuSH 0.3 sync vs. WebSub async).** Inoreader/Superfeedr request `sync`
+    verification: they arm their verification callback only *while* their subscribe request is open.
+    We always verified out-of-band (after responding), so the callback arrived too late and returned a
+    bare `200` with an empty body (no challenge echo). The hub now reads `hub.verify` and verifies
+    **inline** for `sync` subscribers (callback during the open request → `204`), keeping the
+    immediate-`202` + background path (with `_VERIFY_DELAYS` backoff retries) for `async`.
+  - **Echo `hub.verify_token`.** The verification GET dropped the subscriber-supplied
+    `hub.verify_token`; PuSH 0.3 subscribers match a pending subscription on *both* `hub.topic` and
+    `hub.verify_token` before echoing the challenge. It's now forwarded.
+  - **Diagnosability.** Failed verification logs the subscriber's response (status + body snippet) at
+    `WARNING`, and the full inbound hub form (key + value) is debug-logged, so a dropped/required
+    param can't hide again.
 
 ### Added
 - **`BEACON_LOG_LEVEL`** (default `INFO`). Set to `DEBUG` to trace the full WebSub
