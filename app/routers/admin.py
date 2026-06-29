@@ -619,6 +619,7 @@ def save_config(
     wpm: int = Form(...),
     cadence_cron: str = Form(...),
     thumbs_down_drop_threshold: int = Form(...),
+    extra_boost_multiplier: float = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     cfg = db.get(Config, 1)
@@ -627,6 +628,7 @@ def save_config(
     cfg.wpm = wpm
     cfg.cadence_cron = cadence_cron
     cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold
+    cfg.extra_boost_multiplier = max(1.0, extra_boost_multiplier)
     db.commit()
     from app import scheduler
     try:

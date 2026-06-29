@@ -25,6 +25,12 @@
     <input type="number" name="thumbs_down_drop_threshold" id="thumbs_down_drop_threshold"
            value="{{ cfg.thumbs_down_drop_threshold }}" min="1">
   </div>
+  <div class="form-group">
+    <label for="extra_boost_multiplier">🪝 Extra boost (weight ×)</label>
+    <input type="number" name="extra_boost_multiplier" id="extra_boost_multiplier"
+           value="{{ cfg.extra_boost_multiplier }}" min="1" max="5" step="0.05">
+    <small style="color:#666">How much a 🪝 extra click multiplies a source's priority. <code>1.5</code> = gentle, <code>1.0</code> = no boost (just the extra chapter).</small>
+  </div>
   <button class="btn btn-primary" type="submit">Save</button>
 </form>
 

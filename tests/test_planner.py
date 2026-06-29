@@ -335,7 +335,8 @@ class TestFeedback:
             apply_feedback(in_memory_db, drop, FeedbackAction.extra, Path("/fake"))
 
         assert book.thumbs_up == 3
-        assert book.quota_weight > 1.9  # ×1.25**3 ≈ 1.95
+        # ×Config.extra_boost_multiplier (default 1.5; configurable in admin settings).
+        assert book.quota_weight == pytest.approx(1.5)
         # An out-of-cycle drop was injected (original + injected = 2 for this book).
         assert in_memory_db.query(Drop).filter(Drop.book_id == book.id).count() == 2
 

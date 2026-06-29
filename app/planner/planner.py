@@ -530,9 +530,9 @@ def apply_feedback(
             book.quota_weight = max(0.1, book.quota_weight * 0.8)
 
     elif action == FeedbackAction.extra:
-        # Super-up: count as three upvotes, boost weight strongly, and inject a drop.
+        # Super-up: count as three upvotes, boost weight by the configurable factor, inject a drop.
         book.thumbs_up += 3
-        book.quota_weight = max(0.1, book.quota_weight * (1.25 ** 3))
+        book.quota_weight = max(0.1, book.quota_weight * cfg.extra_boost_multiplier)
         extra_drop = create_extra_drop(session, book, library_path)
 
     elif action == FeedbackAction.drop:

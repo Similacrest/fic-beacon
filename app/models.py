@@ -194,6 +194,10 @@ class Config(Base):
     cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 7,19 * * *")
     thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # Factor by which a 🪝 extra (super-up) click multiplies a source's quota_weight. The old
+    # hard-coded boost was 1.25**3 ≈ 1.95 (very aggressive); the default is gentler now and
+    # tunable in the admin config UI.
+    extra_boost_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
 
 
 class WebSubSubscription(Base):
@@ -215,10 +219,9 @@ class WebSubSubscription(Base):
 class AppState(Base):
     """Tiny key/value store for runtime state (e.g. last cron run times).
 
-    Deliberately a *new table* rather than extra Config columns: SQLAlchemy's
-    create_all adds missing tables on existing volumes but does NOT add missing
-    columns, so this picks up automatically on upgrade with no migration/volume
-    recreation.
+    Deliberately a *new table* rather than extra Config columns. (Schema changes now go
+    through Alembic migrations — see app/database.py:run_migrations — so column additions
+    are fine too; this just keeps volatile runtime state out of the settings row.)
     """
     __tablename__ = "app_state"
 
