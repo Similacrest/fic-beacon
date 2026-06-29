@@ -339,40 +339,42 @@ def _build_note_index(book) -> dict[str, str]:
 
 
 def _inline_footnotes(html: str, chapter_name: str, note_index: dict[str, str]) -> str:
-    """Append the cross-file notes this chapter cites as an end-of-chapter footnote block.
+    """Inline each cross-file note *in place* as a collapsible <details> disclosure.
 
-    Each cited note is pulled from note_index and rendered in a styled <aside> at the
-    chapter's end; the marker is rewritten to a local "#fb-note-{id}" anchor (ids are
-    book-unique, so notes never collide when several chapters share one drop). Markers to
-    unknown ids (ordinary cross-references) and same-file notes are left untouched.
+    The marker (e.g. a superscript "12") becomes the <summary>; clicking it expands the
+    note right where it's cited — no scroll-to-bottom, no anchor navigation. This matters
+    for feed readers: a relative "#note" anchor resolves against the item's permalink and
+    navigates the reader *away* from the feed, whereas <details> stays put and works in any
+    reader. The same HTML is served to the feed and the reader page.
+
+    Markers to unknown ids (ordinary cross-references) and same-file notes are left
+    untouched (same-file notes already resolve within the dropped item).
     """
     if not note_index or ("noteref" not in html and "<sup" not in html and "doc-noteref" not in html):
         return html
     soup = _html_soup(html)
-    collected: list[tuple[str, str]] = []  # (anchor_id, note_html)
-    seen: set[str] = set()
+    changed = False
     for a in soup.find_all(_is_noteref):
         frag = _cross_file_frag(a.get("href", ""), chapter_name)
         if not frag or frag not in note_index:
             continue
-        anchor = f"fb-note-{frag}"
-        a["href"] = f"#{anchor}"
-        if frag not in seen:
-            seen.add(frag)
-            collected.append((anchor, note_index[frag]))
-    if not collected:
+        # Replace the whole superscript wrapper when the marker sits inside a bare <sup>,
+        # so the expanded note body isn't left superscripted; otherwise replace the anchor.
+        marker = a.parent if (a.parent is not None and a.parent.name == "sup") else a
+        label = marker.get_text(strip=True) or "note"
+        details = _html_soup(
+            '<details class="beacon-note" style="display:inline">'
+            '<summary style="display:inline;cursor:pointer;color:#06c">'
+            f"<sup>{label}</sup></summary>"
+            '<span class="beacon-note-body" style="display:block;font-size:0.9em;'
+            "color:#555;border-left:2px solid #ddd;margin:0.4em 0;padding:0.2em 0 0.2em 0.7em;\">"
+            f"{note_index[frag]}</span></details>"
+        ).find("details")
+        marker.replace_with(details)
+        changed = True
+    if not changed:
         return html
-
-    items = "".join(f'<li id="{aid}">{note}</li>' for aid, note in collected)
-    aside = (
-        '<aside class="beacon-endnotes" epub:type="footnotes" '
-        'style="font-size:0.85em;color:#666;border-top:1px solid #ddd;'
-        'margin-top:2em;padding-top:0.5em;">'
-        '<ol style="list-style:none;padding-left:0;">'
-        f"{items}</ol></aside>"
-    )
     body = soup.find("body") or soup
-    body.append(_html_soup(aside).find("aside"))
     return str(body)
 
 

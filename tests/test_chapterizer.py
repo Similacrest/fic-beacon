@@ -230,10 +230,9 @@ class TestFootnotes:
         path = _epub_with_notes(chapter, notes)
         try:
             html = chapterize(path)[0].html
-            assert "beacon-endnotes" in html
-            assert "The note text." in html
-            assert 'href="#fb-note-n1"' in html        # marker rewritten to local anchor
-            assert 'id="fb-note-n1"' in html            # endnote target present
+            assert "beacon-note" in html                # inline <details> disclosure
+            assert "<details" in html and "<summary" in html
+            assert "The note text." in html             # note body travels inline
             assert "notes.xhtml" not in html            # original cross-file link gone from marker
         finally:
             os.unlink(path)
@@ -245,14 +244,16 @@ class TestFootnotes:
         path = _epub_with_notes(chapter, notes)
         try:
             html = chapterize(path)[0].html
-            assert "beacon-endnotes" in html
+            assert "beacon-note" in html
+            assert "<details" in html
             assert "The plain note." in html
-            assert 'href="#fb-note-x1"' in html
+            # The bare <sup> wrapper is consumed into the disclosure (no leftover sup>details).
+            assert "<sup><details" not in html
         finally:
             os.unlink(path)
 
     def test_same_file_footnote_left_untouched(self):
-        # Same-file footnote is already self-contained — no endnotes block appended.
+        # Same-file footnote is already self-contained — no disclosure inserted.
         chapter = (
             '<p>Claim.<a epub:type="noteref" href="#f1">1</a></p>'
             '<p class="footnote" id="f1">Inline footnote, already here.</p>' + _FILLER
@@ -260,7 +261,7 @@ class TestFootnotes:
         path = _epub_with_notes(chapter, notes_body=None)
         try:
             html = chapterize(path)[0].html
-            assert "beacon-endnotes" not in html
+            assert "beacon-note" not in html
             assert "Inline footnote, already here." in html  # still present in body
         finally:
             os.unlink(path)
@@ -272,7 +273,7 @@ class TestFootnotes:
         path = _epub_with_notes(chapter, notes)
         try:
             html = chapterize(path)[0].html
-            assert "beacon-endnotes" not in html
+            assert "beacon-note" not in html
         finally:
             os.unlink(path)
 

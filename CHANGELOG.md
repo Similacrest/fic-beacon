@@ -22,6 +22,13 @@ All notable changes to this project are documented here. The format is based on
   forever, stalling that fetch *and every job queued behind it* at `fetching…` indefinitely. On
   timeout the child is killed and reported as a transient error, so the worker always frees.
 
+### Changed — footnotes expand inline instead of jumping
+- **Cross-file notes now render as a collapsible `<details>` disclosure in place** of the marker,
+  replacing the old end-of-chapter `<aside>` + `#fb-note-{id}` anchor. Clicking the marker expands
+  the note where it's cited — no scroll-to-bottom, and crucially no relative anchor that a feed
+  reader (e.g. Inoreader) would resolve against the item permalink and navigate away to. The same
+  HTML is served to the feed and the reader page; works in any reader.
+
 ### Added — library filters
 - **The Library page can filter by Read, Status, and Source website** (in addition to the
   existing title/author search). The filters compose with each other and the text search; the

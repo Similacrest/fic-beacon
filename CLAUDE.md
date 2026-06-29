@@ -180,9 +180,12 @@ external (`http(s)`/`data:`/root-absolute) URLs pass through, traversal is rejec
 Notes usually live in a back-matter file separate from the chapter that cites them, so a
 single-chapter drop would dangle every note marker. `_build_note_index` (a two-pass scan: collect
 referenced ids, then resolve them) maps each cited note's id → inline-ready HTML, and
-`_inline_footnotes` appends them as a styled end-of-chapter `<aside class="beacon-endnotes">`,
-rewriting each marker to a local `#fb-note-{id}` anchor (ids are book-unique → no collision across
-chapters in one drop). Two marker conventions are detected (`_is_noteref`): EPUB3 semantic
+`_inline_footnotes` replaces each marker **in place** with a collapsible
+`<details class="beacon-note">` disclosure (the marker number becomes the `<summary>`; the note
+expands right where it's cited). This is deliberate: a relative `#anchor` resolves against the
+item's permalink in a feed reader and navigates the reader *away* from the feed, whereas
+`<details>` stays put — so the **same HTML works in the feed and on the reader page**, in any
+reader (no scroll-to-bottom, no anchor). Two marker conventions are detected (`_is_noteref`): EPUB3 semantic
 (`epub:type="noteref"`/`rearnote`/`footnote`) and the plain superscript-anchor form
 (`<a href="…#id"><sup>…</sup></a>`, no epub:type — the `<sup>` is the discriminator, so bare-text
 Part/chapter nav links aren't misread as notes). **Only cross-file notes are inlined** — same-file
