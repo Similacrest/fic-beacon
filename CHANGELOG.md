@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format is based on
   forever, stalling that fetch *and every job queued behind it* at `fetching…` indefinitely. On
   timeout the child is killed and reported as a transient error, so the worker always frees.
 
+### Added — library filters
+- **The Library page can filter by Read, Status, and Source website** (in addition to the
+  existing title/author search). The filters compose with each other and the text search; the
+  source list is derived from each book's `url:` identifier host. All client-side and instant.
+
 ### Fixed — admin UI
 - **Chapter-progress bar now fills.** Its `.progress-bar-fill` is a `<span>` (inline), so the
   computed `width:%` was ignored and the bar always looked empty; `display:block` fixes it.

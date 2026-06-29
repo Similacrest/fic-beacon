@@ -16,6 +16,19 @@
 <div style="margin-bottom:1em; display:flex; gap:1em; align-items:center; flex-wrap:wrap">
   <input type="text" id="filter" placeholder="🔍 Filter by title or author…"
          style="max-width:360px" oninput="filterBooks()">
+  <select id="filter-status" onchange="filterBooks()" style="width:auto">
+    <option value="">Status: all</option>
+    {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+  </select>
+  <select id="filter-read" onchange="filterBooks()" style="width:auto">
+    <option value="">Read: all</option>
+    <option value="1">Read ✓</option>
+    <option value="0">Unread</option>
+  </select>
+  <select id="filter-source" onchange="filterBooks()" style="width:auto">
+    <option value="">Source: all</option>
+    {% for d in sources %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+  </select>
   <span id="filter-count" style="color:#888; font-size:.85em"></span>
   <span id="page-controls" style="display:flex; gap:.4em; align-items:center; font-size:.9em">
     <button type="button" id="prev-page" onclick="changePage(-1)" class="btn" style="padding:.2em .6em">‹ Prev</button>
@@ -51,7 +64,10 @@
     {% for book in books %}
     {% set genre_display = book.genres if book.genres else book.genre_tags %}
     {% set route = routing.get(book.calibre_id) %}
-    <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ genre_display|join(' '))|lower }}">
+    <tr class="book-row" data-search="{{ (book.title ~ ' ' ~ book.author ~ ' ' ~ genre_display|join(' '))|lower }}"
+        data-status="{{ book.source_status or '' }}"
+        data-read="{{ '1' if book.read else '0' }}"
+        data-source="{{ source_domain.get(book.calibre_id, '') }}">
       <td><input type="checkbox" name="calibre_ids" value="{{ book.calibre_id }}" class="row-check"></td>
       <td>{{ book.title }}</td>
       <td>{{ book.author }}</td>
@@ -81,15 +97,29 @@
   let currentPage = 0;
   const allRows = () => Array.from(document.querySelectorAll('.book-row'));
 
-  function matchRows(q) {
-    return allRows().filter(r => !q || r.dataset.search.includes(q));
+  function activeFilters() {
+    return {
+      q: document.getElementById('filter').value.trim().toLowerCase(),
+      status: document.getElementById('filter-status').value,
+      read: document.getElementById('filter-read').value,
+      source: document.getElementById('filter-source').value,
+    };
+  }
+
+  function matchRows(f) {
+    return allRows().filter(r =>
+      (!f.q || r.dataset.search.includes(f.q)) &&
+      (!f.status || r.dataset.status === f.status) &&
+      (!f.read || r.dataset.read === f.read) &&
+      (!f.source || r.dataset.source === f.source)
+    );
   }
 
   function showPage(page) {
-    const q = document.getElementById('filter').value.trim().toLowerCase();
-    const filtering = q.length > 0;
+    const f = activeFilters();
+    const filtering = !!(f.q || f.status || f.read || f.source);
     const rows = allRows();
-    const matched = matchRows(q);
+    const matched = matchRows(f);
     const pages = filtering ? 1 : Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     currentPage = Math.max(0, Math.min(page, pages - 1));
 

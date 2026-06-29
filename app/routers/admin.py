@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -181,6 +182,17 @@ def _build_subscriber_view(db, channels):
 
 # ── Calibre import / Library ──────────────────────────────────────────────────
 
+def _source_domain(url: str | None) -> str:
+    """Bare host of a source URL (drops a leading www.), for the library 'source' filter."""
+    if not url:
+        return ""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
 @router.get("/library", response_class=HTMLResponse)
 def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     adapter = CalibreAdapter(settings.calibre_library_path)
@@ -191,11 +203,18 @@ def library_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
     # The single "Add" button routes each book by its #status (see classify_status); expose
     # the verdict so the row can show whether it will be tracked or queued.
     routing = {b.calibre_id: classify_status(b.source_status) for b in importable}
+    # Per-row source website (host) + the distinct values, to drive the library filters.
+    source_domain = {b.calibre_id: _source_domain(b.source_url) for b in importable}
+    statuses = sorted({b.source_status for b in importable if b.source_status})
+    sources = sorted({d for d in source_domain.values() if d})
     return templates.TemplateResponse(
         request, "admin/library.html", {
             "books": importable,
             "channels": channels,
             "routing": routing,
+            "source_domain": source_domain,
+            "statuses": statuses,
+            "sources": sources,
         }
     )
 
