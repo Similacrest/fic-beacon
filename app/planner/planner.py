@@ -163,7 +163,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
     return drops
 
 
-def _channel_budget(channel: Channel, cfg: Config) -> int:
+def _channel_budget(channel: Channel, cfg: Config) -> float:
     if channel.budget_mode == BudgetMode.minutes:
         return channel.budget * cfg.wpm
     return channel.budget

@@ -53,7 +53,7 @@
       </div>
       <div style="min-width:90px">
         <label style="font-size:.8em; display:block">Budget</label>
-        <input type="number" name="budget" value="{{ ch.budget }}" min="1" class="budget-input" style="width:90px">
+        <input type="number" name="budget" value="{{ '%g'|format(ch.budget) }}" min="0.01" step="any" class="budget-input" style="width:90px">
       </div>
       <div>
         <button class="btn btn-primary" type="submit" style="font-size:.85em">Save</button>
@@ -98,14 +98,14 @@
     </div>
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget mode</label>
-      <select name="budget_mode" style="width:auto">
+      <select name="budget_mode" class="budget-mode" style="width:auto">
         <option value="words">Words</option>
         <option value="minutes">Minutes</option>
       </select>
     </div>
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget</label>
-      <input type="number" name="budget" value="5000" min="1" class="budget-input" style="width:90px">
+      <input type="number" name="budget" value="5000" min="0.01" step="any" class="budget-input" style="width:90px">
     </div>
     <div>
       <button class="btn btn-primary" type="submit">Create channel</button>
@@ -129,9 +129,10 @@
       const input = sel.closest('form').querySelector('input.budget-input');
       const val = input ? parseFloat(input.value) : NaN;
       if (input && !isNaN(val) && sel.value !== sel.dataset.prev) {
-        input.value = sel.value === 'minutes'
-          ? Math.max(1, Math.round(val / wpm))
-          : Math.max(1, Math.round(val * wpm));
+        // Reversible: ×/÷ wpm with no rounding so words→minutes→words returns the original.
+        // toFixed(6)+parseFloat just trims floating-point noise (e.g. 19.999999998 → 20).
+        const next = sel.value === 'minutes' ? val / wpm : val * wpm;
+        input.value = parseFloat(next.toFixed(6));
       }
       sel.dataset.prev = sel.value;
     });

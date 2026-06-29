@@ -62,7 +62,8 @@ class Channel(Base):
     genre_match: Mapped[str | None] = mapped_column(String, nullable=True)
     parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     # Single budget value; budget_mode selects the unit (words or reading-time minutes).
-    budget: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
+    # Float so toggling words↔minutes (× / ÷ wpm) in the UI is reversible without rounding loss.
+    budget: Mapped[float] = mapped_column(Float, nullable=False, default=5000.0)
     budget_mode: Mapped[BudgetMode] = mapped_column(
         Enum(BudgetMode), nullable=False, default=BudgetMode.words
     )

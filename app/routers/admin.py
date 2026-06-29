@@ -350,7 +350,7 @@ def create_channel(
     genre_match: str = Form(""),
     parallel_slots: int = Form(2),
     budget_mode: str = Form("words"),
-    budget: int = Form(5000),
+    budget: float = Form(5000),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     name = name.strip()
@@ -365,7 +365,7 @@ def create_channel(
         genre_match=genre_match.strip() or None,
         parallel_slots=max(1, parallel_slots),
         budget_mode=mode,
-        budget=max(1, budget),
+        budget=max(0.01, budget),
         queue_order=max_order + 1,
     ))
     db.commit()
@@ -380,7 +380,7 @@ def edit_channel(
     genre_match: str = Form(""),
     parallel_slots: int = Form(1),
     budget_mode: str = Form("words"),
-    budget: int = Form(5000),
+    budget: float = Form(5000),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Edit channel settings, including the slug.
@@ -397,7 +397,7 @@ def edit_channel(
         channel.genre_match = genre_match.strip() or None
         channel.parallel_slots = max(1, parallel_slots)
         channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
-        channel.budget = max(1, budget)
+        channel.budget = max(0.01, budget)
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
 

@@ -22,6 +22,14 @@ All notable changes to this project are documented here. The format is based on
   forever, stalling that fetch *and every job queued behind it* at `fetching…` indefinitely. On
   timeout the child is killed and reported as a transient error, so the worker always frees.
 
+### Fixed — admin UI
+- **Chapter-progress bar now fills.** Its `.progress-bar-fill` is a `<span>` (inline), so the
+  computed `width:%` was ignored and the bar always looked empty; `display:block` fixes it.
+- **Channel budget converts losslessly between Words and Minutes.** Toggling the mode now
+  multiplies/divides by WPM *without rounding* (the value round-trips exactly), the budget is
+  stored as a float, and the New-channel form's mode select also converts (it was missing the
+  hook). Budget inputs accept `step="any"`.
+
 ### Added — configurable 🪝 extra boost
 - The 🪝 *extra* (super-up) weight boost is now **admin-configurable**
   (`config.extra_boost_multiplier`, set on the Settings page) with a **gentler default of 1.5×**
