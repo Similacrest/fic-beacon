@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-29
+
 ### Changed — schema is now Alembic-migration-owned
 - **Database schema moved from `create_all` to Alembic migrations.** `init_db()` runs
   `alembic upgrade head` on startup instead of `Base.metadata.create_all`. An existing
