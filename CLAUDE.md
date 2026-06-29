@@ -36,8 +36,12 @@ feedback links to steer the rotation.
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
 - **APScheduler** (in-process: drop cycle on `cadence_cron`, which polls feeds first; a daily
   feedless sweep). There is **no hourly poll** — feeds are checked pre-drop.
-- **SQLAlchemy + SQLite** (app state; schema built via `create_all`, recreate volume on
-  schema-changing upgrades)
+- **SQLAlchemy + SQLite** (app state; schema is **Alembic-migration-owned** — `init_db()` runs
+  `alembic upgrade head` on startup. **Never `create_all` in production and never hand-edit a
+  deployed schema; add a migration** (`alembic revision --autogenerate -m "…"`, review it, ship
+  it). A legacy `create_all` DB with no `alembic_version` is auto-stamped at baseline then
+  upgraded — volumes are **not** recreated on schema changes anymore. Tests still build the schema
+  with `create_all` from the models, which is fine — the rule is about deployed DBs.)
 - **Jinja + HTMX** (server-rendered single-user admin UI)
 - **ebooklib + BeautifulSoup** (EPUB chapterizing + word counts)
 - **feedparser** (read newest GUID from trigger feeds), **httpx** (WebSub push + calling the fetcher)
@@ -190,7 +194,9 @@ Four ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ❌ drop*
 - `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
 - `down` → `thumbs_down++`, `quota_weight ×= 0.8`; at `>= thumbs_down_drop_threshold` the book is
   `dropped`. **Instant bare GET.**
-- `extra` (super-up) → `thumbs_up += 3`, strong weight boost, **and** inject an out-of-cycle drop.
+- `extra` (super-up) → `thumbs_up += 3`, `quota_weight ×= config.extra_boost_multiplier`
+  (admin-configurable, default **1.5**; was a hard-coded `1.25**3 ≈ 1.95`), **and** inject an
+  out-of-cycle drop.
   **Confirm page** (`/fb/confirm/{token}`).
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
 - **Idempotent per `(drop_id, action)`** so reader/proxy prefetch and double-clicks count once.
@@ -245,6 +251,10 @@ broadcast or an admin request.
   archive-on-stub, `add_format`). It borrows two ideas from AutomatedFanfic, trimmed: broad
   **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is
   the stub case) and a **3-try exponential backoff** on transient site/network errors.
+  **Every `subprocess.run` has a wall-clock `timeout=`** (`FETCHER_FANFICFARE_TIMEOUT`, default
+  1200s; `FETCHER_CALIBREDB_TIMEOUT`, default 600s): a hung site socket would otherwise block the
+  lone worker forever and stall every queued job behind it (the "stuck at `fetching…`" failure). On
+  timeout the child is killed and surfaced as a transient error so the worker always frees.
 - `GET {BEACON_FETCHER_URL}/fetch/{job_id}` → `{status: running|done|unknown, results:[{url,
   calibre_id, chapter_count, stub:{old,new}|null, phase, error}]|null}`.
 - App side: `submit_fetch(urls)` posts the batch and returns the `job_id`; `scheduler.submit_and_track`
@@ -263,7 +273,7 @@ queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `feed_secret`) · `app_state` (key/value runtime store, e.g.
+`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `feed_secret`) · `app_state` (key/value runtime store, e.g.
 `last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 
 The app **version** has a single source of truth — `[project].version` in `pyproject.toml`,

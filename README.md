@@ -81,6 +81,8 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |
 | `BEACON_FETCHER_POLL_INTERVAL` | Seconds between polls of a running fetch job | `30` |
 | `BEACON_FETCHER_JOB_TIMEOUT` | Give up on a fetch job after this many seconds | `1200` |
+| `FETCHER_FANFICFARE_TIMEOUT` | Per-FanFicFare-call wall-clock cap, seconds (set in the **fetcher** container) | `1200` |
+| `FETCHER_CALIBREDB_TIMEOUT` | Per-`calibredb`-call wall-clock cap, seconds (set in the **fetcher** container) | `600` |
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 
 Generate a feed secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.

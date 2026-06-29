@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — schema is now Alembic-migration-owned
+- **Database schema moved from `create_all` to Alembic migrations.** `init_db()` runs
+  `alembic upgrade head` on startup instead of `Base.metadata.create_all`. An existing
+  `create_all`-built database (no `alembic_version` table) is auto-detected, **stamped at the
+  baseline revision, then upgraded** — so deployed volumes are no longer recreated on
+  schema-changing upgrades. The Docker image now ships `alembic.ini` + `alembic/`. Going forward,
+  **every schema change is a migration** (`alembic revision --autogenerate`). Tests still build the
+  schema via `create_all` from the models.
+
+### Fixed — fetcher could wedge permanently on a hung site
+- **All FanFicFare/`calibredb` subprocesses now run under a wall-clock `timeout=`**
+  (`FETCHER_FANFICFARE_TIMEOUT`, default 1200s; `FETCHER_CALIBREDB_TIMEOUT`, default 600s).
+  Previously a single hung site socket blocked the lone `ThreadPoolExecutor(max_workers=1)` worker
+  forever, stalling that fetch *and every job queued behind it* at `fetching…` indefinitely. On
+  timeout the child is killed and reported as a transient error, so the worker always frees.
+
+### Added — configurable 🪝 extra boost
+- The 🪝 *extra* (super-up) weight boost is now **admin-configurable**
+  (`config.extra_boost_multiplier`, set on the Settings page) with a **gentler default of 1.5×**
+  (was a hard-coded `1.25**3 ≈ 1.95×`).
+
 ## [0.7.0] — 2026-06-29
 
 ### Added — in-EPUB images render in feeds
