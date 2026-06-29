@@ -12,6 +12,10 @@ COPY pyproject.toml .
 RUN uv sync --no-dev
 
 COPY app/ ./app/
+# Alembic migrations run on startup (init_db → run_migrations); the scripts + config must
+# ship in the image. Schema is migration-owned now — there is no create_all in production.
+COPY alembic.ini .
+COPY alembic/ ./alembic/
 
 # pyproject.toml (copied above) is the single source of truth for the version,
 # read at runtime by app/version.py — nothing to bake in here.

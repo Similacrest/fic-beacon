@@ -1,12 +1,16 @@
+import logging
 import secrets
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.models import Base, Channel, Config
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.database_url,
@@ -29,8 +33,49 @@ DEFAULT_CHANNEL_NAME = "General"
 DEFAULT_CHANNEL_SLUG = "general"
 
 
+def _alembic_config():
+    """Build an Alembic Config pointing at the repo's migration scripts and this DB.
+
+    script_location is forced absolute so migrations run regardless of the process CWD
+    (the app starts from /app in the container, tests from the repo root).
+    """
+    from alembic.config import Config as AlembicConfig
+
+    root = Path(__file__).resolve().parent.parent  # repo root (parent of app/)
+    cfg = AlembicConfig(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", str(settings.database_url))
+    return cfg
+
+
+def run_migrations() -> None:
+    """Bring the schema to head via Alembic. No `create_all` — migrations own the schema.
+
+    A database created by the old `create_all` path has the full schema but no
+    `alembic_version` table; we detect that (tables present, no version row) and stamp it
+    at the baseline revision so the incremental migrations apply on top instead of trying
+    to re-create existing tables. A brand-new DB just upgrades from scratch.
+    """
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    cfg = _alembic_config()
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+
+    if "alembic_version" not in tables and "config" in tables:
+        # Legacy create_all database — already at baseline, just not stamped. Stamp the
+        # base revision (the one with no down_revision) so upgrade picks up from there.
+        bases = ScriptDirectory.from_config(cfg).get_bases()
+        if bases:
+            logger.info("Stamping pre-migration database at baseline %s", bases[0])
+            command.stamp(cfg, bases[0])
+
+    command.upgrade(cfg, "head")
+
+
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    run_migrations()
     with SessionLocal() as session:
         _ensure_config(session)
         ensure_default_channel(session)
