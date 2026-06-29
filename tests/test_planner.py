@@ -570,3 +570,55 @@ class TestStochasticBudget:
             totals.append(used)
         mean = sum(totals) / trials
         assert abs(mean - budget) < 120  # tracks budget without even the credit smoothing
+
+
+class TestSetSlot:
+    """Manual drag-to-repin endpoint (admin.set_slot)."""
+
+    def _req(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(headers={})  # no HX-Request → plain redirect response
+
+    def test_backlog_move_to_occupied_slot_swaps(self, in_memory_db):
+        from app.models import Channel
+        from app.routers.admin import set_slot
+        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        in_memory_db.add(ch); in_memory_db.flush()
+        a = _make_book(in_memory_db, calibre_id=1, title="A", channel_id=ch.id)
+        b = _make_book(in_memory_db, calibre_id=2, title="B", channel_id=ch.id)
+        a.slot_index, b.slot_index = 1, 2
+        in_memory_db.commit()
+
+        set_slot(a.id, self._req(), slot_index=2, db=in_memory_db)
+
+        assert a.slot_index == 2   # moved
+        assert b.slot_index == 1   # swapped into A's old slot (one backlog per slot)
+
+    def test_tracked_move_does_not_swap(self, in_memory_db):
+        from app.models import Channel, Book, BookStatus
+        from app.routers.admin import set_slot
+        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        in_memory_db.add(ch); in_memory_db.flush()
+        backlog = _make_book(in_memory_db, calibre_id=1, title="EP", channel_id=ch.id)
+        backlog.slot_index = 1
+        tracked = Book(tracked=True, calibre_id=99, title="T", author="x",
+                       status=BookStatus.active, channel_id=ch.id, slot_index=2)
+        in_memory_db.add(tracked); in_memory_db.commit()
+
+        set_slot(tracked.id, self._req(), slot_index=1, db=in_memory_db)
+
+        assert tracked.slot_index == 1   # tracked stories are uncapped — just moves
+        assert backlog.slot_index == 1   # backlog book untouched (no swap)
+
+    def test_out_of_range_slot_ignored(self, in_memory_db):
+        from app.models import Channel
+        from app.routers.admin import set_slot
+        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        in_memory_db.add(ch); in_memory_db.flush()
+        a = _make_book(in_memory_db, calibre_id=1, title="A", channel_id=ch.id)
+        a.slot_index = 1
+        in_memory_db.commit()
+
+        set_slot(a.id, self._req(), slot_index=5, db=in_memory_db)
+
+        assert a.slot_index == 1   # out of [1, parallel_slots] → no change

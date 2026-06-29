@@ -103,8 +103,11 @@ fic-beacon/
 - **Tracked stories are never capped, never queued, and never "complete".** Every active tracked
   story is eligible each broadcast (it self-gates on whether a chapter sits past its cursor) and is
   pinned to a slot by load-balancing: the slot with the fewest pinned works, tie-broken by the
-  fewest chapters ever dropped into that slot. Pinning is **sticky**. `book.tracked` is the single
-  flag that distinguishes the two behaviours (there is no `kind`).
+  fewest chapters ever dropped into that slot. Pinning is **sticky** — and can be **overridden
+  manually** by dragging a source between slot cards on the dashboard (`POST /admin/books/{id}/set-slot`;
+  backlog books swap to keep one-per-slot, tracked just move). A valid manual pin survives the next
+  broadcast (the assignment step only (re)places sources lacking a valid slot). `book.tracked` is the
+  single flag that distinguishes the two behaviours (there is no `kind`).
 - **Selection is slot-agnostic** (see Drop Planner): the per-channel weighted budget pass decides
   *which* chapters drop across the whole channel; slot assignment is a separate, sticky step that
   only decides *which feed* each chosen chapter lands in.

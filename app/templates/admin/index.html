@@ -105,16 +105,20 @@
     <span class="muted" style="font-size:.7em">/{{ cv.channel.slug }} · {{ cv.channel.parallel_slots }} slot(s)</span>
   </h3>
   {% for slot in cv.slots %}
-  <div class="slot-card">
+  <div class="slot-card" data-slot="{{ slot.n }}" data-channel="{{ cv.channel.id }}">
     <h4>Slot {{ slot.n }}
       <span class="muted" style="font-weight:normal; font-size:.8em">
         feed <code>/feed/{{ cv.channel.slug }}/{{ slot.n }}</code>
       </span>
     </h4>
     <div style="margin-bottom:.3em">
-      {% if slot.epub %}<span class="pill pill-epub">📖 {{ slot.epub.title }}</span>{% endif %}
-      {% for o in slot.ongoings %}<span class="pill pill-ongoing">📡 {{ o.title }}</span>{% endfor %}
-      {% if not slot.epub and not slot.ongoings %}<span class="muted">empty — no source pinned here</span>{% endif %}
+      {% if slot.epub %}<span class="pill pill-epub draggable-source" draggable="true"
+        data-book-id="{{ slot.epub.id }}" data-channel="{{ cv.channel.id }}"
+        title="Drag to another slot to repin">📖 {{ slot.epub.title }}</span>{% endif %}
+      {% for o in slot.ongoings %}<span class="pill pill-ongoing draggable-source" draggable="true"
+        data-book-id="{{ o.id }}" data-channel="{{ cv.channel.id }}"
+        title="Drag to another slot to repin">📡 {{ o.title }}</span>{% endfor %}
+      {% if not slot.epub and not slot.ongoings %}<span class="muted">empty — drag a source here</span>{% endif %}
     </div>
     {% if slot.drops %}
     <table style="font-size:.85em">
@@ -430,5 +434,40 @@ document.addEventListener('toggle', (e) => {
 }, true);
 document.addEventListener('htmx:afterSwap', restoreSections);
 restoreSections();
+
+// Drag a source pill between slot cards to repin it (same channel only). Delegated so it
+// survives #dash-main swaps; persists via POST /admin/books/{id}/set-slot then reloads.
+let _dragBook = null, _dragChannel = null;
+document.addEventListener('dragstart', (e) => {
+  const pill = e.target.closest && e.target.closest('.draggable-source');
+  if (!pill) return;
+  _dragBook = pill.dataset.bookId;
+  _dragChannel = pill.dataset.channel;
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragover', (e) => {
+  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
+  if (card && _dragBook && card.dataset.channel === _dragChannel) {
+    e.preventDefault();                 // allow drop
+    card.classList.add('drag-over');
+  }
+});
+document.addEventListener('dragleave', (e) => {
+  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
+  if (card) card.classList.remove('drag-over');
+});
+document.addEventListener('drop', (e) => {
+  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
+  if (!card || !_dragBook || card.dataset.channel !== _dragChannel) return;
+  e.preventDefault();
+  card.classList.remove('drag-over');
+  const body = new URLSearchParams({ slot_index: card.dataset.slot });
+  fetch('/admin/books/' + _dragBook + '/set-slot', {
+    method: 'POST',
+    headers: { 'HX-Request': 'true', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  }).then((r) => { if (r.ok) location.reload(); });
+  _dragBook = null; _dragChannel = null;
+});
 </script>
 {% endblock %}

@@ -180,6 +180,44 @@ def _build_subscriber_view(db, channels):
     return out
 
 
+@router.post("/books/{book_id}/set-slot")
+def set_slot(
+    book_id: int,
+    request: Request,
+    slot_index: int = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Manually pin an active source to a feed slot (drag-and-drop on the dashboard).
+
+    Slots are per-channel; this never changes a book's channel. Backlog (untracked) books
+    are one-per-slot, so moving one onto an occupied slot **swaps** the two. Tracked stories
+    are uncapped, so they just move. The planner's slot assignment is sticky, so a valid
+    manual pin persists across broadcasts (see planner._assign_slots).
+    """
+    book = db.get(Book, book_id)
+    if book is not None and book.status == BookStatus.active:
+        channel = db.get(Channel, book.channel_id)
+        if (channel is not None and 1 <= slot_index <= channel.parallel_slots
+                and slot_index != book.slot_index):
+            if not book.tracked:
+                occupant = (
+                    db.query(Book)
+                    .filter(
+                        Book.channel_id == book.channel_id,
+                        Book.tracked.is_(False),
+                        Book.status == BookStatus.active,
+                        Book.slot_index == slot_index,
+                        Book.id != book.id,
+                    )
+                    .first()
+                )
+                if occupant is not None:  # keep one backlog book per slot — swap
+                    occupant.slot_index = book.slot_index
+            book.slot_index = slot_index
+            db.commit()
+    return _saved(request)
+
+
 # ── Calibre import / Library ──────────────────────────────────────────────────
 
 def _source_domain(url: str | None) -> str:

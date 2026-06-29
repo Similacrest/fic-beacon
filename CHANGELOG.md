@@ -22,6 +22,12 @@ All notable changes to this project are documented here. The format is based on
   forever, stalling that fetch *and every job queued behind it* at `fetching…` indefinitely. On
   timeout the child is killed and reported as a transient error, so the worker always frees.
 
+### Added — drag sources between slots
+- **The dashboard's "Now broadcasting" slot cards are drag-and-drop.** Drag a source pill onto
+  another slot (within the same channel) to repin it via `POST /admin/books/{id}/set-slot`. Backlog
+  books stay one-per-slot (moving onto an occupied slot **swaps** the two); tracked stories are
+  uncapped and just move. The pin is sticky, so it survives subsequent broadcasts.
+
 ### Changed — footnotes expand inline instead of jumping
 - **Cross-file notes now render as a collapsible `<details>` disclosure in place** of the marker,
   replacing the old end-of-chapter `<aside>` + `#fb-note-{id}` anchor. Clicking the marker expands
