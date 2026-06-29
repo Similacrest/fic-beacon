@@ -53,6 +53,11 @@ PERSONAL_INI = os.environ.get("FANFICFARE_INI", "/config/personal.ini")
 RETRY_BASE_SECONDS = float(os.environ.get("FETCHER_RETRY_BASE_SECONDS", "30"))
 RETRY_ATTEMPTS = 3
 JOB_TTL_SECONDS = 3600  # keep a finished job's result available for an hour, then prune
+# Per-subprocess wall-clock caps. FanFicFare can legitimately run ~15 min on a big story, so its
+# cap is generous; calibredb operations are local and quick. Without these a single hung site
+# socket would block the lone worker thread forever (and every queued job behind it).
+FANFICFARE_TIMEOUT = float(os.environ.get("FETCHER_FANFICFARE_TIMEOUT", "1200"))  # 20 min
+CALIBREDB_TIMEOUT = float(os.environ.get("FETCHER_CALIBREDB_TIMEOUT", "600"))  # 10 min
 
 app = FastAPI(title="fic-beacon-fetcher")
 
@@ -76,20 +81,30 @@ class FetchRequest(BaseModel):
     urls: list[str]
 
 
-def _run(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], cwd: str | None = None,
+         timeout: float | None = None) -> subprocess.CompletedProcess:
     logger.info("run: %s", " ".join(cmd))
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run already killed the child. Surface a non-zero result whose text the
+        # callers' returncode/stderr checks treat as failure; "timed out" also matches
+        # _TRANSIENT_RE, so transient-retry paths back off and the worker thread always frees.
+        logger.warning("timeout after %.0fs: %s", timeout or 0, " ".join(cmd))
+        out = exc.stdout.decode("utf-8", "ignore") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(
+            cmd, returncode=124, stdout=out, stderr=f"timed out after {timeout:.0f}s")
 
 
 def _calibredb(*args: str) -> subprocess.CompletedProcess:
-    return _run(["calibredb", "--with-library", LIBRARY, *args])
+    return _run(["calibredb", "--with-library", LIBRARY, *args], timeout=CALIBREDB_TIMEOUT)
 
 
 def _fanficfare(*args: str, cwd: str) -> subprocess.CompletedProcess:
     base = ["fanficfare", "--non-interactive"]
     if Path(PERSONAL_INI).exists():
         base += ["-c", PERSONAL_INI]
-    return _run([*base, *args], cwd=cwd)
+    return _run([*base, *args], cwd=cwd, timeout=FANFICFARE_TIMEOUT)
 
 
 def _with_retry(label: str, fn):
