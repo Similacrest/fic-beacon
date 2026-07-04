@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — out-of-range slot feeds now 404
+- **`GET /feed/{channel}/{slot}` rejects a slot outside `1..parallel_slots`** (or non-numeric)
+  with 404 instead of serving an empty feed. E.g. with a 3-slot Fantasy channel, `/feed/fantasy/4`
+  is now an error. The token is still checked first, so an invalid token stays a 403.
+
 ### Added — feedback actions on the /read/ reader page
 - **The `/read/{slug}` page now shows the same feedback row as the feed items** (🪝 extra · 👍 up ·
   👎 down · ❌ drop). Previously the reader page dead-ended with no way to vote. The row is a

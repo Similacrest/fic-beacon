@@ -36,6 +36,10 @@ def get_feed_slot(
     channel = db.query(Channel).filter(Channel.slug == channel_slug).first()
     if channel is None:
         raise HTTPException(status_code=404, detail="Unknown channel")
+    # Only the channel's real slots (1..parallel_slots) are valid feeds; anything above the
+    # limit (or non-numeric) has no bucket and must not resolve.
+    if not feed_key.isdigit() or not (1 <= int(feed_key) <= channel.parallel_slots):
+        raise HTTPException(status_code=404, detail="No such slot in this channel")
     drops = (
         db.query(Drop)
         .join(Drop.book)
