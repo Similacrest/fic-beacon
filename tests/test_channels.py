@@ -8,13 +8,13 @@ from app.routers.admin import create_channel, edit_channel
 
 def _create(db, name):
     create_channel(name=name, genre_match="", parallel_slots=2,
-                   budget_mode="words", budget=5000, db=db)
+                   budget_mode="words", budget=5000, feed_item_limit=50, db=db)
     return db.query(Channel).filter(Channel.name == name).order_by(Channel.id.desc()).first()
 
 
 def _edit(db, channel_id, name, slug):
     edit_channel(channel_id, name=name, slug=slug, genre_match="", parallel_slots=1,
-                 budget_mode="words", budget=5000, db=db)
+                 budget_mode="words", budget=5000, feed_item_limit=50, db=db)
 
 
 class TestCreateChannel:

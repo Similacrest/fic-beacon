@@ -92,7 +92,10 @@ fic-beacon/
 - A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
   as is reading speed (`config.wpm`) and the 👎 drop threshold.
 - **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`.
-  There is **no all-channels union feed** — subscribe to each channel/slot feed.
+  There is **no all-channels union feed** — subscribe to each channel/slot feed. Each slot feed
+  serves at most **`channel.feed_item_limit`** items (newest first, per-channel, default 50, seeded
+  from `settings.feed_item_limit`, editable on the Channels page). Older drops are **kept in the DB**
+  (their `/read/` permalinks keep working) — they just fall off the tail of the feed.
 - **A slot is a feed *bucket*, not a single-book reservation.** Slot N's feed carries the *one*
   backlog book currently streaming in that slot **plus** all tracked stories pinned to that slot,
   interleaved. Picture each slot as a TV channel: one "main show" (a finite backlog book) running
@@ -308,13 +311,13 @@ broadcast or an admin request.
 ## Data model (summary)
 
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
-`budget_credit`, `queue_order`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
+`budget_credit`, `queue_order`, `feed_item_limit`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
 `slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
-`source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
+`source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
 `thumbs_down_drop_threshold`, `extra_boost_multiplier`, `feed_secret`) · `app_state` (key/value runtime store, e.g.
 `last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.

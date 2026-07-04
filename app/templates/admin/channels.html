@@ -55,6 +55,10 @@
         <label style="font-size:.8em; display:block">Budget</label>
         <input type="number" name="budget" value="{{ '%g'|format(ch.budget) }}" min="0.01" step="any" class="budget-input" style="width:90px">
       </div>
+      <div style="min-width:80px">
+        <label style="font-size:.8em; display:block" title="Max items each slot feed carries; older drops stay in the DB but drop off the feed tail">Feed items</label>
+        <input type="number" name="feed_item_limit" value="{{ ch.feed_item_limit }}" min="1" style="width:70px">
+      </div>
       <div>
         <button class="btn btn-primary" type="submit" style="font-size:.85em">Save</button>
       </div>
@@ -106,6 +110,10 @@
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget</label>
       <input type="number" name="budget" value="5000" min="0.01" step="any" class="budget-input" style="width:90px">
+    </div>
+    <div style="min-width:80px">
+      <label style="font-size:.8em; display:block" title="Max items each slot feed carries; older drops stay in the DB but drop off the feed tail">Feed items</label>
+      <input type="number" name="feed_item_limit" value="50" min="1" style="width:70px">
     </div>
     <div>
       <button class="btn btn-primary" type="submit">Create channel</button>

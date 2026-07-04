@@ -72,6 +72,10 @@ class Channel(Base):
     # Signed carry-over so the stochastic per-cycle mean tracks the budget.
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Max items served in each of this channel's slot feeds (newest-first). Older drops stay in
+    # the DB (permalinks keep working) but fall off the tail of the feed. Per-channel so a
+    # high-volume channel can keep a longer tail. Seeded from settings.feed_item_limit.
+    feed_item_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
 
 
 class Book(Base):

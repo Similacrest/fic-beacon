@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — per-channel feed length cap
+- **Each channel now sets how many items its slot feeds carry** (`channel.feed_item_limit`,
+  default 50, editable on the Channels page). Feeds serve the newest N items; **older drops stay
+  in the DB** so their `/read/` permalinks keep working — they just fall off the tail of the feed.
+  Previously this was a single global `BEACON_FEED_ITEM_LIMIT` applied to every feed; it now seeds
+  the per-channel default. Migration adds `channel.feed_item_limit`.
+
 ### Added — soft read-gating (✓ Mark read)
 - **A source you haven't caught up on now trickles more slowly.** If a source's most-recent
   delivered drop is still unacknowledged, its effective inclusion weight is halved in the

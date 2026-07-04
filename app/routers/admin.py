@@ -410,6 +410,7 @@ def create_channel(
     parallel_slots: int = Form(2),
     budget_mode: str = Form("words"),
     budget: float = Form(5000),
+    feed_item_limit: int = Form(settings.feed_item_limit),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     name = name.strip()
@@ -425,6 +426,7 @@ def create_channel(
         parallel_slots=max(1, parallel_slots),
         budget_mode=mode,
         budget=max(0.01, budget),
+        feed_item_limit=max(1, feed_item_limit),
         queue_order=max_order + 1,
     ))
     db.commit()
@@ -440,6 +442,7 @@ def edit_channel(
     parallel_slots: int = Form(1),
     budget_mode: str = Form("words"),
     budget: float = Form(5000),
+    feed_item_limit: int = Form(50),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Edit channel settings, including the slug.
@@ -457,6 +460,7 @@ def edit_channel(
         channel.parallel_slots = max(1, parallel_slots)
         channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
         channel.budget = max(0.01, budget)
+        channel.feed_item_limit = max(1, feed_item_limit)
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
 

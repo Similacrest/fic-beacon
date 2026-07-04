@@ -45,7 +45,9 @@ def get_feed_slot(
         .join(Drop.book)
         .filter(Drop.channel_id == channel.id, Drop.feed_key == feed_key)
         .order_by(Drop.published_at.desc())
-        .limit(settings.feed_item_limit)
+        # Per-channel cap on how many (newest) items the feed carries. Older drops stay in the
+        # DB (permalinks keep working); they just fall off the tail of the feed.
+        .limit(max(1, channel.feed_item_limit))
         .all()
     )
     slot_label = f"Slot {feed_key}"
