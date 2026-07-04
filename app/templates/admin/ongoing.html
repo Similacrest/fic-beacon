@@ -49,7 +49,7 @@
   </tr></thead>
   <tbody>
   {% for s in sources %}
-  <tr style="{{ 'opacity:.55' if s.status.value != 'active' }}">
+  <tr style="{{ 'opacity:.55' if s.paused }}">
     <td><input type="checkbox" name="book_ids" value="{{ s.id }}" class="ongoing-check" form="ongoing-batch-form"></td>
     <td>{{ s.title }}</td>
     <td>{{ chan_name.get(s.channel_id, '—') }}</td>
@@ -70,7 +70,7 @@
       <form method="post" action="/admin/ongoing/{{ s.id }}/toggle"
             hx-post="/admin/ongoing/{{ s.id }}/toggle">
         <button style="font-size:.8em; padding:.15em .5em" title="Pause/resume">
-          {{ "▶ active" if s.status.value == 'active' else "⏸ paused" }}
+          {{ "⏸ paused" if s.paused else "▶ active" }}
         </button>
       </form>
     </td>

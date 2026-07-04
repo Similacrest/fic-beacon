@@ -236,9 +236,10 @@ Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause
   (reversible, so no confirm page). A **backlog** book frees its slot (re-enters the queue so the
   next queued book streams in); a **tracked** story just stops (keeps its sticky slot). Paused
   sources are excluded from candidate selection and slot assignment (`_active_books_in`,
-  `_assign_slots` filter `paused`). **Resume is dashboard-only** — a paused source emits no feed
-  items, so the feed can't carry a resume link (`pause_book`/`resume_book` in `planner.py`;
-  `POST /admin/books/{id}/pause|resume`).
+  `_assign_slots` filter `paused`). **Resume is admin-UI-only** — a paused source emits no feed
+  items, so the feed can't carry a resume link. Pause/resume is unified on `pause_book`/`resume_book`
+  (`planner.py`): the feed ⏸ link, the dashboard toggle (`POST /admin/books/{id}/pause|resume`), and
+  the **Tracked Stories** page toggle (`/admin/ongoing/{id}/toggle`, batch pause/resume) all call it.
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
 - `read` → neutral **✓ Mark read** acknowledgement: sets `drop.acknowledged_at`, no weight change,
   no side effects. **Instant bare GET.** Feeds the soft read-gate below.

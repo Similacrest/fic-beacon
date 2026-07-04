@@ -18,10 +18,10 @@ from app.calibre.genre import effective_genres, pick_channel_id
 from app.calibre.status import classify_status
 from app.config import settings
 from app.epub.chapterizer import chapterize
-from app.database import ensure_default_channel, get_db
+from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop,
-    FeedbackEvent, WebSubSubscription, absolute_chapter_number,
+    WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
 from app.state import LAST_DROP_RUN, LAST_POLL_RUN, LAST_SKIPS, get_run, get_value
@@ -665,13 +665,7 @@ def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
     """Permanently remove all dropped sources (and their drops/feedback)."""
     dropped = db.query(Book).filter(Book.status == BookStatus.dropped).all()
     for book in dropped:
-        drop_ids = [d.id for d in db.query(Drop.id).filter(Drop.book_id == book.id)]
-        if drop_ids:
-            db.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
-                synchronize_session=False
-            )
-            db.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
-        db.delete(book)
+        delete_book_cascade(db, book)
     db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 

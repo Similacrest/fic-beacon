@@ -165,15 +165,18 @@ class TestBatchActions:
         a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
         b = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
         batch_pause_sources(book_ids=[a.id, b.id], db=in_memory_db)
-        assert a.status == BookStatus.dropped and b.status == BookStatus.dropped
+        # Pause now uses the shared `paused` flag (same as the feed ⏸ / dashboard); tracked
+        # stories stay `active` — they're just excluded from broadcasting while paused.
+        assert a.paused and b.paused
+        assert a.status == BookStatus.active and b.status == BookStatus.active
         batch_resume_sources(book_ids=[a.id], db=in_memory_db)
-        assert a.status == BookStatus.active and b.status == BookStatus.dropped
+        assert not a.paused and b.paused
 
     def test_empty_selection_is_a_noop(self, in_memory_db):
         # The HTMX path posts with no book_ids when nothing is selected; must not error.
         a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
         batch_pause_sources(book_ids=None, db=in_memory_db)
-        assert a.status == BookStatus.active
+        assert not a.paused
 
 
 class TestAbsoluteChapterNumber:

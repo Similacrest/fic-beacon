@@ -8,9 +8,24 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Channel, Config
+from app.models import Book, Channel, Config, Drop, FeedbackEvent
 
 logger = logging.getLogger(__name__)
+
+
+def delete_book_cascade(session: Session, book: Book) -> None:
+    """Delete a source and everything that hangs off it (drops → feedback events), FK-safe.
+
+    Shared by the admin "clear dropped" sweep and the tracked-story delete so the deletion
+    order (feedback_event before drops before book) lives in one place.
+    """
+    drop_ids = [d.id for d in session.query(Drop.id).filter(Drop.book_id == book.id)]
+    if drop_ids:
+        session.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
+            synchronize_session=False
+        )
+        session.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
+    session.delete(book)
 
 engine = create_engine(
     settings.database_url,

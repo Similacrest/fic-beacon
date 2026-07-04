@@ -20,9 +20,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database import ensure_default_channel, get_db
-from app.models import Book, BookStatus, Channel, Drop, FeedbackEvent
+from app.database import delete_book_cascade, ensure_default_channel, get_db
+from app.models import Book, BookStatus, Channel
 from app.ongoing.feed_url import infer_feed_url
+from app.planner.planner import pause_book, resume_book
 from app.version import __version__
 
 router = APIRouter(prefix="/admin/ongoing")
@@ -107,13 +108,11 @@ def add_bulk(
 
 @router.post("/{source_id}/toggle")
 def toggle_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
-    """Pause (drop) or resume (activate) a tracked source."""
+    """Pause or resume a tracked source — the same paused flag the feed ⏸ and dashboard use."""
     source = db.get(Book, source_id)
     if source is None or not source.tracked:
         raise HTTPException(status_code=404)
-    source.status = (
-        BookStatus.dropped if source.status == BookStatus.active else BookStatus.active
-    )
+    (resume_book if source.paused else pause_book)(db, source)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -134,21 +133,11 @@ def fetch_now(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
 
-def _delete_source(db: Session, source: Book) -> None:
-    drop_ids = [d.id for d in db.query(Drop.id).filter(Drop.book_id == source.id)]
-    if drop_ids:
-        db.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(Drop).filter(Drop.id.in_(drop_ids)).delete(synchronize_session=False)
-    db.delete(source)
-
-
 @router.post("/{source_id}/delete")
 def delete_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     source = db.get(Book, source_id)
     if source is not None:
-        _delete_source(db, source)
+        delete_book_cascade(db, source)
         db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -161,7 +150,7 @@ def batch_delete_sources(
     for book_id in (book_ids or []):
         source = db.get(Book, book_id)
         if source is not None:
-            _delete_source(db, source)
+            delete_book_cascade(db, source)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -181,7 +170,7 @@ def batch_pause_sources(
 ) -> RedirectResponse:
     """Pause (exclude from polling/broadcast) every selected tracked story."""
     for source in _selected_tracked(db, book_ids):
-        source.status = BookStatus.dropped
+        pause_book(db, source)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 
@@ -193,7 +182,7 @@ def batch_resume_sources(
 ) -> RedirectResponse:
     """Resume every selected tracked story."""
     for source in _selected_tracked(db, book_ids):
-        source.status = BookStatus.active
+        resume_book(db, source)
     db.commit()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
 

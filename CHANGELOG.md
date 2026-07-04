@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — Tracked Stories page pause is now the real pause
+- **The "Tracked Stories" (`/admin/ongoing`) pause/resume now uses the same `paused` flag** as the
+  feed ⏸ link and the dashboard, via the shared `pause_book`/`resume_book`. Previously it faked a
+  pause by setting the source's status to `dropped` — a different, pre-1.1.B behaviour that was
+  easy to confuse with actually dropping the source. Now all three pause surfaces are identical.
+- **Internal cleanup:** the cascade-delete of a source (drops → feedback events → book) is a single
+  `database.delete_book_cascade` helper shared by the admin "clear dropped" sweep and the tracked
+  delete, and the channel/slot feed body is built once by `feed.builder.build_channel_slot_feed`
+  (used by both the feed route and the WebSub publisher, so pushed bodies can't drift from a GET).
+
 ### Added — per-channel feed length cap
 - **Each channel now sets how many items its slot feeds carry** (`channel.feed_item_limit`,
   default 50, editable on the Channels page). Feeds serve the newest N items; **older drops stay
