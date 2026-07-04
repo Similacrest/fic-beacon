@@ -152,9 +152,17 @@ fic-beacon/
   excluded → **roll over** whole to a later broadcast.
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
   defer; a low-weight source may get nothing some cycles. **Never split a unit.**
-- After the pass: `budget_credit += channel.budget − used` (clamped to ±budget). Sources whose
-  units rolled over are written to a per-broadcast **skip log** (`app_state[last_broadcast_skips]`)
-  surfaced on the dashboard.
+- **Oversized units accumulate, they don't force-post.** A unit larger than the channel's *base*
+  per-cycle budget can't fit in one cycle, so it is **not** dropped every cycle. Instead an
+  accumulation pass (runs before the stochastic pass) posts it whole only once `B` (base +
+  saved-up credit) can afford it — a 9k chapter on a 3k budget posts once every ~3 cycles, so its
+  long-run rate still tracks the budget. It's posted whole (never split), at most one oversized
+  unit per source per cycle.
+- After the pass: `budget_credit += channel.budget − used`. Negative is clamped to one base
+  budget; **positive is clamped to the largest pending unit** (so an oversized chapter can be
+  saved up for) or to one base budget when nothing oversized is pending (so idle channels don't
+  run away). Sources whose units rolled over are written to a per-broadcast **skip log**
+  (`app_state[last_broadcast_skips]`) surfaced on the dashboard.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
 - Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).

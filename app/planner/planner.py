@@ -126,7 +126,11 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         effective = max(0, int(available))
 
         skips: list[SkippedSource] = []
-        plans = _plan_drops(active_books, adapter, effective, skips_out=skips)
+        stats: dict = {}
+        plans = _plan_drops(
+            active_books, adapter, effective, base_budget=int(base_budget),
+            skips_out=skips, stats_out=stats,
+        )
         used = 0
         for plan in plans:
             drop = _materialise(session, plan, channel.id)
@@ -146,10 +150,14 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
                 "held_out": skip.held_out,
             })
 
-        # Carry the leftover (can be negative after an oversized post); clamp so a big
-        # overshoot doesn't suppress drops for many cycles.
+        # Carry the leftover (can be negative after an oversized post). Positive credit may
+        # accumulate up to the largest pending unit so an oversized chapter can be saved up
+        # for across cycles; with nothing oversized pending it caps at the base budget (so an
+        # idle channel doesn't runaway). Negative is clamped to one base so a big overshoot
+        # doesn't suppress drops for many cycles.
+        positive_cap = max(int(base_budget), stats.get("max_pending_unit", 0))
         leftover = available - used
-        channel.budget_credit = max(-base_budget, min(base_budget, leftover))
+        channel.budget_credit = max(-base_budget, min(positive_cap, leftover))
 
         # Re-fill slots freed by EPUBs that just completed this broadcast.
         _assign_slots(session, channel.parallel_slots, channel.id)
@@ -207,17 +215,29 @@ def _plan_drops(
     active_books: list[Book],
     adapter: CalibreAdapter,
     budget: int,
+    base_budget: int | None = None,
     skips_out: list["SkippedSource"] | None = None,
+    stats_out: dict | None = None,
 ) -> list[PlannedDrop]:
-    """Pure-stochastic selection over whole units (chapters), never splitting.
+    """Stochastic selection over whole units (chapters), never splitting.
 
-    Repeated weight-ordered passes: a candidate unit of size w is included with
-    probability p that falls as the cycle runs over budget and rises with the
-    source's quota_weight. Excluded units roll over whole to a later cycle. There is
-    *no* guaranteed first chapter — over budget, even a source's first unit can defer.
-    A unit larger than the whole budget is posted whole (once per source per cycle),
-    since it could never otherwise fit.
+    `budget` is this cycle's *effective* allowance (base budget + accumulated credit);
+    `base_budget` is the channel's per-cycle base (defaults to `budget`). Two passes:
+
+    1. **Accumulation pass** — an *oversized* unit (larger than `base_budget`) can never fit
+       in a single cycle, so rather than force it out every cycle (blowing the budget) we wait
+       until `budget` (base + saved-up credit) can afford it, then post it whole. Its long-run
+       rate tracks the base budget: a 9k chapter on a 3k budget posts once every ~3 cycles.
+    2. **Stochastic pass** — normal (fits-in-base) units are included with probability p that
+       falls as the cycle runs over budget and rises with the source's quota_weight; excluded
+       units roll over whole to a later cycle. Oversized units are skipped here (pass 1 owns
+       them). There is *no* guaranteed first chapter — a low-weight source may get nothing.
+
+    `stats_out`, if given, receives `max_pending_unit` (the largest next-unit size in the
+    channel) so the caller can size the credit cap to let an oversized chapter be saved up for.
     """
+    if base_budget is None:
+        base_budget = budget
     # Pre-load remaining units for every source (highest quota first for fair ordering).
     ordered = sorted(active_books, key=lambda b: -b.quota_weight)
     book_remaining: dict[int, list[Unit]] = {}
@@ -233,11 +253,33 @@ def _plan_drops(
             logger.info("Active source '%s' has no pending units this cycle", book.title)
 
     if not valid:
+        if stats_out is not None:
+            stats_out["max_pending_unit"] = 0
         return []
+
+    # Largest next-unit in the channel — the caller uses this to cap accumulated credit so an
+    # oversized chapter can be saved up for (but idle channels don't runaway). See run_drop_cycle.
+    if stats_out is not None:
+        stats_out["max_pending_unit"] = max(book_remaining[b.id][0].word_count for b in valid)
 
     selected: dict[int, list[Unit]] = {b.id: [] for b in valid}
     used = 0
 
+    # Pass 1 — accumulation: post an oversized next-unit (bigger than the base per-cycle
+    # budget) whole, once the effective budget has saved up enough to afford it. Weight order
+    # gives higher-weight sources first claim on the accumulated budget. At most one oversized
+    # unit per source per cycle (its next unit, if also oversized, waits for the next cycle).
+    for book in valid:
+        remaining = book_remaining[book.id]
+        if not remaining:
+            continue
+        unit = remaining[0]
+        if unit.word_count > base_budget and budget - used >= unit.word_count:
+            selected[book.id].append(unit)
+            remaining.pop(0)
+            used += unit.word_count
+
+    # Pass 2 — stochastic over normal (fits-in-base) units. Oversized units return p=0 here.
     changed = True
     while changed:
         changed = False
@@ -251,7 +293,7 @@ def _plan_drops(
                 used=used,
                 budget=budget,
                 weight=book.quota_weight,
-                first_for_book=not selected[book.id],
+                base_budget=base_budget,
             )
             if random.random() < p:
                 selected[book.id].append(unit)
@@ -277,15 +319,20 @@ def _plan_drops(
 
 
 def _inclusion_probability(
-    word_count: int, used: int, budget: int, weight: float, first_for_book: bool
+    word_count: int, used: int, budget: int, weight: float, base_budget: int | None = None
 ) -> float:
-    """Probability of including a whole unit this cycle (see _plan_drops)."""
+    """Probability of including a whole *normal-sized* unit this cycle (see _plan_drops).
+
+    Oversized units — larger than the base per-cycle budget — are **not** selected here; the
+    accumulation pass in _plan_drops handles them once enough budget_credit has built up. So
+    this returns 0 for them. `base_budget` defaults to `budget` when unspecified.
+    """
+    if base_budget is None:
+        base_budget = budget
     if word_count <= 0:
         return 1.0
-    # Oversized unit: larger than the entire budget → post whole, but only as a
-    # source's first unit this cycle so we don't dump a whole book at a tiny budget.
-    if word_count > budget and first_for_book:
-        return 1.0
+    if word_count > base_budget:
+        return 0.0
     remaining = budget - used
     if remaining <= 0:
         return 0.0

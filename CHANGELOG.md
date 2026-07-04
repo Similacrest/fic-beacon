@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — oversized chapters now pace by budget accumulation
+- **A chapter larger than a channel's per-cycle budget no longer drops every cycle.** Previously
+  the planner force-posted any unit bigger than the budget as the source's first unit (`p=1.0`),
+  so a 6–9k-word non-fiction chapter on a 3k budget fired *every* broadcast and buried the reader.
+  Now such an oversized unit **accumulates budget credit across cycles and posts whole once the
+  effective budget (base + saved-up credit) can afford it** — a 9k chapter on a 3k budget posts
+  once every ~3 cycles, so the long-run rate tracks the budget. Units are still never split, and
+  the positive credit cap rises to the largest pending unit so an oversized chapter can be saved
+  up for (falling back to one base budget when nothing oversized is pending, so idle channels
+  don't run away). See `app/planner/planner.py` (`_plan_drops` accumulation pass).
+
 ### Fixed — tracked stories stuck at `fetching…` forever (scheduler timezone bug)
 - **Fetch poll jobs were orphaning themselves, so completed fetches were never collected.** The
   scheduler is configured with `BEACON_TZ`, but a container's OS clock is typically UTC.

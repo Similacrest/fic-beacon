@@ -75,13 +75,17 @@ def _mock_adapter(calibre_id: int, epub_path: Path):
 
 
 class TestPlanDrops:
-    def test_always_posts_at_least_one_chapter(self, in_memory_db, epub_path):
+    def test_oversized_chapter_paces_by_accumulation(self, in_memory_db, epub_path):
+        # An oversized chapter (bigger than the base per-cycle budget) is NO LONGER force-posted
+        # every cycle — it waits until the effective budget (base + saved-up credit) affords it,
+        # then posts whole, exactly once. base_budget=1 makes each ~500w chapter 'oversized'.
         book = _make_book(in_memory_db, calibre_id=1)
         adapter = _mock_adapter(1, epub_path)
-        # Budget of 1 word — the oversized first chapter still posts whole
-        plans = _plan_drops([book], adapter, budget=1)
-        assert len(plans) == 1
-        assert len(plans[0].chapters) >= 1
+        # Too little saved up → defers entirely (no guaranteed first chapter).
+        assert _plan_drops([book], adapter, budget=1, base_budget=1) == []
+        # Enough saved up → exactly one oversized chapter posts, whole.
+        plans = _plan_drops([book], adapter, budget=5000, base_budget=1)
+        assert len(plans) == 1 and len(plans[0].chapters) == 1
 
     def test_packs_multiple_chapters_within_budget(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
@@ -230,11 +234,11 @@ class TestDropCycle:
         promote them into open slots *before* looking for active books, otherwise
         it bails early and nothing is ever dropped (the deadlock bug)."""
         # 3 queued books, no active ones — exactly the fresh-deploy scenario.
-        # Small budget so each promoted book takes one chapter and stays active
+        # Budget fits ~one ~500w chapter so a promoted book drops one and stays active
         # (rather than exhausting the short 5-chapter mock epub in one cycle).
         from app.models import Channel
         channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget = 100
+        channel.budget = 600
         for i in range(1, 4):
             _make_book(
                 in_memory_db, calibre_id=i, title=f"Book {i}",
@@ -371,7 +375,7 @@ class TestChannels:
     def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
         from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget=100)
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget=1500)
         in_memory_db.add(ch)
         in_memory_db.flush()
         for i in (1, 2, 3):
@@ -531,31 +535,30 @@ class TestAssignSlots:
 class TestStochasticBudget:
     def test_unit_within_budget_always_included(self):
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(100, used=0, budget=1000, weight=1.0, first_for_book=True) == 1.0
+        assert _inclusion_probability(100, used=0, budget=1000, weight=1.0) == 1.0
 
     def test_over_budget_excluded(self):
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(100, used=1000, budget=1000, weight=1.0, first_for_book=False) == 0.0
+        assert _inclusion_probability(100, used=1000, budget=1000, weight=1.0) == 0.0
 
     def test_boundary_fraction_at_weight_one(self):
         from app.planner.planner import _inclusion_probability
         # 50 words of budget left for a 100-word unit → p = 0.5
-        p = _inclusion_probability(100, used=950, budget=1000, weight=1.0, first_for_book=False)
+        p = _inclusion_probability(100, used=950, budget=1000, weight=1.0)
         assert p == pytest.approx(0.5)
 
     def test_higher_weight_raises_probability(self):
         from app.planner.planner import _inclusion_probability
-        low = _inclusion_probability(100, 950, 1000, weight=0.5, first_for_book=False)
-        high = _inclusion_probability(100, 950, 1000, weight=2.0, first_for_book=False)
+        low = _inclusion_probability(100, 950, 1000, weight=0.5)
+        high = _inclusion_probability(100, 950, 1000, weight=2.0)
         assert high > 0.5 > low
 
-    def test_oversized_first_unit_posts_whole(self):
+    def test_oversized_returns_zero_deferred_to_accumulation(self):
+        # A unit larger than the base per-cycle budget is not selected by the stochastic pass
+        # (p=0); the accumulation pass in _plan_drops owns it once enough credit builds up.
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(5000, used=0, budget=1000, weight=1.0, first_for_book=True) == 1.0
-
-    def test_oversized_defers_when_not_first_and_over(self):
-        from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(5000, used=1000, budget=1000, weight=1.0, first_for_book=False) == 0.0
+        assert _inclusion_probability(5000, used=0, budget=1000, weight=1.0, base_budget=1000) == 0.0
+        assert _inclusion_probability(5000, used=0, budget=9000, weight=1.0, base_budget=1000) == 0.0
 
     def test_mean_words_tracks_budget(self):
         # Repeatedly draw same-size units until one is rejected; mean total ≈ budget.
@@ -563,10 +566,9 @@ class TestStochasticBudget:
         random.seed(1234)
         budget, w, trials, totals = 1000, 300, 4000, []
         for _ in range(trials):
-            used, first = 0, True
-            while random.random() < _inclusion_probability(w, used, budget, 1.0, first):
+            used = 0
+            while random.random() < _inclusion_probability(w, used, budget, 1.0):
                 used += w
-                first = False
             totals.append(used)
         mean = sum(totals) / trials
         assert abs(mean - budget) < 120  # tracks budget without even the credit smoothing
