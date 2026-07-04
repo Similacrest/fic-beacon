@@ -40,7 +40,27 @@ def _timezone() -> ZoneInfo | None:
         return None
 
 
+def _now() -> datetime:
+    """Timezone-aware 'now' in the scheduler's timezone (or UTC).
+
+    APScheduler is configured with BEACON_TZ, but the container OS clock is typically UTC. A
+    *naive* ``datetime.now()`` handed to APScheduler as ``next_run_time``/``run_date`` gets
+    localised to the scheduler tz — so a UTC wall-clock value read on a Tallinn-configured
+    scheduler lands hours in the *past*. For an interval poll that means it fires immediately
+    (racing ahead of the cycle that still hasn't committed its ``fetch_job`` mapping); for a
+    date job it means an instant misfire that drops the run. Always schedule against tz-aware
+    now so the requested delay is honoured.
+    """
+    return datetime.now(_timezone() or timezone.utc)
+
+
 _scheduler = BackgroundScheduler()
+
+# A fetch poll can legitimately fire before the cycle/sweep that submitted it has committed the
+# job→book mapping. Tolerate a few such "not found yet" polls before concluding the job was
+# already handled and unscheduling for good (see _poll_fetch_job).
+_POLL_MISS_LIMIT = 3
+_poll_misses: dict[str, int] = {}
 
 
 # ── Async fetch orchestration ────────────────────────────────────────────────────────────
@@ -84,7 +104,7 @@ def _schedule_poll(job_id: str) -> None:
         _poll_fetch_job,
         trigger="interval",
         seconds=settings.fetcher_poll_interval,
-        next_run_time=datetime.now() + timedelta(seconds=settings.fetcher_poll_interval),
+        next_run_time=_now() + timedelta(seconds=settings.fetcher_poll_interval),
         id=f"fetch_poll_{job_id}",
         args=[job_id],
         replace_existing=True,
@@ -94,6 +114,7 @@ def _schedule_poll(job_id: str) -> None:
 
 
 def _unschedule_poll(job_id: str) -> None:
+    _poll_misses.pop(job_id, None)
     try:
         _scheduler.remove_job(f"fetch_poll_{job_id}")
     except Exception:
@@ -108,9 +129,16 @@ def _poll_fetch_job(job_id: str) -> None:
 
     with db_session() as session:
         raw = get_value(session, FETCH_JOB_PREFIX + job_id)
-        if raw is None:  # mapping gone (already handled) — stop polling
-            _unschedule_poll(job_id)
+        if raw is None:
+            # The mapping may just not be committed yet — this poll can fire before the
+            # submitting cycle/sweep commits (see _now). Only conclude the job was already
+            # handled, and unschedule, after a few consecutive misses.
+            misses = _poll_misses.get(job_id, 0) + 1
+            _poll_misses[job_id] = misses
+            if misses >= _POLL_MISS_LIMIT:
+                _unschedule_poll(job_id)
             return
+        _poll_misses.pop(job_id, None)
         meta = json.loads(raw)
         url_to_book = meta.get("url_to_book", {})
 
@@ -223,7 +251,7 @@ def trigger_fetch_pending() -> None:
     _scheduler.add_job(
         _run_fetch_pending,
         trigger="date",
-        run_date=datetime.now() + timedelta(seconds=1),
+        run_date=_now() + timedelta(seconds=1),
         id="fetch_pending",
         replace_existing=True,
     )

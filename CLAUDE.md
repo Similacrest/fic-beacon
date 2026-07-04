@@ -289,6 +289,15 @@ read at runtime by `app/version.py` (no baked env var). Bump it there on release
 
 Drop/sweep times use `BEACON_TZ` (e.g. `Europe/Tallinn`), passed to APScheduler and
 `CronTrigger`. With no `TZ`/`BEACON_TZ` set, a stock container resolves to **UTC**.
+`docker-compose.yml` also sets the container `TZ` from `BEACON_TZ` so the wall clock and the
+scheduler agree.
+
+**Never hand APScheduler a naive `datetime.now()`** for `next_run_time`/`run_date`. APScheduler
+localises naive datetimes to the scheduler tz, so a UTC-clock container with a non-UTC `BEACON_TZ`
+would place the run hours in the past — firing interval jobs immediately and dropping date jobs as
+misfires. Use `app/scheduler.py:_now()` (tz-aware). This bit the async fetch polls once: they fired
+before the submitting cycle committed the `fetch_job` mapping and unscheduled themselves, stranding
+stories at `fetching…` (see CHANGELOG).
 
 ## Verification
 

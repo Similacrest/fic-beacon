@@ -89,3 +89,42 @@ class TestTimezone:
         from app import scheduler
         monkeypatch.setattr(scheduler.settings, "tz", "Not/AZone")
         assert scheduler._timezone() is None
+
+    def test_now_is_timezone_aware(self, monkeypatch):
+        # A naive now would get localised to the scheduler tz and land in the past; _now must
+        # be tz-aware so schedule delays are honoured regardless of the container OS clock.
+        from app import scheduler
+        monkeypatch.setattr(scheduler.settings, "tz", "Europe/Tallinn")
+        now = scheduler._now()
+        assert now.tzinfo is not None and now.utcoffset() is not None
+
+
+class TestFetchPollGrace:
+    """A fetch poll can fire before the submitting cycle commits its fetch_job mapping. It must
+    tolerate a few "not found yet" polls instead of unscheduling itself immediately — otherwise a
+    story is stranded at `fetching…` forever (the scheduler timezone regression)."""
+
+    def _use_session(self, monkeypatch, session):
+        from contextlib import contextmanager
+        from app import scheduler
+
+        @contextmanager
+        def fake_session():
+            yield session
+        monkeypatch.setattr(scheduler, "db_session", fake_session)
+
+    def test_missing_mapping_tolerated_then_unschedules(self, in_memory_db, monkeypatch):
+        from app import scheduler
+        self._use_session(monkeypatch, in_memory_db)
+        unscheduled = []
+        monkeypatch.setattr(scheduler, "_unschedule_poll", unscheduled.append)
+        scheduler._poll_misses.clear()
+        jid = "deadbeef"  # no app_state fetch_job:{jid} row → get_value returns None
+
+        for _ in range(scheduler._POLL_MISS_LIMIT - 1):
+            scheduler._poll_fetch_job(jid)
+        assert unscheduled == []                                    # tolerated, not given up yet
+        assert scheduler._poll_misses[jid] == scheduler._POLL_MISS_LIMIT - 1
+
+        scheduler._poll_fetch_job(jid)                              # the limit-th consecutive miss
+        assert unscheduled == [jid]                                 # now it unschedules

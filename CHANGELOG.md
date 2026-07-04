@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — tracked stories stuck at `fetching…` forever (scheduler timezone bug)
+- **Fetch poll jobs were orphaning themselves, so completed fetches were never collected.** The
+  scheduler is configured with `BEACON_TZ`, but a container's OS clock is typically UTC.
+  `_schedule_poll`/`trigger_fetch_pending` computed their run time from a **naive**
+  `datetime.now()`, which APScheduler localised to `BEACON_TZ` — so on a UTC-clock box with a
+  non-UTC `BEACON_TZ` the run time landed *hours in the past*. An interval poll therefore fired
+  **immediately**, before the drop cycle/sweep that submitted it had committed the `fetch_job`
+  mapping; the poll's fresh session saw no mapping, assumed "already handled", and unscheduled
+  itself for good. The book was then stranded at `fetching…` forever, its `fetch_job:` app_state
+  key never cleaned up, and the fetcher's finished result never folded in — while the daily sweep
+  re-submitted the same stories every cycle. The same bug dropped the initial-download date job
+  (`_run_fetch_pending`) as an instant misfire, so **newly-added tracked stories never fetched**.
+  Now all scheduler run times use a timezone-aware `now` (`app/scheduler.py:_now`), the poll
+  tolerates a few "mapping not found yet" ticks before giving up, and the container clock is
+  aligned to `BEACON_TZ` via `TZ` in `docker-compose.yml`. Orphaned jobs self-heal on restart
+  (`_resume_pending_polls` re-schedules them and they now poll correctly). This is distinct from
+  the 0.8.0 fetcher-side subprocess-timeout fix below.
+
 ## [0.8.0] — 2026-06-29
 
 ### Changed — schema is now Alembic-migration-owned
