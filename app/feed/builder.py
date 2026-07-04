@@ -111,9 +111,9 @@ def _extra_available(drop: Drop) -> bool:
 
 
 def _feedback_html(drop: Drop, extra_available: bool) -> str:
-    """Four ordered actions: 🪝 extra · 👍 up · 👎 down · ❌ drop.
+    """Ordered actions: 🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop · ✓ read.
 
-    up/down are instant bare-GET links; extra/drop route through the confirm page.
+    up/down/pause/read are instant bare-GET links; extra/drop route through the confirm page.
     The 🪝 extra link is shown only when a next unit is available.
     """
     token = drop.feedback_token

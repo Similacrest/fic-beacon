@@ -49,7 +49,7 @@ SQLite, Jinja + HTMX.
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
 | Stubs | If the site removed chapters, the fetcher archives the old EPUB as a separate Calibre entry and overwrites the book; the app bumps `chapter_label_offset` (labels stay continuous) and raises `cursor_floor` (can't rewind into the rewritten body). |
 | Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
-| Feedback | Four tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ❌ drop (super-down)**. up/down fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. |
+| Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a short broadcast cooldown; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
 | Permalinks | Source-aware and uniform (all sources are FanFicFare EPUBs): per-chapter `chapterurl` → whole-work `url:` identifier → reader page. `guid` always per-drop and independent of link. |
@@ -150,24 +150,28 @@ C4Component
 ## 5. Data Model
 
 - **`channel`** — `id`, `name`, `slug`, `genre_match` (#genre_manual prefix), `parallel_slots`,
-  `budget_words`, `budget_minutes`, `budget_mode`, `budget_credit` (signed carry-over),
-  `queue_order`.
+  `budget` + `budget_mode` (`words|minutes`), `budget_credit` (signed carry-over), `queue_order`,
+  `feed_item_limit` (max items served per slot feed).
 - **`book`** (a *source*) — `calibre_id?`, `tracked` (bool; auto-updating), `feed_url?` (RSS
   trigger), `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `title`, `author`,
   `source_url?` (whole-work URL = FanFicFare fetch URL), `total_chapters?`, `status`
-  (`queued|active|completed|dropped`), `channel_id` (**NOT NULL**), `slot_index?` (pinned feed slot;
-  unique per active backlog book, *shared* by tracked stories pinned to it), `queue_position`,
-  `quota_weight`, `cursor_chapter_index` (physical EPUB index), `chapter_label_offset` (stub
-  continuity), `cursor_floor` (lowest rewindable index), `thumbs_up`, `thumbs_down`, `added_at`.
+  (`queued|active|completed|dropped`), `paused` (broadcasts nothing until resumed),
+  `cooldown_remaining` (👎-down: sit out N broadcasts), `channel_id` (**NOT NULL**),
+  `slot_index?` (pinned feed slot; unique per active backlog book, *shared* by tracked stories
+  pinned to it), `queue_position`, `quota_weight`, `cursor_chapter_index` (physical EPUB index),
+  `chapter_label_offset` (stub continuity), `cursor_floor` (lowest rewindable index), `thumbs_up`,
+  `thumbs_down`, `added_at`.
 - **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"`, = source's pinned slot),
   `created_at`, `published_at`, `word_count`, `chapter_start`, `chapter_end`, `chapter_titles`,
-  `source_url?`, `content_html`, `feedback_token` (unguessable), `reader_slug`.
+  `source_url?`, `content_html`, `acknowledged_at?` (soft read-gating), `feedback_token`
+  (unguessable), `reader_slug`.
 - **`feedback_event`** — `id`, `token`, `book_id`, `drop_id`, `action`
-  (`up|down|extra|drop`), `created_at`.
+  (`up|down|extra|drop|pause|read`), `created_at`.
 - **`websub_subscription`** — `id`, `topic_url`, `callback_url`, `secret?`, `lease_expires_at`,
   `verified`, `created_at`.
 - **`config`** — single-row globals only: `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`,
-  `feed_secret`. (Budget, slots, and budget-mode live per-channel, not here.)
+  `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
+  live per-channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
   `last_drop_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
   adds it on existing volumes without a migration.
@@ -182,10 +186,12 @@ C4Component
    slots up to `parallel_slots` (≤ N active, one per slot; sticky), and pin every active tracked
    story to a balanced slot (fewest pinned works, tie-break fewest chapters ever dropped there;
    sticky). Then gather each active source's **next unit** — every backlog book's next chapter plus
-   every tracked story with a chapter past its cursor (tracked are uncapped).
+   every tracked story with a chapter past its cursor (tracked are uncapped). **Paused** sources and
+   ones with a live 👎-down **cooldown** are excluded from candidates.
 3. Run the **stochastic pass** (slot-agnostic, channel-wide): `B = budget + budget_credit`; include
-   each marginal whole unit with `p = clamp((B − used)/w, 0, 1)`, weight-biased; excluded units roll
-   over whole. Never split. Then `budget_credit += budget − used`.
+   each marginal whole unit with `p = clamp((B − used)/w, 0, 1)`, weight-biased (and halved while
+   the source's most-recent drop is unacknowledged — soft read-gating); excluded units roll over
+   whole. Never split. Then `budget_credit += budget − used`, and tick down each source's cooldown.
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance cursors;
    complete+free **backlog** books that ran out (next queued book rebalances in). A **tracked** book
    that runs out is *not* completed — it self-gates until the next fetch adds chapters. Sources whose

@@ -601,8 +601,9 @@ def apply_feedback(
     """Apply a feedback action and record the event.
 
     Idempotent per (drop, action): a reader/proxy prefetching a bare-GET link, or a
-    double-click, applies the effect at most once. The four actions form a symmetric
-    strength scale — extra (super-up) · up · down · drop (super-down).
+    double-click, applies the effect at most once. Actions: a strength scale — extra
+    (super-up) · up · down · drop (super-down) — plus ⏸ pause and ✓ read (utility).
+    Any action also acknowledges the drop (soft read-gating).
     """
     cfg = _get_config(session)
     book = drop.book

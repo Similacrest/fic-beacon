@@ -44,18 +44,19 @@ def publish_updates(session: Session, drops: list[Drop]) -> None:
 # ── feed builders (mirror app/routers/feed.py) ────────────────────────────────
 
 
-def _recent_drops(query):
-    return query.order_by(Drop.published_at.desc()).limit(settings.feed_item_limit).all()
-
-
 def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tuple[str, bytes] | None:
     channel = session.get(Channel, channel_id)
     if channel is None:
         return None
-    drops = _recent_drops(
+    # Same newest-first, per-channel cap as the feed route (app/routers/feed.py) so the pushed
+    # body is byte-identical to a GET of the topic — WebSub requires the two to match.
+    drops = (
         session.query(Drop)
         .join(Drop.book)
         .filter(Drop.channel_id == channel_id, Drop.feed_key == feed_key)
+        .order_by(Drop.published_at.desc())
+        .limit(max(1, channel.feed_item_limit))
+        .all()
     )
     slot_label = f"Slot {feed_key}"
     cfg = session.get(Config, 1)
