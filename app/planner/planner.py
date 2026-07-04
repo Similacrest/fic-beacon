@@ -33,10 +33,15 @@ from app.config import settings
 from app.epub.chapterizer import Chapter, chapterize, materialize_image_urls
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
-    FeedbackEvent,
+    FeedbackEvent, utcnow,
 )
 
 logger = logging.getLogger(__name__)
+
+# Soft read-gating: a source whose most-recent drop is still unacknowledged has its effective
+# inclusion weight multiplied by this factor, so an un-caught-up reader falls behind more slowly
+# (it still trickles — this is a nudge, not a hard gate). See _unacknowledged_books / _plan_drops.
+_UNACKED_WEIGHT_PENALTY = 0.5
 
 
 @dataclass
@@ -120,6 +125,10 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         if not active_books:
             continue
 
+        # Soft read-gating: sources whose most-recent delivered drop is still unacknowledged
+        # get a reduced inclusion weight this cycle (they still trickle).
+        unacked = _unacknowledged_books(session, active_books)
+
         # Token-bucket budget: this cycle's allowance is the base budget plus any
         # signed carry-over from prior cycles, so the long-run mean tracks the base.
         available = base_budget + channel.budget_credit
@@ -129,7 +138,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         stats: dict = {}
         plans = _plan_drops(
             active_books, adapter, effective, base_budget=int(base_budget),
-            skips_out=skips, stats_out=stats,
+            skips_out=skips, stats_out=stats, unacked_ids=unacked,
         )
         used = 0
         for plan in plans:
@@ -195,6 +204,25 @@ def _active_books_in(session: Session, channel_id: int) -> list[Book]:
     )
 
 
+def _unacknowledged_books(session: Session, books: list[Book]) -> set[int]:
+    """Ids of sources whose most-recent delivered drop is still unacknowledged (read-gating).
+
+    A source with no drops yet is *not* included (nothing to be behind on). Best-effort: a drop
+    is acknowledged on /read/ open, any /fb/ click, or the explicit ✓ Mark-read action.
+    """
+    unacked: set[int] = set()
+    for book in books:
+        latest = (
+            session.query(Drop)
+            .filter(Drop.book_id == book.id)
+            .order_by(Drop.published_at.desc(), Drop.id.desc())
+            .first()
+        )
+        if latest is not None and latest.acknowledged_at is None:
+            unacked.add(book.id)
+    return unacked
+
+
 def _tick_cooldowns(session: Session, channel_id: int) -> None:
     """Decrement the 👎-down cooldown once per broadcast for this channel's active sources.
 
@@ -246,6 +274,7 @@ def _plan_drops(
     base_budget: int | None = None,
     skips_out: list["SkippedSource"] | None = None,
     stats_out: dict | None = None,
+    unacked_ids: set[int] | None = None,
 ) -> list[PlannedDrop]:
     """Stochastic selection over whole units (chapters), never splitting.
 
@@ -316,11 +345,15 @@ def _plan_drops(
             if not remaining:
                 continue
             unit = remaining[0]
+            # Read-gating nudge: halve the effective weight while the source's last drop is unread.
+            weight = book.quota_weight
+            if unacked_ids and book.id in unacked_ids:
+                weight *= _UNACKED_WEIGHT_PENALTY
             p = _inclusion_probability(
                 word_count=unit.word_count,
                 used=used,
                 budget=budget,
-                weight=book.quota_weight,
+                weight=weight,
                 base_budget=base_budget,
             )
             if random.random() < p:
@@ -574,6 +607,10 @@ def apply_feedback(
     cfg = _get_config(session)
     book = drop.book
 
+    # Any feedback interaction acknowledges the drop as read (soft read-gating).
+    if drop.acknowledged_at is None:
+        drop.acknowledged_at = utcnow()
+
     # Idempotency guard — skip if this exact (drop, action) was already recorded.
     already = (
         session.query(FeedbackEvent)
@@ -614,6 +651,11 @@ def apply_feedback(
         book.thumbs_up += 3
         book.quota_weight = max(0.1, book.quota_weight * cfg.extra_boost_multiplier)
         extra_drop = create_extra_drop(session, book, library_path)
+
+    elif action == FeedbackAction.read:
+        # Explicit ✓ Mark-read: acknowledge only (handled above) — no weight change, no event
+        # side effects. Lets a reader who reads in-feed signal "caught up" without voting.
+        pass
 
     elif action == FeedbackAction.pause:
         # Stop this source broadcasting until resumed from the dashboard. Reversible, so it

@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — soft read-gating (✓ Mark read)
+- **A source you haven't caught up on now trickles more slowly.** If a source's most-recent
+  delivered drop is still unacknowledged, its effective inclusion weight is halved in the
+  stochastic budget pass, so an un-read backlog can't pile up as fast. It's a nudge, not a hard
+  gate (the source still drops occasionally), and a source with no drops yet is never penalised.
+- **A drop is acknowledged** on opening its `/read/{slug}` page, clicking **any** `/fb/` feedback
+  link, or the new **✓ Mark read** action (a neutral, instant bare-GET acknowledgement with no
+  weight effect). This is deliberately explicit rather than a tracking pixel: image proxies (e.g.
+  Inoreader) prefetch images on feed poll and would mark everything read on ingest, and no-image
+  readers would never fire — so passive detection is unreliable and reader-dependent. Migration
+  adds `drop.acknowledged_at`.
+
 ### Changed — ongoing serials now outrank the backlog by default
 - **Tracked (ongoing) sources import at `quota_weight = 2.0`** (configurable via
   `BEACON_TRACKED_DEFAULT_WEIGHT`) instead of `1.0`, so the user's actively-followed serials get

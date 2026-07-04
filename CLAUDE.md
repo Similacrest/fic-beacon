@@ -169,6 +169,16 @@ fic-beacon/
   (`app_state[last_broadcast_skips]`) surfaced on the dashboard.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
+- **Soft read-gating.** A source whose **most-recent delivered drop is still unacknowledged**
+  (`drop.acknowledged_at is None`) has its effective inclusion weight multiplied by
+  `_UNACKED_WEIGHT_PENALTY` (0.5) in the stochastic pass — so an un-caught-up reader falls behind
+  more slowly. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
+  drops yet is never penalised. A drop is acknowledged on opening `/read/{slug}`, clicking **any**
+  `/fb/` link, or the explicit **✓ Mark read** action. This is best-effort and reader-agnostic:
+  passive read-detection is unreliable (most permalinks point at the source site, not `/read/`, and
+  readers don't report reads), so we deliberately chose an explicit/opt-in signal over a tracking
+  pixel — image proxies (e.g. Inoreader) prefetch on poll and would mark everything read on ingest.
+  See `planner.py:_unacknowledged_books`.
 - Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
 
 ### Permalinks (source-aware, per-chapter) — EPUB
@@ -227,7 +237,11 @@ Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause
   items, so the feed can't carry a resume link (`pause_book`/`resume_book` in `planner.py`;
   `POST /admin/books/{id}/pause|resume`).
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
+- `read` → neutral **✓ Mark read** acknowledgement: sets `drop.acknowledged_at`, no weight change,
+  no side effects. **Instant bare GET.** Feeds the soft read-gate below.
 - **Idempotent per `(drop_id, action)`** so reader/proxy prefetch and double-clicks count once.
+- **Any feedback action also acknowledges its drop** (`drop.acknowledged_at`), as does opening
+  `/read/{slug}` — see read-gating below.
 - The **🪝 extra link renders only when a next unit exists** (`extra_available`): a chapter past
   the cursor in the current EPUB (same check for backlog and tracked sources).
 - Tokens are per-drop and unguessable; a click binds to exactly one book/drop.

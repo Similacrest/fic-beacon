@@ -27,8 +27,9 @@ from app.planner.planner import apply_feedback
 router = APIRouter(prefix="/fb")
 
 # Actions that mutate instantly on a bare GET (no confirmation page). Pause is reversible
-# (resume from the dashboard), so it's frictionless like up/down.
-_INSTANT_ACTIONS = {"up", "down", "pause"}
+# (resume from the dashboard) and read is a neutral acknowledgement, so both are frictionless
+# like up/down.
+_INSTANT_ACTIONS = {"up", "down", "pause", "read"}
 
 # Strong/destructive actions that require a confirmation interstitial.
 _CONFIRM_LABELS = {

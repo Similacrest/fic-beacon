@@ -6,10 +6,11 @@ Each item:
   - Full chapter HTML in <content> (Atom) and <description> (RSS)
   - Tokenized feedback hyperlinks appended to content, in order:
       [🪝 Extra chapter now] [👍 More like this] [👎 Less like this] [⏸ Pause this source]
-      [❌ Drop this source]
-    up/down/pause are instant bare-GET links (/fb/{token}); extra/drop route through the
+      [❌ Drop this source] [✓ Mark read]
+    up/down/pause/read are instant bare-GET links (/fb/{token}); extra/drop route through the
     confirmation page (/fb/confirm/{token}). 🪝 extra is shown only when a next unit
-    is available. See app/routers/feedback.py for the contract.
+    is available. ✓ read is a neutral acknowledgement (soft read-gating). See
+    app/routers/feedback.py for the contract.
 """
 from __future__ import annotations
 
@@ -126,6 +127,8 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
     links.append(f'<a href="{instant}?action=down">👎 Less like this</a>')
     links.append(f'<a href="{instant}?action=pause">⏸ Pause this source</a>')
     links.append(f'<a href="{confirm}?action=drop">❌ Drop this source</a>')
+    # Neutral read-acknowledgement (soft read-gating). Instant bare GET; no weight change.
+    links.append(f'<a href="{instant}?action=read">✓ Mark read</a>')
 
     return (
         '\n<hr/>\n'

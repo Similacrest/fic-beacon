@@ -166,6 +166,13 @@ class Drop(Base):
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # Full HTML content of all chapters in this drop
     content_html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # When the reader acknowledged this drop as read — set on opening /read/{slug}, clicking any
+    # /fb/ feedback link, or the explicit ✓ Mark-read action. Soft read-gating: a source whose
+    # most-recent drop is still unacknowledged gets a reduced inclusion probability, so the reader
+    # can't fall as far behind. Best-effort (many permalinks point at the source site, not /read/).
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Unguessable token for feedback links (bound to this drop)
     feedback_token: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     # Stable slug used for the reader permalink

@@ -747,3 +747,78 @@ class TestCooldown:
         in_memory_db.flush()
         _tick_cooldowns(in_memory_db, a.channel_id); in_memory_db.refresh(a)
         assert a.cooldown_remaining == 0   # never goes negative
+
+
+class TestReadGating:
+    """1.1.A — a source whose most-recent drop is unacknowledged trickles more slowly."""
+
+    def _drop_for(self, db, book, acked: bool, token, slug):
+        from app.models import utcnow
+        d = Drop(book_id=book.id, feedback_token=token, reader_slug=slug,
+                 chapter_start=0, chapter_end=0, word_count=100,
+                 acknowledged_at=(utcnow() if acked else None))
+        db.add(d); db.flush()
+        return d
+
+    def test_no_drops_not_flagged(self, in_memory_db):
+        from app.planner.planner import _unacknowledged_books
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        assert _unacknowledged_books(in_memory_db, [a]) == set()
+
+    def test_unacked_latest_flagged(self, in_memory_db):
+        from app.planner.planner import _unacknowledged_books
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
+        assert _unacknowledged_books(in_memory_db, [a]) == {a.id}
+
+    def test_acked_latest_not_flagged(self, in_memory_db):
+        from app.planner.planner import _unacknowledged_books
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        # older unacked, but the most-recent is acked → caught up
+        self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
+        self._drop_for(in_memory_db, a, acked=True, token="t2", slug="s2")
+        assert _unacknowledged_books(in_memory_db, [a]) == set()
+
+    def test_feedback_acknowledges_drop(self, in_memory_db, epub_path):
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        d = self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
+        apply_feedback(in_memory_db, d, FeedbackAction.read, epub_path.parent)
+        assert d.acknowledged_at is not None
+
+    def test_read_action_no_weight_change(self, in_memory_db, epub_path):
+        a = _make_book(in_memory_db, calibre_id=1, title="A", quota_weight=1.0)
+        d = self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
+        apply_feedback(in_memory_db, d, FeedbackAction.read, epub_path.parent)
+        assert a.quota_weight == 1.0   # ✓ read is neutral
+        assert a.thumbs_up == 0 and a.thumbs_down == 0
+
+    def test_unacked_penalty_lowers_probability(self):
+        from app.planner.planner import _inclusion_probability, _UNACKED_WEIGHT_PENALTY
+        # Effective budget < unit so base<1 and weight bites; base_budget high so it's not oversized.
+        p_acked = _inclusion_probability(
+            word_count=800, used=0, budget=600, weight=1.0, base_budget=5000)
+        p_unacked = _inclusion_probability(
+            word_count=800, used=0, budget=600, weight=1.0 * _UNACKED_WEIGHT_PENALTY,
+            base_budget=5000)
+        assert p_unacked < p_acked   # penalty demonstrably reduces inclusion probability
+
+    def test_unacked_penalty_applied_in_plan(self, in_memory_db, epub_path):
+        """_plan_drops routes the penalty: an unacked source is picked less over many cycles."""
+        from app.planner.planner import _plan_drops
+        random.seed(1)
+        book = _make_book(in_memory_db, calibre_id=1)
+        adapter = _mock_adapter(1, epub_path)  # 5×~500-word chapters
+
+        def count(unacked_ids):
+            total = 0
+            for _ in range(60):
+                book.cursor_chapter_index = 0  # reset so the same first unit is a candidate
+                # base_budget high (not oversized); effective budget < unit so base<1 and weight bites.
+                plans = _plan_drops([book], adapter, budget=400, base_budget=5000,
+                                    unacked_ids=unacked_ids)
+                total += sum(len(p.chapters) for p in plans)
+            return total
+
+        acked = count(set())
+        unacked = count({book.id})
+        assert unacked < acked

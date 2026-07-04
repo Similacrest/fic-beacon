@@ -76,3 +76,13 @@ def test_reader_hides_extra_when_caught_up(client):
 def test_reader_unknown_slug_404(client):
     tc, _ = client
     assert tc.get("/read/nope").status_code == 404
+
+
+def test_reader_page_acknowledges_drop(client):
+    """Opening /read/{slug} marks the drop acknowledged (soft read-gating)."""
+    tc, db = client
+    drop = _seed_drop(db)
+    assert drop.acknowledged_at is None
+    tc.get("/read/slug123")
+    db.refresh(drop)
+    assert drop.acknowledged_at is not None

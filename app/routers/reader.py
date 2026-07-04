@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Drop
+from app.models import Drop, utcnow
 
 router = APIRouter()
 
@@ -18,6 +18,11 @@ def reader_page(slug: str, db: Session = Depends(get_db)) -> HTMLResponse:
     drop = db.query(Drop).filter(Drop.reader_slug == slug).first()
     if drop is None:
         raise HTTPException(status_code=404)
+
+    # Opening the reader page acknowledges the drop as read (soft read-gating).
+    if drop.acknowledged_at is None:
+        drop.acknowledged_at = utcnow()
+        db.commit()
 
     book = drop.book
     chapter_label = drop.chapter_titles or f"Chapter {drop.chapter_start + 1}"
