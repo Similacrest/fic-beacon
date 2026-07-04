@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — ongoing serials now outrank the backlog by default
+- **Tracked (ongoing) sources import at `quota_weight = 2.0`** (configurable via
+  `BEACON_TRACKED_DEFAULT_WEIGHT`) instead of `1.0`, so the user's actively-followed serials get
+  priority over the finite Calibre backlog in the per-channel stochastic budget pass. It's a
+  default-weight nudge applied at import — weights remain per-source tunable and votable, and no
+  planner logic is hardcoded to source kind. No migration.
+
 ### Changed — 👎 down now backs a source off for a couple of broadcasts
 - **A thumbs-down sets a cooldown of ≥2 broadcasts** (`book.cooldown_remaining`) on top of the
   existing `×0.8` weight nudge, so a 👎 is felt immediately instead of only as a slow drift. The

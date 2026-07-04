@@ -323,6 +323,8 @@ def add_from_library(
                 channel_id=target_id,
                 cursor_chapter_index=count,
                 total_chapters=count or None,
+                # Prioritise ongoing serials over the finite backlog (see settings docstring).
+                quota_weight=settings.tracked_default_weight,
             ))
         else:
             db.add(Book(

@@ -88,6 +88,19 @@ def test_unread_ongoing_starts_at_chapter_one(add):
     assert book.cursor_chapter_index == 0
 
 
+def test_tracked_gets_higher_default_weight(add):
+    """#5 — a tracked (ongoing) source imports at the elevated default weight (> backlog's 1.0)."""
+    tracked = add("In-Progress", None)
+    assert tracked.quota_weight == settings.tracked_default_weight
+    assert tracked.quota_weight > 1.0   # backlog imports at the 1.0 model default
+
+
+def test_backlog_keeps_default_weight(add):
+    """A backlog (done/blank #status) import stays at the plain 1.0 weight."""
+    backlog = add("Completed", 1)
+    assert backlog.quota_weight == 1.0
+
+
 def test_completed_goes_to_backlog_queue(add):
     """#status Completed ⇒ untracked backlog queue from chapter 1."""
     book = add("Completed", 1)

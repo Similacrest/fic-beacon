@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     default_wpm: int = 250
     default_cadence_cron: str = "0 7,19 * * *"  # 07:00 and 19:00 daily
     default_thumbs_down_drop_threshold: int = 3
+    # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog.
+    # >1 prioritises real ongoing serials over the finite backlog in the stochastic budget pass
+    # (the user's actively-followed fiction shouldn't wait behind the archive). Env-overridable.
+    tracked_default_weight: float = 2.0
 
     # Misc
     feed_item_limit: int = 50

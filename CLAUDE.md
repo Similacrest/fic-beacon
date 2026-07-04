@@ -126,6 +126,10 @@ fic-beacon/
   A tracked book marked **`#read=Yes`** starts its `cursor_chapter_index` at the current EPUB end
   (caught up → only new chapters drop); otherwise it starts at chapter 1. One batched **Add** button
   in the Library UI — there is no separate per-row track action.
+  - **Tracked sources import at a higher default `quota_weight`** (`settings.tracked_default_weight`,
+    default **2.0**; env `BEACON_TRACKED_DEFAULT_WEIGHT`) vs **1.0** for backlog, so real ongoing
+    serials get priority over the finite archive in the stochastic budget pass. This is a
+    *default-weight* nudge, not a planner hardcode — weights stay per-source tunable/votable.
 - **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
   into one **async** fetch job (`scheduler.submit_and_track`) that downloads the new chapters into
   Calibre in the background. The triggering broadcast does **not** wait — new chapters land in the
