@@ -17,9 +17,39 @@ from __future__ import annotations
 from datetime import timezone
 
 from feedgen.feed import FeedGenerator
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Drop, absolute_chapter_number
+from app.models import Channel, Drop, absolute_chapter_number
+
+
+def build_channel_slot_feed(
+    session: Session, channel: Channel, feed_key: str, secret: str
+) -> tuple[str, bytes, bytes]:
+    """Build one channel/slot feed — the single source of truth shared by the feed route and the
+    WebSub publisher, so a pushed body is byte-identical to a GET of the topic (WebSub requires it).
+
+    Returns `(self_url, atom_bytes, rss_bytes)`. `self_url` is tokened so the advertised topic is
+    fetchable; drops are the newest `channel.feed_item_limit` (older ones stay in the DB but fall
+    off the feed tail).
+    """
+    slot_label = f"Slot {feed_key}"
+    self_url = f"{settings.base_url}/feed/{channel.slug}/{feed_key}?token={secret}"
+    drops = (
+        session.query(Drop)
+        .join(Drop.book)
+        .filter(Drop.channel_id == channel.id, Drop.feed_key == feed_key)
+        .order_by(Drop.published_at.desc())
+        .limit(max(1, channel.feed_item_limit))
+        .all()
+    )
+    atom, rss = build_feed(
+        drops,
+        self_url=self_url,
+        title=f"Fic Beacon — {channel.name} · {slot_label}",
+        description=f"{channel.name} — {slot_label}",
+    )
+    return self_url, atom, rss
 
 
 def build_feed(

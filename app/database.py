@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Base, Channel, Config
+from app.models import Channel, Config
 
 logger = logging.getLogger(__name__)
 

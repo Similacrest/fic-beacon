@@ -83,3 +83,20 @@ def test_feed_item_limit_caps_items(client):
     assert len(feedparser.parse(body).entries) == 2   # only the 2 newest served
     # DB still holds all 5 rows (kept, not trimmed).
     assert db.query(Drop).filter(Drop.feed_key == "1").count() == 5
+
+
+def test_route_and_websub_bodies_are_byte_identical(client):
+    """The feed route and the WebSub publisher must emit the SAME bytes (WebSub requirement).
+
+    Both go through build_channel_slot_feed now; this locks that shared path so they can't drift
+    again (a past bug: the publisher used a different item cap than the route)."""
+    from app.config import settings
+    from app.websub.publisher import _channel_slot_feed
+    tc, db = client
+    ch = _seed_drops(db, "fantasy", "1", n=4)
+    ch.feed_item_limit = 2
+    db.commit()
+
+    route_body = tc.get("/feed/fantasy/1?token=secret").content
+    _, push_body = _channel_slot_feed(db, ch.id, "1")
+    assert route_body == push_body

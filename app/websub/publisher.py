@@ -17,7 +17,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.feed.builder import build_feed
+from app.feed.builder import build_channel_slot_feed
 from app.models import Channel, Config, Drop, WebSubSubscription, utcnow
 
 logger = logging.getLogger(__name__)
@@ -41,37 +41,15 @@ def publish_updates(session: Session, drops: list[Drop]) -> None:
     logger.debug("WebSub publish: %d drop(s) touched %d slot feed(s)", len(drops), len(seen))
 
 
-# ── feed builders (mirror app/routers/feed.py) ────────────────────────────────
-
-
 def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tuple[str, bytes] | None:
     channel = session.get(Channel, channel_id)
     if channel is None:
         return None
-    # Same newest-first, per-channel cap as the feed route (app/routers/feed.py) so the pushed
-    # body is byte-identical to a GET of the topic — WebSub requires the two to match.
-    drops = (
-        session.query(Drop)
-        .join(Drop.book)
-        .filter(Drop.channel_id == channel_id, Drop.feed_key == feed_key)
-        .order_by(Drop.published_at.desc())
-        .limit(max(1, channel.feed_item_limit))
-        .all()
-    )
-    slot_label = f"Slot {feed_key}"
     cfg = session.get(Config, 1)
     secret = cfg.feed_secret if cfg else settings.feed_secret
-    # Tokened to mirror the advertised rel=self (app/routers/feed.py) so the topic is
-    # fetchable and the pushed body is byte-identical to a GET of the topic URL.
-    topic = f"{settings.base_url}/feed/{channel.slug}/{feed_key}?token={secret}"
-    # title/description must mirror app/routers/feed.py exactly so the pushed body is
-    # byte-identical to a GET of the topic (WebSub compares the two).
-    atom, _ = build_feed(
-        drops,
-        self_url=topic,
-        title=f"Fic Beacon — {channel.name} · {slot_label}",
-        description=f"{channel.name} — {slot_label}",
-    )
+    # Shared builder (also used by the feed route) — the single source of truth for the feed body,
+    # so the pushed Atom is byte-identical to a GET of the topic URL (WebSub requires the match).
+    topic, atom, _ = build_channel_slot_feed(session, channel, feed_key, secret)
     return topic, atom
 
 

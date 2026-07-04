@@ -3,7 +3,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Boolean, DateTime, Enum, Float, ForeignKey,
-    Integer, String, Text, UniqueConstraint, func,
+    Integer, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 

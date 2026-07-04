@@ -57,7 +57,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "next_drop": next_runs.get("drop_cycle"),
         "next_sweep": next_runs.get("feedless_sweep"),
     }
-    subscribers = _build_subscriber_view(db, channels)
+    subscribers = _build_subscriber_view(db)
 
     try:
         last_skips = json.loads(get_value(db, LAST_SKIPS) or "[]")
@@ -156,11 +156,10 @@ def _build_slot_view(db, channels, active, queued):
     return view
 
 
-def _build_subscriber_view(db, channels):
+def _build_subscriber_view(db):
     """Group WebSub subscribers by topic feed, flagging verified/expired state."""
     from app.models import utcnow
     now = utcnow()
-    by_slug = {ch.slug: ch.name for ch in channels}
     subs = db.query(WebSubSubscription).order_by(WebSubSubscription.topic_url).all()
     out = []
     for sub in subs:

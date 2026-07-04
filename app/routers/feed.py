@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.feed.builder import build_feed
-from app.models import Channel, Config, Drop
+from app.feed.builder import build_channel_slot_feed
+from app.models import Channel, Config
 
 router = APIRouter()
 
@@ -14,13 +14,6 @@ def _check_feed_secret(session: Session, token: str) -> None:
     expected = cfg.feed_secret if cfg else settings.feed_secret
     if not expected or token != expected:
         raise HTTPException(status_code=403, detail="Invalid feed token")
-
-
-def _render(drops, fmt: str, self_url=None, title=None, description=None) -> Response:
-    atom_xml, rss_xml = build_feed(drops, self_url=self_url, title=title, description=description)
-    if fmt == "rss":
-        return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
-    return Response(content=atom_xml, media_type="application/atom+xml; charset=utf-8")
 
 
 @router.api_route("/feed/{channel_slug}/{feed_key}", methods=["GET", "HEAD"])
@@ -40,20 +33,8 @@ def get_feed_slot(
     # limit (or non-numeric) has no bucket and must not resolve.
     if not feed_key.isdigit() or not (1 <= int(feed_key) <= channel.parallel_slots):
         raise HTTPException(status_code=404, detail="No such slot in this channel")
-    drops = (
-        db.query(Drop)
-        .join(Drop.book)
-        .filter(Drop.channel_id == channel.id, Drop.feed_key == feed_key)
-        .order_by(Drop.published_at.desc())
-        # Per-channel cap on how many (newest) items the feed carries. Older drops stay in the
-        # DB (permalinks keep working); they just fall off the tail of the feed.
-        .limit(max(1, channel.feed_item_limit))
-        .all()
-    )
-    slot_label = f"Slot {feed_key}"
-    # Tokened so the advertised topic is actually fetchable (WebSub compares the pushed
-    # body against the topic URL's content, and this route gates on ?token=).
-    self_url = f"{settings.base_url}/feed/{channel_slug}/{feed_key}?token={token}"
-    title = f"Fic Beacon — {channel.name} · {slot_label}"
-    return _render(drops, fmt, self_url=self_url, title=title,
-                   description=f"{channel.name} — {slot_label}")
+    # Shared builder (also used by the WebSub publisher) so a pushed body byte-matches this GET.
+    _, atom_xml, rss_xml = build_channel_slot_feed(db, channel, feed_key, token)
+    if fmt == "rss":
+        return Response(content=rss_xml, media_type="application/rss+xml; charset=utf-8")
+    return Response(content=atom_xml, media_type="application/atom+xml; charset=utf-8")
