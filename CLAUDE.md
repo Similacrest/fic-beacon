@@ -206,8 +206,11 @@ unwrapped (links dropped, authored number kept); note images use the image route
 ### Feedback contract (plain hyperlinks, any reader)
 Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
 - `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
-- `down` → `thumbs_down++`, `quota_weight ×= 0.8`; at `>= thumbs_down_drop_threshold` the book is
-  `dropped`. **Instant bare GET.**
+- `down` → `thumbs_down++`, `quota_weight ×= 0.8`, **and** `cooldown_remaining = max(2, …)` so the
+  source sits out the next ≥2 broadcasts (the planner excludes candidates with
+  `cooldown_remaining > 0` via `_active_books_in` and ticks it down once per broadcast in
+  `_tick_cooldowns`); at `>= thumbs_down_drop_threshold` the book is `dropped` instead.
+  **Instant bare GET.**
 - `extra` (super-up) → `thumbs_up += 3`, `quota_weight ×= config.extra_boost_multiplier`
   (admin-configurable, default **1.5**; was a hard-coded `1.25**3 ≈ 1.95`), **and** inject an
   out-of-cycle drop.
@@ -289,7 +292,8 @@ broadcast or an admin request.
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
 `budget_credit`, `queue_order`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
-queued|active|completed|dropped, `paused`, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
+queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
+`slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,

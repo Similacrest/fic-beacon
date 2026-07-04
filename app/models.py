@@ -117,6 +117,11 @@ class Book(Base):
     # Toggled by the ⏸ feed action or the dashboard; resume is dashboard-only (a paused source
     # emits no feed items to carry a resume link).
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Broadcasts this source must sit out before it's a candidate again. A 👎 down sets it to
+    # ≥2 so a thumbs-down meaningfully backs the source off for a couple of cycles (not just a
+    # weight nudge). The planner excludes candidates with cooldown_remaining > 0 and ticks it
+    # down once per broadcast. 0 = eligible.
+    cooldown_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # quota_weight: relative priority; normalized against sum of all active weights
     quota_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # 0-based PHYSICAL index of the next chapter to drop within the current EPUB.

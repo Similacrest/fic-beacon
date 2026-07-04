@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — 👎 down now backs a source off for a couple of broadcasts
+- **A thumbs-down sets a cooldown of ≥2 broadcasts** (`book.cooldown_remaining`) on top of the
+  existing `×0.8` weight nudge, so a 👎 is felt immediately instead of only as a slow drift. The
+  planner excludes any candidate with `cooldown_remaining > 0` and ticks it down once per
+  broadcast, so a downed source sits out the next two cycles before it's eligible again. Reaching
+  `thumbs_down_drop_threshold` still drops the source outright. Migration adds
+  `book.cooldown_remaining`; requeue resets it.
+
 ### Added — ⏸ Pause a source
 - **A new `⏸ Pause this source` feedback action** joins the per-drop row (🪝 extra · 👍 up ·
   👎 down · ⏸ pause · ❌ drop). Pausing removes a source from the rotation until it's resumed:

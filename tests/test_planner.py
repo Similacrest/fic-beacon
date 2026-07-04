@@ -701,3 +701,49 @@ class TestPause:
         apply_feedback(in_memory_db, drop, FeedbackAction.pause, epub_path.parent)
 
         assert a.paused is True
+
+
+class TestCooldown:
+    """#4 — a 👎 down backs a source off for ≥2 broadcasts (cooldown_remaining)."""
+
+    def _drop_for(self, db, book, token="dtok", slug="dslug"):
+        d = Drop(book_id=book.id, feedback_token=token, reader_slug=slug,
+                 chapter_start=0, chapter_end=0, word_count=100)
+        db.add(d); db.flush()
+        return d
+
+    def test_down_sets_cooldown(self, in_memory_db, epub_path):
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        d = self._drop_for(in_memory_db, a)
+        apply_feedback(in_memory_db, d, FeedbackAction.down, epub_path.parent)
+        assert a.cooldown_remaining == 2
+        assert a.status == BookStatus.active   # not dropped (below threshold)
+
+    def test_cooled_source_excluded_from_candidates(self, in_memory_db):
+        from app.planner.planner import _active_books_in
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        a.cooldown_remaining = 2
+        in_memory_db.flush()
+        assert a.id not in {b.id for b in _active_books_in(in_memory_db, a.channel_id)}
+
+    def test_tick_decrements_and_reeligible_after_two(self, in_memory_db):
+        from app.planner.planner import _active_books_in, _tick_cooldowns
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        a.cooldown_remaining = 2
+        in_memory_db.flush()
+        cid = a.channel_id
+
+        _tick_cooldowns(in_memory_db, cid); in_memory_db.refresh(a)
+        assert a.cooldown_remaining == 1
+        assert a.id not in {b.id for b in _active_books_in(in_memory_db, cid)}
+
+        _tick_cooldowns(in_memory_db, cid); in_memory_db.refresh(a)
+        assert a.cooldown_remaining == 0
+        assert a.id in {b.id for b in _active_books_in(in_memory_db, cid)}
+
+    def test_tick_floors_at_zero(self, in_memory_db):
+        from app.planner.planner import _tick_cooldowns
+        a = _make_book(in_memory_db, calibre_id=1, title="A")  # cooldown 0
+        in_memory_db.flush()
+        _tick_cooldowns(in_memory_db, a.channel_id); in_memory_db.refresh(a)
+        assert a.cooldown_remaining == 0   # never goes negative

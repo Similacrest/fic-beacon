@@ -159,6 +159,10 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
         leftover = available - used
         channel.budget_credit = max(-base_budget, min(positive_cap, leftover))
 
+        # Tick down the 👎-down cooldown for cooled-off sources (after selection, so a fresh
+        # cooldown=2 sits out this broadcast and the next).
+        _tick_cooldowns(session, channel.id)
+
         # Re-fill slots freed by EPUBs that just completed this broadcast.
         _assign_slots(session, channel.parallel_slots, channel.id)
 
@@ -184,9 +188,29 @@ def _active_books_in(session: Session, channel_id: int) -> list[Book]:
             Book.status == BookStatus.active,
             Book.channel_id == channel_id,
             Book.paused.is_(False),  # paused sources broadcast nothing
+            Book.cooldown_remaining <= 0,  # 👎-down cooldown: sit out a couple of broadcasts
         )
         .order_by(Book.slot_index, Book.queue_position)
         .all()
+    )
+
+
+def _tick_cooldowns(session: Session, channel_id: int) -> None:
+    """Decrement the 👎-down cooldown once per broadcast for this channel's active sources.
+
+    Runs after selection so a source set to cooldown=2 sits out the next *two* broadcasts
+    before it becomes a candidate again.
+    """
+    (
+        session.query(Book)
+        .filter(
+            Book.channel_id == channel_id,
+            Book.status == BookStatus.active,
+            Book.paused.is_(False),
+            Book.cooldown_remaining > 0,
+        )
+        .update({Book.cooldown_remaining: Book.cooldown_remaining - 1},
+                synchronize_session=False)
     )
 
 
@@ -580,8 +604,10 @@ def apply_feedback(
             book.slot_index = None
             _refill_book_channel(session, book)
         else:
-            # Gently reduce share
+            # Gently reduce share AND back the source off for a couple of broadcasts so a
+            # thumbs-down is felt immediately, not just as a slow weight nudge.
             book.quota_weight = max(0.1, book.quota_weight * 0.8)
+            book.cooldown_remaining = max(2, book.cooldown_remaining)
 
     elif action == FeedbackAction.extra:
         # Super-up: count as three upvotes, boost weight by the configurable factor, inject a drop.

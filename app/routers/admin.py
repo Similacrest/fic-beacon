@@ -679,6 +679,7 @@ def requeue_book(book_id: int, db: Session = Depends(get_db)) -> RedirectRespons
         book.thumbs_down = 0
         book.thumbs_up = 0
         book.quota_weight = 1.0
+        book.cooldown_remaining = 0
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
