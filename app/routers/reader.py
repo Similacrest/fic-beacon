@@ -23,10 +23,14 @@ def reader_page(slug: str, db: Session = Depends(get_db)) -> HTMLResponse:
     chapter_label = drop.chapter_titles or f"Chapter {drop.chapter_start + 1}"
     title = f"{book.title} — {chapter_label}"
 
-    return HTMLResponse(_reader_html(title, book.author, drop.word_count, drop.content_html))
+    # The same plain-GET feedback row the feed items carry, so votes/pause work from /read/ too.
+    from app.feed.builder import feedback_block
+    return HTMLResponse(
+        _reader_html(title, book.author, drop.word_count, drop.content_html, feedback_block(drop))
+    )
 
 
-def _reader_html(title: str, author: str, word_count: int, content: str) -> str:
+def _reader_html(title: str, author: str, word_count: int, content: str, feedback: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -52,5 +56,6 @@ def _reader_html(title: str, author: str, word_count: int, content: str) -> str:
   <h1>{title}</h1>
   <p class="meta">{author} &middot; {word_count:,} words</p>
   {content}
+  {feedback}
 </body>
 </html>"""

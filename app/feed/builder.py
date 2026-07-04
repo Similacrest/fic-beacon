@@ -66,7 +66,7 @@ def _add_entry(fg: FeedGenerator, drop: Drop) -> None:
     title = f"{book.title} — {chapter_label}"
     permalink = _permalink(drop)
 
-    content = drop.content_html + _feedback_html(drop, _extra_available(drop))
+    content = drop.content_html + feedback_block(drop)
 
     fe = fg.add_entry(order="append")
     # GUID must be unique AND stable per drop, independent of the link target.
@@ -131,3 +131,9 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
         + ' &nbsp;'.join(links)
         + '</p>'
     )
+
+
+def feedback_block(drop: Drop) -> str:
+    """The feedback action row for a drop — shared by the feed items and the /read/ page so
+    both carry the identical set of plain-GET actions (extra/up/down/drop/…)."""
+    return _feedback_html(drop, _extra_available(drop))

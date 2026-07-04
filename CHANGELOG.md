@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — feedback actions on the /read/ reader page
+- **The `/read/{slug}` page now shows the same feedback row as the feed items** (🪝 extra · 👍 up ·
+  👎 down · ❌ drop). Previously the reader page dead-ended with no way to vote. The row is a
+  single shared builder (`app/feed/builder.py:feedback_block`), so the feed and reader page always
+  stay in lock-step (and both pick up new actions like ⏸ pause automatically).
+
 ### Changed — oversized chapters now pace by budget accumulation
 - **A chapter larger than a channel's per-cycle budget no longer drops every cycle.** Previously
   the planner force-posted any unit bigger than the budget as the source's first unit (`p=1.0`),
