@@ -78,6 +78,17 @@
 </form>
 {% endmacro %}
 
+{# Pause (removes a source from the rotation, freeing its slot) / Resume toggle. #}
+{% macro pause_toggle(book) %}
+<form method="post" action="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}"
+      hx-post="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}" style="display:inline"
+      title="{{ 'Resume broadcasting this source' if book.paused else 'Pause — stop broadcasting; a backlog book frees its slot' }}">
+  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '▶ resume' if book.paused else '⏸ pause' }}</button>
+</form>
+{% endmacro %}
+
+{% macro paused_badge(book) %}{% if book.paused %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Paused — not broadcasting">⏸ paused</span>{% endif %}{% endmacro %}
+
 <h1>📡 Dashboard</h1>
 
 <p style="color:#888">
@@ -270,6 +281,7 @@
     <td>
       {{ book.title }}
       {% if book.tracked %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
+      {{ paused_badge(book) }}
     </td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ channel_select(book) }}</td>
@@ -279,6 +291,7 @@
     <td>{{ weight_cell(book) }}</td>
     <td style="white-space:nowrap">
       {{ track_toggle(book) }}
+      {{ pause_toggle(book) }}
       <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>
@@ -316,6 +329,7 @@
     <td>
       {{ book.title }}
       {% if book.tracked %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
+      {{ paused_badge(book) }}
     </td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ channel_select(book) }}</td>
@@ -332,6 +346,7 @@
         <button>↓</button>
       </form>
       {{ track_toggle(book) }}
+      {{ pause_toggle(book) }}
       <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
         <button class="btn btn-danger">Drop</button>
       </form>

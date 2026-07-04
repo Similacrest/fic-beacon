@@ -204,7 +204,7 @@ footnotes already resolve inside the dropped item. The note's own number/back-li
 unwrapped (links dropped, authored number kept); note images use the image route above.
 
 ### Feedback contract (plain hyperlinks, any reader)
-Four ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ❌ drop**.
+Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
 - `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
 - `down` → `thumbs_down++`, `quota_weight ×= 0.8`; at `>= thumbs_down_drop_threshold` the book is
   `dropped`. **Instant bare GET.**
@@ -212,6 +212,13 @@ Four ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ❌ drop*
   (admin-configurable, default **1.5**; was a hard-coded `1.25**3 ≈ 1.95`), **and** inject an
   out-of-cycle drop.
   **Confirm page** (`/fb/confirm/{token}`).
+- `pause` → set `book.paused` — the source broadcasts nothing until resumed. **Instant bare GET**
+  (reversible, so no confirm page). A **backlog** book frees its slot (re-enters the queue so the
+  next queued book streams in); a **tracked** story just stops (keeps its sticky slot). Paused
+  sources are excluded from candidate selection and slot assignment (`_active_books_in`,
+  `_assign_slots` filter `paused`). **Resume is dashboard-only** — a paused source emits no feed
+  items, so the feed can't carry a resume link (`pause_book`/`resume_book` in `planner.py`;
+  `POST /admin/books/{id}/pause|resume`).
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
 - **Idempotent per `(drop_id, action)`** so reader/proxy prefetch and double-clicks count once.
 - The **🪝 extra link renders only when a next unit exists** (`extra_available`): a chapter past
@@ -282,7 +289,7 @@ broadcast or an admin request.
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
 `budget_credit`, `queue_order`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
-queued|active|completed|dropped, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
+queued|active|completed|dropped, `paused`, `channel_id` **NOT NULL**, `slot_index`, `queue_position`,
 `quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,

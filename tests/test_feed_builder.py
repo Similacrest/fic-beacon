@@ -191,10 +191,16 @@ class TestFeedbackLinks:
         drop.book.cursor_chapter_index = 10  # cursor == total_chapters → nothing left
         html = _feedback_html(drop, _extra_available(drop))
         assert "action=extra" not in html
-        # up/down/drop still present
-        assert html.count("<a href=") == 3
+        # up/down/pause/drop still present
+        assert html.count("<a href=") == 4
 
-    def test_all_four_links_when_extra_available(self):
+    def test_all_five_links_when_extra_available(self):
         drop = _make_drop()
         html = _feedback_html(drop, _extra_available(drop))
-        assert html.count("<a href=") == 4
+        assert html.count("<a href=") == 5
+
+    def test_pause_link_is_instant(self):
+        drop = _make_drop()
+        drop.feedback_token = "tok"
+        html = _feedback_html(drop, _extra_available(drop))
+        assert "/fb/tok?action=pause" in html

@@ -180,7 +180,11 @@ def _channel_budget(channel: Channel, cfg: Config) -> float:
 def _active_books_in(session: Session, channel_id: int) -> list[Book]:
     return (
         session.query(Book)
-        .filter(Book.status == BookStatus.active, Book.channel_id == channel_id)
+        .filter(
+            Book.status == BookStatus.active,
+            Book.channel_id == channel_id,
+            Book.paused.is_(False),  # paused sources broadcast nothing
+        )
         .order_by(Book.slot_index, Book.queue_position)
         .all()
     )
@@ -450,6 +454,7 @@ def _assign_slots(
             Book.channel_id == channel_id,
             Book.tracked.is_(False),
             Book.status == BookStatus.active,
+            Book.paused.is_(False),
         )
         .order_by(Book.queue_position)
         .all()
@@ -481,6 +486,7 @@ def _assign_slots(
                 Book.channel_id == channel_id,
                 Book.tracked.is_(False),
                 Book.status == BookStatus.queued,
+                Book.paused.is_(False),  # a paused (freed-slot) book waits for resume, not promotion
             )
             .order_by(Book.queue_position)
             .limit(free)
@@ -498,6 +504,7 @@ def _assign_slots(
             Book.channel_id == channel_id,
             Book.tracked.is_(True),
             Book.status == BookStatus.active,
+            Book.paused.is_(False),
         )
         .all()
     )
@@ -582,6 +589,11 @@ def apply_feedback(
         book.quota_weight = max(0.1, book.quota_weight * cfg.extra_boost_multiplier)
         extra_drop = create_extra_drop(session, book, library_path)
 
+    elif action == FeedbackAction.pause:
+        # Stop this source broadcasting until resumed from the dashboard. Reversible, so it
+        # fires instantly (bare GET) like up/down — no confirm page.
+        pause_book(session, book)
+
     elif action == FeedbackAction.drop:
         # Super-down: drop the source immediately, regardless of threshold.
         book.status = BookStatus.dropped
@@ -590,6 +602,32 @@ def apply_feedback(
 
     session.flush()
     return extra_drop
+
+
+def pause_book(session: Session, book: Book) -> None:
+    """Pause a source: it broadcasts nothing until resumed.
+
+    A backlog (untracked) book FREES its slot — it re-enters the queue and the next queued
+    book streams into the freed slot. A tracked story just stops (its sticky slot is kept).
+    """
+    book.paused = True
+    if not book.tracked and book.status == BookStatus.active:
+        book.status = BookStatus.queued
+        book.slot_index = None
+        _refill_book_channel(session, book)  # promote the next queued book into the freed slot
+
+
+def resume_book(session: Session, book: Book) -> None:
+    """Resume a paused source so it can broadcast again.
+
+    A backlog book re-competes for a free slot (streaming in if one is open, else waiting in
+    the queue); a tracked story becomes eligible again. Rebalance the channel's slots so the
+    resumed book is (re)placed.
+    """
+    book.paused = False
+    channel = session.get(Channel, book.channel_id)
+    if channel is not None:
+        _assign_slots(session, channel.parallel_slots, book.channel_id)
 
 
 def _refill_book_channel(session: Session, book: Book) -> None:

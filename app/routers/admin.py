@@ -633,6 +633,26 @@ def drop_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     return RedirectResponse(url="/admin/", status_code=303)
 
 
+@router.post("/books/{book_id}/pause")
+def pause_book_route(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    from app.planner.planner import pause_book
+    book = db.get(Book, book_id)
+    if book and not book.paused:
+        pause_book(db, book)
+        db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/books/{book_id}/resume")
+def resume_book_route(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    from app.planner.planner import resume_book
+    book = db.get(Book, book_id)
+    if book and book.paused:
+        resume_book(db, book)
+        db.commit()
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
 @router.post("/dropped/clear")
 def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
     """Permanently remove all dropped sources (and their drops/feedback)."""

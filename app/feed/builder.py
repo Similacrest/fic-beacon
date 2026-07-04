@@ -4,9 +4,10 @@ Each item:
   - <title>: "Book Title — Chapter Title"
   - <link>/<id>: stable permalink (source URL if available, else /read/{slug})
   - Full chapter HTML in <content> (Atom) and <description> (RSS)
-  - Four tokenized feedback hyperlinks appended to content, in order:
-      [🪝 Extra chapter now] [👍 More like this] [👎 Less like this] [❌ Drop this source]
-    up/down are instant bare-GET links (/fb/{token}); extra/drop route through the
+  - Tokenized feedback hyperlinks appended to content, in order:
+      [🪝 Extra chapter now] [👍 More like this] [👎 Less like this] [⏸ Pause this source]
+      [❌ Drop this source]
+    up/down/pause are instant bare-GET links (/fb/{token}); extra/drop route through the
     confirmation page (/fb/confirm/{token}). 🪝 extra is shown only when a next unit
     is available. See app/routers/feedback.py for the contract.
 """
@@ -123,6 +124,7 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
         links.append(f'<a href="{confirm}?action=extra">🪝 Extra chapter now</a>')
     links.append(f'<a href="{instant}?action=up">👍 More like this</a>')
     links.append(f'<a href="{instant}?action=down">👎 Less like this</a>')
+    links.append(f'<a href="{instant}?action=pause">⏸ Pause this source</a>')
     links.append(f'<a href="{confirm}?action=drop">❌ Drop this source</a>')
 
     return (

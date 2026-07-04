@@ -624,3 +624,80 @@ class TestSetSlot:
         set_slot(a.id, self._req(), slot_index=5, db=in_memory_db)
 
         assert a.slot_index == 1   # out of [1, parallel_slots] → no change
+
+
+class TestPause:
+    """1.1.B — pausing a source removes it from broadcasting; backlog frees its slot."""
+
+    def _channel(self, db, parallel_slots: int = 2):
+        from app.models import Channel
+        ch = Channel(name="P", slug=f"p{id(db)}", parallel_slots=parallel_slots, budget=5000)
+        db.add(ch); db.flush()
+        return ch
+
+    def test_pause_backlog_frees_slot_and_promotes_next(self, in_memory_db):
+        from app.planner.planner import pause_book
+        ch = self._channel(in_memory_db, parallel_slots=1)  # one slot → contention
+        a = _make_book(in_memory_db, calibre_id=1, title="A", queue_position=1, channel_id=ch.id)
+        b = _make_book(in_memory_db, calibre_id=2, title="B", status=BookStatus.queued,
+                       queue_position=2, channel_id=ch.id)
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+        assert a.slot_index == 1 and b.status == BookStatus.queued
+
+        pause_book(in_memory_db, a)
+
+        assert a.paused is True
+        assert a.slot_index is None
+        assert a.status == BookStatus.queued          # re-enters the queue
+        assert b.status == BookStatus.active           # next queued streams into the freed slot
+        assert b.slot_index == 1
+
+    def test_paused_backlog_not_repromoted(self, in_memory_db):
+        from app.planner.planner import pause_book
+        ch = self._channel(in_memory_db, parallel_slots=1)
+        a = _make_book(in_memory_db, calibre_id=1, title="A", queue_position=1, channel_id=ch.id)
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+        pause_book(in_memory_db, a)          # frees slot 1 (no other book)
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)  # must not re-promote the paused book
+        assert a.status == BookStatus.queued
+        assert a.slot_index is None
+
+    def test_pause_tracked_keeps_slot_but_excluded_from_candidates(self, in_memory_db):
+        from app.planner.planner import pause_book, _active_books_in
+        from app.models import Book
+        ch = self._channel(in_memory_db, parallel_slots=2)
+        t = Book(tracked=True, calibre_id=50, title="T", author="x",
+                 status=BookStatus.active, channel_id=ch.id, slot_index=1)
+        in_memory_db.add(t); in_memory_db.flush()
+
+        pause_book(in_memory_db, t)
+
+        assert t.paused is True
+        assert t.status == BookStatus.active   # tracked never demoted
+        assert t.id not in {b.id for b in _active_books_in(in_memory_db, ch.id)}
+
+    def test_resume_restores_eligibility(self, in_memory_db):
+        from app.planner.planner import pause_book, resume_book, _active_books_in
+        ch = self._channel(in_memory_db, parallel_slots=1)
+        a = _make_book(in_memory_db, calibre_id=1, title="A", queue_position=1, channel_id=ch.id)
+        _assign_slots(in_memory_db, ch.parallel_slots, ch.id)
+        pause_book(in_memory_db, a)
+        resume_book(in_memory_db, a)
+
+        assert a.paused is False
+        assert a.status == BookStatus.active     # re-promoted (slot was free again)
+        assert a.slot_index == 1
+        assert a.id in {b.id for b in _active_books_in(in_memory_db, ch.id)}
+
+    def test_pause_feedback_action(self, in_memory_db, epub_path):
+        """The ⏸ feed link routes through apply_feedback(FeedbackAction.pause)."""
+        ch = self._channel(in_memory_db, parallel_slots=1)
+        a = _make_book(in_memory_db, calibre_id=1, title="A", channel_id=ch.id)
+        a.slot_index = 1
+        drop = Drop(book_id=a.id, feedback_token="ptok", reader_slug="pslug",
+                    chapter_start=0, chapter_end=0, word_count=100)
+        in_memory_db.add(drop); in_memory_db.flush()
+
+        apply_feedback(in_memory_db, drop, FeedbackAction.pause, epub_path.parent)
+
+        assert a.paused is True

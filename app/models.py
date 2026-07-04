@@ -29,6 +29,8 @@ class FeedbackAction(str, PyEnum):
     down = "down"
     extra = "extra"      # super-up: strong boost + inject an out-of-cycle drop
     drop = "drop"        # super-down: drop the source immediately
+    pause = "pause"      # stop this source from broadcasting until resumed from the dashboard
+    read = "read"        # acknowledge the drop as read (soft read-gating); no weight change
 
 
 def utcnow() -> datetime:
@@ -109,6 +111,12 @@ class Book(Base):
     )
     # Stable slot number within the channel (1..parallel_slots), set when active.
     slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Paused sources broadcast nothing: they're excluded from candidate selection and slot
+    # assignment. Pausing a backlog book FREES its slot (it re-enters the queue, so the next
+    # queued book streams in); resume competes for a slot again. Tracked stories just stop.
+    # Toggled by the ⏸ feed action or the dashboard; resume is dashboard-only (a paused source
+    # emits no feed items to carry a resume link).
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # quota_weight: relative priority; normalized against sum of all active weights
     quota_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # 0-based PHYSICAL index of the next chapter to drop within the current EPUB.

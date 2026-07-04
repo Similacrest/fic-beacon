@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — ⏸ Pause a source
+- **A new `⏸ Pause this source` feedback action** joins the per-drop row (🪝 extra · 👍 up ·
+  👎 down · ⏸ pause · ❌ drop). Pausing removes a source from the rotation until it's resumed:
+  it broadcasts nothing and is excluded from candidate selection and slot assignment. Like
+  up/down it's an **instant bare-GET** (reversible, so no confirmation page), and it appears on
+  the `/read/` page too via the shared feedback row.
+- **A paused backlog book frees its slot** — it re-enters the queue and the next queued book
+  streams into the freed slot; a **tracked** story just stops (keeping its sticky slot). **Resume
+  is dashboard-only** (a paused source emits no feed items to carry a resume link): the Active and
+  Queue tables gain a `⏸ pause` / `▶ resume` toggle and a `⏸ paused` badge. Migration adds
+  `book.paused`.
+
 ### Changed — out-of-range slot feeds now 404
 - **`GET /feed/{channel}/{slot}` rejects a slot outside `1..parallel_slots`** (or non-numeric)
   with 404 instead of serving an empty feed. E.g. with a 3-slot Fantasy channel, `/feed/fantasy/4`
