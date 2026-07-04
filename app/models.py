@@ -223,6 +223,9 @@ class Config(Base):
     # hard-coded boost was 1.25**3 ≈ 1.95 (very aggressive); the default is gentler now and
     # tunable in the admin config UI.
     extra_boost_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
+    # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog, so
+    # real ongoing serials outrank the finite archive in the stochastic budget pass. Admin-tunable.
+    tracked_default_weight: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
 
 
 class WebSubSubscription(Base):

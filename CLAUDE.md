@@ -129,8 +129,8 @@ fic-beacon/
   A tracked book marked **`#read=Yes`** starts its `cursor_chapter_index` at the current EPUB end
   (caught up → only new chapters drop); otherwise it starts at chapter 1. One batched **Add** button
   in the Library UI — there is no separate per-row track action.
-  - **Tracked sources import at a higher default `quota_weight`** (`settings.tracked_default_weight`,
-    default **2.0**; env `BEACON_TRACKED_DEFAULT_WEIGHT`) vs **1.0** for backlog, so real ongoing
+  - **Tracked sources import at a higher default `quota_weight`** (`config.tracked_default_weight`,
+    default **2.0**, tunable on the admin Settings page) vs **1.0** for backlog, so real ongoing
     serials get priority over the finite archive in the stochastic budget pass. This is a
     *default-weight* nudge, not a planner hardcode — weights stay per-source tunable/votable.
 - **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
@@ -319,7 +319,8 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `feed_secret`) · `app_state` (key/value runtime store, e.g.
+`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`) ·
+`app_state` (key/value runtime store, e.g.
 `last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 
 The app **version** has a single source of truth — `[project].version` in `pyproject.toml`,

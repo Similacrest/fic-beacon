@@ -294,6 +294,8 @@ def add_from_library(
     """
     adapter = CalibreAdapter(settings.calibre_library_path)
     default_channel_id = ensure_default_channel(db).id
+    cfg = db.get(Config, 1)
+    tracked_weight = cfg.tracked_default_weight if cfg else 2.0
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
@@ -323,8 +325,8 @@ def add_from_library(
                 channel_id=target_id,
                 cursor_chapter_index=count,
                 total_chapters=count or None,
-                # Prioritise ongoing serials over the finite backlog (see settings docstring).
-                quota_weight=settings.tracked_default_weight,
+                # Prioritise ongoing serials over the finite backlog (config-tunable).
+                quota_weight=tracked_weight,
             ))
         else:
             db.add(Book(
@@ -704,6 +706,7 @@ def save_config(
     cadence_cron: str = Form(...),
     thumbs_down_drop_threshold: int = Form(...),
     extra_boost_multiplier: float = Form(...),
+    tracked_default_weight: float = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     cfg = db.get(Config, 1)
@@ -713,6 +716,7 @@ def save_config(
     cfg.cadence_cron = cadence_cron
     cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold
     cfg.extra_boost_multiplier = max(1.0, extra_boost_multiplier)
+    cfg.tracked_default_weight = max(0.1, tracked_default_weight)
     db.commit()
     from app import scheduler
     try:

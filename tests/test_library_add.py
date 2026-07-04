@@ -88,10 +88,12 @@ def test_unread_ongoing_starts_at_chapter_one(add):
     assert book.cursor_chapter_index == 0
 
 
-def test_tracked_gets_higher_default_weight(add):
-    """#5 — a tracked (ongoing) source imports at the elevated default weight (> backlog's 1.0)."""
+def test_tracked_gets_higher_default_weight(add, in_memory_db):
+    """#5 — a tracked (ongoing) source imports at the config default weight (> backlog's 1.0)."""
+    from app.models import Config
     tracked = add("In-Progress", None)
-    assert tracked.quota_weight == settings.tracked_default_weight
+    cfg = in_memory_db.get(Config, 1)
+    assert tracked.quota_weight == cfg.tracked_default_weight == 2.0
     assert tracked.quota_weight > 1.0   # backlog imports at the 1.0 model default
 
 
