@@ -14,22 +14,30 @@ Architecture.md for the contract.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
 import httpx
 
 from app.config import settings
-from app.models import Book, utcnow
+from app.models import Book, label_offset_at, utcnow
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class StubInfo:
-    """The site dropped chapters: the EPUB had `old`, the site now has `new` (< old)."""
+    """The site dropped chapters: the EPUB had `old`, the site now has `new` (< old).
+
+    `old_urls`/`new_urls` are the ordered per-chapter canonical URLs of the pre- and post-stub
+    EPUBs (present for FanFicFare books), letting the app match chapters by identity. Absent (or
+    length-inconsistent with the counts) → the app uses the count-only linear fallback.
+    """
     old: int
     new: int
+    old_urls: list[str] | None = None
+    new_urls: list[str] | None = None
 
 
 @dataclass
@@ -88,7 +96,10 @@ def _to_result(raw: dict) -> FetchResult:
         ok=True,
         calibre_id=raw.get("calibre_id"),
         chapter_count=raw.get("chapter_count"),
-        stub=StubInfo(old=int(stub["old"]), new=int(stub["new"])) if stub else None,
+        stub=StubInfo(
+            old=int(stub["old"]), new=int(stub["new"]),
+            old_urls=stub.get("old_urls"), new_urls=stub.get("new_urls"),
+        ) if stub else None,
     )
 
 
@@ -112,16 +123,75 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
         book.total_chapters = result.chapter_count
 
     if result.stub and result.stub.old > result.stub.new:
-        # The site rewrote/removed chapters. The fetcher archived the old EPUB as a
-        # separate Calibre entry and overwrote this one. Keep our labels continuous and
-        # forbid rewinding into the rewritten body: offset by the removed count, mark the
-        # reader caught-up to the new (shorter) body, and floor the cursor there.
-        removed = result.stub.old - result.stub.new
-        book.chapter_label_offset += removed
-        book.cursor_chapter_index = result.stub.new
-        book.cursor_floor = result.stub.new
-        book.last_fetch_status = f"ok (stub {result.stub.old}→{result.stub.new})"
+        _apply_stub(book, result.stub)
     else:
         book.last_fetch_status = "ok"
 
     return result
+
+
+def _apply_stub(book: Book, stub: StubInfo) -> None:
+    """Fold a stub (site removed chapters) into the book.
+
+    The fetcher archived the old EPUB and overwrote this one shorter. When it also reported the
+    ordered per-chapter URLs of both bodies (and their lengths agree with the counts), we match
+    chapters by identity — labels stay exact past a gap *anywhere* and the reader's cursor is
+    preserved (see `_apply_stub_by_identity`). Otherwise we fall back to the legacy linear shift.
+    """
+    old_urls, new_urls = stub.old_urls, stub.new_urls
+    if (old_urls and new_urls
+            and len(old_urls) == stub.old and len(new_urls) == stub.new):
+        _apply_stub_by_identity(book, old_urls, new_urls)
+        book.last_fetch_status = f"ok (stub {stub.old}→{stub.new}, mapped)"
+    else:
+        # Count-only fallback (non-FanFicFare EPUB, or inconsistent URL lists): a single linear
+        # offset, mark the reader caught-up to the new body, and floor the cursor there.
+        book.chapter_label_offset += stub.old - stub.new
+        book.cursor_chapter_index = stub.new
+        book.cursor_floor = stub.new
+        book.last_fetch_status = f"ok (stub {stub.old}→{stub.new})"
+
+
+def _apply_stub_by_identity(book: Book, old_urls: list[str], new_urls: list[str]) -> None:
+    """Rebuild `label_map` and remap the cursor by matching chapters on their canonical URL."""
+    old_index = {u: i for i, u in enumerate(old_urls)}
+    new_index = {u: i for i, u in enumerate(new_urls)}
+    new_len = len(new_urls)
+
+    # 1) Piecewise label map. A surviving new chapter keeps the absolute label it had in the OLD
+    #    body (whose own offset may already be piecewise from a prior stub, so this composes); a
+    #    brand-new chapter with no old match continues the previous offset. `label_offset_at` reads
+    #    the book's CURRENT (pre-update) map, so compute every offset before committing the new map.
+    breakpoints: list[list[int]] = []
+    prev_off: int | None = None
+    for i, url in enumerate(new_urls):
+        j = old_index.get(url)
+        # label(new i) := label(old j) = j + offset_old(j) + 1  ⇒  offset(i) = j + offset_old(j) - i
+        off = (j + label_offset_at(book, j) - i) if j is not None else (prev_off or 0)
+        if off != prev_off:
+            breakpoints.append([i, off])
+            prev_off = off
+    book.label_map = json.dumps(breakpoints) if breakpoints else None
+
+    # 2) Remap the cursor (and floor) to the first surviving chapter at/after the old position, so
+    #    a reader who was behind resumes exactly where they were and keeps every unread chapter.
+    book.cursor_chapter_index = _remap_forward(book.cursor_chapter_index, old_urls, new_index, new_len)
+    book.cursor_floor = _remap_forward(
+        book.cursor_floor, old_urls, new_index, new_len, default=book.cursor_chapter_index
+    )
+
+
+def _remap_forward(
+    old_pos: int, old_urls: list[str], new_index: dict[str, int], new_len: int,
+    default: int | None = None,
+) -> int:
+    """New physical index of the first surviving chapter at or after `old_pos` (old index).
+
+    None survives → `default` (or the new length: caught-up to the end). Monotonic, so it also
+    preserves floor ≤ cursor when `default` is the remapped cursor.
+    """
+    for j in range(max(old_pos, 0), len(old_urls)):
+        ni = new_index.get(old_urls[j])
+        if ni is not None:
+            return ni
+    return new_len if default is None else default

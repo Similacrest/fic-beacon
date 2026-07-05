@@ -189,6 +189,94 @@ class TestApplyResult:
         assert src.chapter_label_offset == 51   # 40 + (101-90)
 
 
+def _u(n: int) -> str:
+    return f"https://s/c{n}"
+
+
+def _urls(*chapter_numbers: int) -> list[str]:
+    return [_u(n) for n in chapter_numbers]
+
+
+class TestStubIdentity:
+    """Stub folding by per-chapter URL identity (mid-work removal + cursor remap)."""
+
+    def test_middle_removal_labels_and_cursor(self, in_memory_db):
+        # 150 chapters; author removes the middle c5..c72 (68 chapters) → 82 survive.
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 100      # read through old c100 (unread: c101..c150)
+        src.cursor_floor = 0
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        # Labels stay exact across the 4 → 73 jump.
+        assert absolute_chapter_number(src, 0) == 1
+        assert absolute_chapter_number(src, 3) == 4
+        assert absolute_chapter_number(src, 4) == 73
+        assert absolute_chapter_number(src, 81) == 150
+        # Cursor remaps to the first surviving chapter ≥ old cursor (c101), which sits at new
+        # physical index 4 + (101-73) = 32 — the reader keeps c101..c150.
+        assert src.cursor_chapter_index == 32
+        assert absolute_chapter_number(src, 32) == 101
+        assert src.cursor_floor == 0        # c1 survived at index 0
+        assert "mapped" in src.last_fetch_status
+
+    def test_reader_inside_removed_range_lands_on_first_survivor(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 30       # next-unread was c31, but c31..c72 are gone
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        assert src.cursor_chapter_index == 4        # first survivor ≥ 30 is c73 at index 4
+        assert absolute_chapter_number(src, 4) == 73
+
+    def test_reader_caught_up_stays_caught_up(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 150      # read everything
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        assert src.cursor_chapter_index == 82       # no survivor past the end → caught up
+
+    def test_repeated_stub_composes_labels(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 150
+        # Round 1: 150 → 82 (remove c5..c72).
+        r1 = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": _urls(*range(1, 151)), "new_urls": r1}, "error": None})
+        # Round 2: from the 82-body, remove c79..c83 (5 chapters) → 77.
+        r2 = [u for u in r1 if u not in set(_urls(79, 80, 81, 82, 83))]
+        apply_result(src, {"calibre_id": 42, "chapter_count": 77,
+                           "stub": {"old": 82, "new": 77,
+                                    "old_urls": r1, "new_urls": r2}, "error": None})
+        # A chapter that was label 100 is still label 100 despite two gaps at different positions.
+        idx_c100 = r2.index(_u(100))
+        assert absolute_chapter_number(src, idx_c100) == 100
+        # And the label just past the second gap is right: c84 follows c78.
+        assert absolute_chapter_number(src, r2.index(_u(84))) == 84
+        assert absolute_chapter_number(src, r2.index(_u(78))) == 78
+
+    def test_inconsistent_urls_fall_back_to_linear(self, in_memory_db):
+        # URL lists whose lengths disagree with the counts → count-only linear fallback.
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 130
+        src.total_chapters = 141
+        apply_result(src, {"calibre_id": 42, "chapter_count": 101,
+                           "stub": {"old": 141, "new": 101,
+                                    "old_urls": ["only-one"], "new_urls": []}, "error": None})
+        assert src.label_map is None
+        assert src.chapter_label_offset == 40
+        assert src.cursor_chapter_index == 101
+        assert "mapped" not in src.last_fetch_status
+
+
 class TestBatchActions:
     def test_pause_then_resume(self, in_memory_db):
         a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
