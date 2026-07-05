@@ -60,7 +60,7 @@ fic-beacon/
     routers/           # feed, feedback, reader, admin, ongoing, websub
     calibre/           # Calibre Adapter (metadata.db RO, identifiers, tags, EPUB paths)
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
-    planner/           # Drop Planner (per-channel stochastic budget; unit abstraction)
+    planner/           # Drop Planner (per-channel slot round-robin budget; unit abstraction)
     ongoing/           # RSS update-detection poller + feed-URL inference (no content)
     fetch/             # async HTTP client to the fetcher (submit_fetch / poll_fetch / apply_result)
     feed/              # Feed Builder (feedgen)
@@ -111,9 +111,11 @@ fic-beacon/
   backlog books swap to keep one-per-slot, tracked just move). A valid manual pin survives the next
   broadcast (the assignment step only (re)places sources lacking a valid slot). `book.tracked` is the
   single flag that distinguishes the two behaviours (there is no `kind`).
-- **Selection is slot-agnostic** (see Drop Planner): the per-channel weighted budget pass decides
-  *which* chapters drop across the whole channel; slot assignment is a separate, sticky step that
-  only decides *which feed* each chosen chapter lands in.
+- **Selection is slot-diverse** (see Drop Planner): slot assignment is a separate, sticky step
+  that decides *which feed* each source lands in; the per-channel budget pass then **round-robins
+  across the occupied slots** so drops spread over the slot feeds instead of one slot hogging the
+  budget. `quota_weight` throttles a source's share *within* its slot; an idle slot's budget spills
+  to the others.
 - Terminology: a scheduled **broadcast** is one drop cycle (it emits `drop` rows); **dropping**
   (❌) means *cancelling a source*. Don't conflate the two.
 
@@ -169,19 +171,25 @@ fic-beacon/
     author unpublishes chapters — common on RoyalRoad) a stale `total_chapters` would otherwise show
     a phantom "N waiting" on the dashboard forever.
 
-### Drop Planner — per-channel stochastic budget
+### Drop Planner — per-channel slot round-robin
 - Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued backlog
   books into free slots up to `parallel_slots`, and pin every active tracked story to a balanced
-  slot. *Then* select content — selection is slot-agnostic.
+  slot. *Then* select content — the selection is **slot-diverse** (below).
 - Effective budget `B = channel.budget + channel.budget_credit` (signed carry-over so the long-run
   mean tracks the budget).
 - Candidates = the next unit of **every active source in the channel**: each active backlog book's
-  next chapter (≤ N) **plus** every tracked story with a chapter past its cursor (uncapped). Ordered
-  by `quota_weight` (weighted-random). Include a unit of size `w` with probability
-  `p = clamp((B − used)/w, 0, 1)`, biased up by weight/votes. Included → emit + advance cursor;
-  excluded → **roll over** whole to a later broadcast.
+  next chapter (≤ N) **plus** every tracked story with a chapter past its cursor (uncapped).
+- **Slot round-robin (`_plan_drops` pass 2).** Rotate through the channel's **occupied slots**; on
+  each slot's turn a **weight-proportional** random source pinned to that slot (`_weighted_choice`
+  by `quota_weight`) drops its next unit of size `w` if a stochastic roll `p = clamp((B − used)/w,
+  0, 1)` passes. Included → emit + advance cursor; excluded → **roll over** whole to a later
+  broadcast. This spreads drops across the slot feeds (**diversity**), while `quota_weight` governs
+  each source's share *within* a slot — so down-voting a source shrinks its slice relative to its
+  slot-mates. A slot whose sources are all caught-up (or capped) **passes its turn, spilling its
+  budget to slots that still have content** — no wasted budget, but when only one slot has content
+  it still fills up.
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
-  defer; a low-weight source may get nothing some cycles. **Never split a unit.**
+  defer; a low-share source may get nothing some cycles. **Never split a unit.**
 - **Oversized units accumulate, they don't force-post.** A unit larger than the channel's *base*
   per-cycle budget can't fit in one cycle, so it is **not** dropped every cycle. Instead an
   accumulation pass (runs before the stochastic pass) posts it whole only once `B` (base +
@@ -196,9 +204,10 @@ fic-beacon/
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
 - **Soft read-gating.** A source whose **most-recent delivered drop is still unacknowledged**
-  (`drop.acknowledged_at is None`) has its effective inclusion weight multiplied by
-  `_UNACKED_WEIGHT_PENALTY` (0.5) in the stochastic pass — so an un-caught-up reader falls behind
-  more slowly. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
+  (`drop.acknowledged_at is None`) has its stochastic acceptance multiplied by
+  `_UNACKED_WEIGHT_PENALTY` (0.5) — an *absolute* back-off (unlike `quota_weight`, which is relative
+  within a slot), so even a lone unread source trickles more slowly and an un-caught-up reader falls
+  behind less. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
   drops yet is never penalised. A drop is acknowledged on opening `/read/{slug}`, clicking **any**
   `/fb/` link, or the explicit **✓ Mark read** action. This is best-effort and reader-agnostic:
   passive read-detection is unreliable (most permalinks point at the source site, not `/read/`, and

@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — drop selection is now a slot round-robin (feed diversity + weight throttles share)
+- **The per-channel budget pass rotates through the channel's occupied slots** instead of draining
+  the whole channel budget into whichever source had the most pending chapters. Each slot takes
+  turns, so drops spread across the numbered slot feeds (diversity) rather than one slot (e.g. a
+  large backlog book) flooding the feed while other slots stay quiet.
+- **`quota_weight` now throttles a source's share *within* its slot** via a weighted random pick
+  each turn — so down-voting a source genuinely shrinks its slice relative to its slot-mates
+  (previously weight only nudged the probability at the budget margin, so a low-weight source with
+  small chapters could still fill the whole budget).
+- **An idle slot spills its budget to slots that still have content** — no wasted budget, but when
+  only one slot has pending chapters it still fills up. Soft read-gating is unchanged in spirit but
+  is now an *absolute* acceptance back-off (so even a lone unread source trickles slower), separate
+  from the relative `quota_weight` share. No schema change.
+
 ### Fixed — URL-added tracked stories: default weight & title
 - **A story added by URL on the Tracked Stories page now gets `config.tracked_default_weight`**
   (default 2.0), the same priority nudge library-imported serials already received. It was being

@@ -48,7 +48,7 @@ SQLite, Jinja + HTMX.
 | Sources | One unified model: every source is a Calibre EPUB (`book.calibre_id`). A `tracked` flag (no `kind`) marks the ones that auto-update; `feed_url?` is an optional RSS trigger and `source_url` doubles as the FanFicFare fetch URL. All are weighted, votable, droppable, and live in a channel. |
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
 | Stubs | Site removed chapters → the fetcher archives the old EPUB, overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
-| Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
+| Budgeting | **Per-channel slot round-robin.** The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
 | Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a short broadcast cooldown; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
@@ -123,7 +123,7 @@ C4Component
   Component(chapterizer, "EPUB Chapterizer", "ebooklib + BS4; spine → chapters + word counts; cached")
   Component(poller, "Update Poller", "feedparser; newest-GUID change → trigger a fetch (no content stored)")
   Component(fetchcl, "Fetch Client", "httpx → submit_fetch/poll_fetch (async 202+poll); apply_result folds into book; stub offset/floor")
-  Component(planner, "Drop Planner", "Per-channel stochastic budget over EPUB-chapter units; cursors; promote/drop")
+  Component(planner, "Drop Planner", "Per-channel slot round-robin budget over EPUB-chapter units; cursors; promote/drop")
   Component(feed, "Feed Builder", "feedgen; per-slot RSS/Atom; chapter HTML; feedback links; rel=hub")
   Component(fb, "Feedback Handler", "Tokenized GET; up/down instant+idempotent; extra/drop confirmed")
   Component(websub, "WebSub Hub + Publisher", "Subscribe/verify; push Atom to subscribers on new drops")
@@ -189,10 +189,13 @@ C4Component
    sticky). Then gather each active source's **next unit** — every backlog book's next chapter plus
    every tracked story with a chapter past its cursor (tracked are uncapped). **Paused** sources and
    ones with a live 👎-down **cooldown** are excluded from candidates.
-3. Run the **stochastic pass** (slot-agnostic, channel-wide): `B = budget + budget_credit`; include
-   each marginal whole unit with `p = clamp((B − used)/w, 0, 1)`, weight-biased (and halved while
-   the source's most-recent drop is unacknowledged — soft read-gating); excluded units roll over
-   whole. Never split. Then `budget_credit += budget − used`, and tick down each source's cooldown.
+3. Run the **slot round-robin pass** (`B = budget + budget_credit`): rotate through the channel's
+   occupied slots; on each slot's turn a weight-proportional random source in that slot drops its
+   next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (halved while the source's most-recent
+   drop is unacknowledged — soft read-gating). An idle slot passes its turn, spilling its budget to
+   slots with content — so drops spread across the slot feeds (diversity) and weight throttles a
+   source's share *within* its slot. Excluded units roll over whole; never split. Then
+   `budget_credit += budget − used`, and tick down each source's cooldown.
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance cursors;
    complete+free **backlog** books that ran out (next queued book rebalances in). A **tracked** book
    that runs out is *not* completed — it self-gates until the next fetch adds chapters. Sources whose
