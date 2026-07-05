@@ -60,7 +60,7 @@ fic-beacon/
     routers/           # feed, feedback, reader, admin, ongoing, websub
     calibre/           # Calibre Adapter (metadata.db RO, identifiers, tags, EPUB paths)
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
-    planner/           # Drop Planner (per-channel stochastic budget; unit abstraction)
+    planner/           # Drop Planner (per-channel slot round-robin budget; unit abstraction)
     ongoing/           # RSS update-detection poller + feed-URL inference (no content)
     fetch/             # async HTTP client to the fetcher (submit_fetch / poll_fetch / apply_result)
     feed/              # Feed Builder (feedgen)
@@ -111,9 +111,11 @@ fic-beacon/
   backlog books swap to keep one-per-slot, tracked just move). A valid manual pin survives the next
   broadcast (the assignment step only (re)places sources lacking a valid slot). `book.tracked` is the
   single flag that distinguishes the two behaviours (there is no `kind`).
-- **Selection is slot-agnostic** (see Drop Planner): the per-channel weighted budget pass decides
-  *which* chapters drop across the whole channel; slot assignment is a separate, sticky step that
-  only decides *which feed* each chosen chapter lands in.
+- **Selection is slot-diverse** (see Drop Planner): slot assignment is a separate, sticky step
+  that decides *which feed* each source lands in; the per-channel budget pass then **round-robins
+  across the occupied slots** so drops spread over the slot feeds instead of one slot hogging the
+  budget. `quota_weight` throttles a source's share *within* its slot; an idle slot's budget spills
+  to the others.
 - Terminology: a scheduled **broadcast** is one drop cycle (it emits `drop` rows); **dropping**
   (❌) means *cancelling a source*. Don't conflate the two.
 
@@ -139,26 +141,55 @@ fic-beacon/
   *next* one. Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
   **skip** stories whose `#status` is done (Completed / Abandoned / Published) — their EPUBs are
   already complete, so re-fetching is wasted.
-- **Stub handling (chapter labels & cursor floor):** if the site removed chapters, the fetcher
-  archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
-  `stub {old,new}`. Fic-Beacon then bumps `book.chapter_label_offset` by `old−new` (so the next
-  chapter still labels continuously — `absolute_chapter_number(book, physical_index)`), sets the
-  cursor to `new`, and raises `book.cursor_floor` to `new` (the admin UI can't rewind below it).
-  `cursor_chapter_index` is always a **physical** index into the current EPUB.
+- **Initial-download self-heal:** a story added by URL has no Calibre EPUB yet; its first download is
+  a one-shot triggered at add time (`scheduler.trigger_fetch_pending`). Because that trigger can be
+  lost (restart/race) and `poll_all_feeds` only *seeds* a feed's first-sight GUID without downloading,
+  `poller.fetch_pending` also runs as a **backstop at the start of every drop cycle** — it (re)submits
+  any tracked book still missing its `calibre_id`, skipping ones already `fetching…`, so a story can't
+  strand at `pending` forever.
+- **Stub handling (chapter labels & cursor) — identity-based:** when the site removes chapters the
+  fetcher archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
+  `stub {old, new, old_urls, new_urls}` — `old_urls`/`new_urls` are the **ordered per-chapter
+  canonical URLs** (`<meta name="chapterurl">`) of the pre-/post-stub EPUBs, in the same spine order
+  the chapterizer uses for physical indices. `apply_result` matches chapters by URL **identity**, so
+  a removal *anywhere* (front, middle, tail), a mid-work gap where labels jump (4 → 73), and
+  **repeated** stubs are all handled:
+  - **Labels — piecewise `book.label_map`:** a JSON list of `[physical_index, cumulative_offset]`
+    breakpoints from the URL diff, so `absolute_chapter_number` keeps each surviving chapter's
+    original author label and **composes** across successive stubs. `chapter_label_offset` is the
+    scalar fallback when the map is empty (old rows, or the count-only path below).
+  - **Cursor — remapped, not reset:** `cursor_chapter_index` (and `cursor_floor`) move to the new
+    physical index of the **first surviving chapter at/after the old position**, so a behind reader
+    resumes on the same chapter with every unread one intact. (The old code set cursor = `new`,
+    silently dropping unread chapters after a non-tail removal.) Cursor is always a physical index.
+  - **Count-only fallback:** no `chapterurl`s (URL lists absent, or their lengths disagree with
+    `old`/`new`) → the legacy linear path: bump `chapter_label_offset` by `old−new` and set cursor
+    and `cursor_floor` to `new`. Only degrades non-FanFicFare EPUBs (no per-chapter identity anyway).
+  - **`total_chapters` is kept honest every broadcast**, not only when a source is selected:
+    `planner._get_chapters` writes `book.total_chapters = len(chapterize(epub))` for *every* active
+    source it inspects. A caught-up source is never selected, so if its EPUB later shrinks (e.g. an
+    author unpublishes chapters — common on RoyalRoad) a stale `total_chapters` would otherwise show
+    a phantom "N waiting" on the dashboard forever.
 
-### Drop Planner — per-channel stochastic budget
+### Drop Planner — per-channel slot round-robin
 - Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued backlog
   books into free slots up to `parallel_slots`, and pin every active tracked story to a balanced
-  slot. *Then* select content — selection is slot-agnostic.
+  slot. *Then* select content — the selection is **slot-diverse** (below).
 - Effective budget `B = channel.budget + channel.budget_credit` (signed carry-over so the long-run
   mean tracks the budget).
 - Candidates = the next unit of **every active source in the channel**: each active backlog book's
-  next chapter (≤ N) **plus** every tracked story with a chapter past its cursor (uncapped). Ordered
-  by `quota_weight` (weighted-random). Include a unit of size `w` with probability
-  `p = clamp((B − used)/w, 0, 1)`, biased up by weight/votes. Included → emit + advance cursor;
-  excluded → **roll over** whole to a later broadcast.
+  next chapter (≤ N) **plus** every tracked story with a chapter past its cursor (uncapped).
+- **Slot round-robin (`_plan_drops` pass 2).** Rotate through the channel's **occupied slots**; on
+  each slot's turn a **weight-proportional** random source pinned to that slot (`_weighted_choice`
+  by `quota_weight`) drops its next unit of size `w` if a stochastic roll `p = clamp((B − used)/w,
+  0, 1)` passes. Included → emit + advance cursor; excluded → **roll over** whole to a later
+  broadcast. This spreads drops across the slot feeds (**diversity**), while `quota_weight` governs
+  each source's share *within* a slot — so down-voting a source shrinks its slice relative to its
+  slot-mates. A slot whose sources are all caught-up (or capped) **passes its turn, spilling its
+  budget to slots that still have content** — no wasted budget, but when only one slot has content
+  it still fills up.
 - **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
-  defer; a low-weight source may get nothing some cycles. **Never split a unit.**
+  defer; a low-share source may get nothing some cycles. **Never split a unit.**
 - **Oversized units accumulate, they don't force-post.** A unit larger than the channel's *base*
   per-cycle budget can't fit in one cycle, so it is **not** dropped every cycle. Instead an
   accumulation pass (runs before the stochastic pass) posts it whole only once `B` (base +
@@ -173,9 +204,10 @@ fic-beacon/
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
 - **Soft read-gating.** A source whose **most-recent delivered drop is still unacknowledged**
-  (`drop.acknowledged_at is None`) has its effective inclusion weight multiplied by
-  `_UNACKED_WEIGHT_PENALTY` (0.5) in the stochastic pass — so an un-caught-up reader falls behind
-  more slowly. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
+  (`drop.acknowledged_at is None`) has its stochastic acceptance multiplied by
+  `_UNACKED_WEIGHT_PENALTY` (0.5) — an *absolute* back-off (unlike `quota_weight`, which is relative
+  within a slot), so even a lone unread source trickles more slowly and an un-caught-up reader falls
+  behind less. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
   drops yet is never penalised. A drop is acknowledged on opening `/read/{slug}`, clicking **any**
   `/fb/` link, or the explicit **✓ Mark read** action. This is best-effort and reader-agnostic:
   passive read-detection is unreliable (most permalinks point at the source site, not `/read/`, and
@@ -255,6 +287,15 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
+**The push body is byte-budgeted, not the full feed.** A slot feed carries up to
+`channel.feed_item_limit` *full-content* chapters (~1.6 MB for 50 items), and **Inoreader silently
+drops oversized fat pings** — it 200-acks the POST but never ingests, so realtime dies and the feed
+falls back to slow polling (the classic "dashboard says Realtime but updates arrive hours late").
+So the publisher trims the push to the **newest drops that fit `config.websub_max_push_bytes`**
+(default 100 KB; `0` disables trimming), always keeping ≥1 item and never splitting a chapter — see
+`publisher._trim_to_budget`. This means a push is **no longer byte-identical** to a GET of the topic
+(readers merge the pushed newest items into the polled feed by GUID, which WebSub permits); the
+polled `/feed/…` route still serves the full `feed_item_limit`.
 **Verification honours `hub.verify` (PuSH 0.3 sync / WebSub async).** `POST /websub/hub` validates
 the request (bad mode / foreign topic → 4xx) then picks the subscriber's preferred verification mode:
 - **sync** (what Inoreader/Superfeedr request): verify **inline** — call the subscriber's callback
@@ -270,8 +311,8 @@ subscribers match a pending subscription on *both* `hub.topic` and `hub.verify_t
 the challenge. The whole subscribe→verify→store→push path is **debug-logged** (including the full
 inbound hub form, key+value); set `BEACON_LOG_LEVEL=DEBUG` to trace it.
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
-URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
-the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
+URL is actually fetchable (WebSub wants the topic to resolve; the pushed body is a byte-budgeted
+*subset* of it, merged by GUID — see above), and the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
 the feed URL the reader holds, so advertising it inside the (already token-gated) feed body leaks
 nothing new. The publisher still matches subscriptions registered both with and without the
 `?token=…` (some readers subscribe with their poll URL, others with the bare `rel=self`), so push is
@@ -316,11 +357,13 @@ broadcast or an admin request.
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
 `slot_index`, `queue_position`,
-`quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
+`quota_weight`, `cursor_chapter_index`, `chapter_label_offset` (legacy scalar), `label_map?`
+(piecewise stub offsets, JSON), `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`) ·
+`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`,
+`websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.
 `last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 
@@ -348,4 +391,5 @@ stories at `fetching…` (see CHANGELOG).
 - The `beacon` container never writes the Calibre library (mount is `:ro`); the `fetcher` does.
 - Batching never splits a unit; oversized units post whole; stochastic mean tracks the budget.
 - A trigger feed's new GUID drives a FanFicFare fetch into Calibre; the chapters then drop via the
-  normal cursor path. A stub keeps labels continuous (`chapter_label_offset`) and floors the cursor.
+  normal cursor path. A stub keeps labels continuous (`label_map`, per-chapter URL identity) and
+  remaps the cursor to the first surviving chapter — no unread chapter is skipped, even mid-work.

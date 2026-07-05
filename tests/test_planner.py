@@ -1,10 +1,11 @@
 """Tests for the Budget / Drop Planner.
 
-Pure-stochastic budget invariants:
+Budget invariants:
   - The cycle total stays near the budget (not N × budget); there is no phase-1
     guarantee, so a source may get nothing some cycles.
   - A unit larger than the whole budget is posted whole (it could never fit otherwise).
-  - Weight biases a source's per-unit inclusion probability upward.
+  - Pass 2 round-robins across occupied slots (diversity); quota_weight throttles a
+    source's share within its slot, and an idle slot's budget spills to the others.
 
 Uses the in-memory DB fixture and mock EPUB fixtures.
 """
@@ -535,30 +536,30 @@ class TestAssignSlots:
 class TestStochasticBudget:
     def test_unit_within_budget_always_included(self):
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(100, used=0, budget=1000, weight=1.0) == 1.0
+        assert _inclusion_probability(100, used=0, budget=1000) == 1.0
 
     def test_over_budget_excluded(self):
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(100, used=1000, budget=1000, weight=1.0) == 0.0
+        assert _inclusion_probability(100, used=1000, budget=1000) == 0.0
 
-    def test_boundary_fraction_at_weight_one(self):
+    def test_boundary_fraction(self):
         from app.planner.planner import _inclusion_probability
         # 50 words of budget left for a 100-word unit → p = 0.5
-        p = _inclusion_probability(100, used=950, budget=1000, weight=1.0)
-        assert p == pytest.approx(0.5)
+        assert _inclusion_probability(100, used=950, budget=1000) == pytest.approx(0.5)
 
-    def test_higher_weight_raises_probability(self):
-        from app.planner.planner import _inclusion_probability
-        low = _inclusion_probability(100, 950, 1000, weight=0.5)
-        high = _inclusion_probability(100, 950, 1000, weight=2.0)
-        assert high > 0.5 > low
+    def test_penalty_lowers_probability(self):
+        # The read-gating penalty scales acceptance down (absolute back-off), independent of weight.
+        from app.planner.planner import _inclusion_probability, _UNACKED_WEIGHT_PENALTY
+        base = _inclusion_probability(100, used=950, budget=1000)
+        gated = _inclusion_probability(100, used=950, budget=1000, penalty=_UNACKED_WEIGHT_PENALTY)
+        assert gated < base
 
     def test_oversized_returns_zero_deferred_to_accumulation(self):
         # A unit larger than the base per-cycle budget is not selected by the stochastic pass
         # (p=0); the accumulation pass in _plan_drops owns it once enough credit builds up.
         from app.planner.planner import _inclusion_probability
-        assert _inclusion_probability(5000, used=0, budget=1000, weight=1.0, base_budget=1000) == 0.0
-        assert _inclusion_probability(5000, used=0, budget=9000, weight=1.0, base_budget=1000) == 0.0
+        assert _inclusion_probability(5000, used=0, budget=1000, base_budget=1000) == 0.0
+        assert _inclusion_probability(5000, used=0, budget=9000, base_budget=1000) == 0.0
 
     def test_mean_words_tracks_budget(self):
         # Repeatedly draw same-size units until one is rejected; mean total ≈ budget.
@@ -567,11 +568,81 @@ class TestStochasticBudget:
         budget, w, trials, totals = 1000, 300, 4000, []
         for _ in range(trials):
             used = 0
-            while random.random() < _inclusion_probability(w, used, budget, 1.0):
+            while random.random() < _inclusion_probability(w, used, budget):
                 used += w
             totals.append(used)
         mean = sum(totals) / trials
         assert abs(mean - budget) < 120  # tracks budget without even the credit smoothing
+
+
+class TestSlotRoundRobin:
+    """Pass 2 spreads drops across occupied slots; weight throttles share within a slot."""
+
+    def test_budget_spreads_across_slots(self, in_memory_db, epub_path):
+        # Three books, each pinned to a different slot, generous budget. The round-robin must
+        # give every slot content (diversity) — not drain one slot before touching the others.
+        random.seed(0)
+        from app.calibre.adapter import CalibreBook
+        from app.planner.planner import _plan_drops
+        books = []
+        for i in range(1, 4):
+            b = _make_book(in_memory_db, calibre_id=i, title=f"Book {i}", queue_position=i)
+            b.slot_index = i
+            books.append(b)
+        mock_all = MagicMock()
+        mock_all.get_book.return_value = CalibreBook(
+            calibre_id=1, title="T", author="A", path="A/T (1)", epub_name="T - A", source_url=None)
+        mock_all.epub_path.return_value = epub_path
+
+        plans = _plan_drops(books, mock_all, budget=99999)
+        slots_hit = {p.book.slot_index for p in plans}
+        assert slots_hit == {1, 2, 3}  # every slot got at least one drop
+
+    def test_idle_slot_spills_to_others(self, in_memory_db, epub_path):
+        # Only slot 1 has content (slot 2's source is caught up). Its budget must spill to slot 1
+        # rather than go unused — no wasted budget.
+        from app.calibre.adapter import CalibreBook
+        from app.planner.planner import _plan_drops
+        active = _make_book(in_memory_db, calibre_id=1, title="Active", queue_position=1)
+        active.slot_index = 1
+        idle = _make_book(in_memory_db, calibre_id=2, title="Idle", queue_position=2)
+        idle.slot_index = 2
+        idle.cursor_chapter_index = 5  # caught up: no pending units
+
+        def get_book(cid):
+            return CalibreBook(calibre_id=cid, title="T", author="A",
+                               path="A/T (1)", epub_name="T - A", source_url=None)
+        mock_all = MagicMock()
+        mock_all.get_book.side_effect = get_book
+        mock_all.epub_path.return_value = epub_path
+
+        plans = _plan_drops([active, idle], mock_all, budget=1600)  # ~3 of the ~500w chapters
+        assert {p.book.slot_index for p in plans} == {1}
+        assert sum(len(p.chapters) for p in plans) >= 2  # slot 1 used the spilled budget
+
+    def test_weight_throttles_share_within_slot(self, in_memory_db, epub_path):
+        # Two sources share one slot; the heavier one wins more of the slot's round-robin turns.
+        random.seed(7)
+        from app.calibre.adapter import CalibreBook
+        from app.planner.planner import _plan_drops
+        heavy = _make_book(in_memory_db, calibre_id=1, title="Heavy", quota_weight=4.0)
+        light = _make_book(in_memory_db, calibre_id=2, title="Light", quota_weight=1.0)
+        heavy.slot_index = light.slot_index = 1
+        mock_all = MagicMock()
+        mock_all.get_book.return_value = CalibreBook(
+            calibre_id=1, title="T", author="A", path="A/T (1)", epub_name="T - A", source_url=None)
+        mock_all.epub_path.return_value = epub_path
+
+        heavy_total = light_total = 0
+        for _ in range(80):
+            heavy.cursor_chapter_index = light.cursor_chapter_index = 0
+            plans = _plan_drops([heavy, light], mock_all, budget=1200)  # ~2 chapters/cycle
+            for p in plans:
+                if p.book.id == heavy.id:
+                    heavy_total += len(p.chapters)
+                else:
+                    light_total += len(p.chapters)
+        assert heavy_total > light_total  # weight governs share within the slot
 
 
 class TestSetSlot:
@@ -794,12 +865,10 @@ class TestReadGating:
 
     def test_unacked_penalty_lowers_probability(self):
         from app.planner.planner import _inclusion_probability, _UNACKED_WEIGHT_PENALTY
-        # Effective budget < unit so base<1 and weight bites; base_budget high so it's not oversized.
-        p_acked = _inclusion_probability(
-            word_count=800, used=0, budget=600, weight=1.0, base_budget=5000)
+        # base_budget high so the unit isn't oversized; the penalty scales acceptance down.
+        p_acked = _inclusion_probability(word_count=800, used=0, budget=600, base_budget=5000)
         p_unacked = _inclusion_probability(
-            word_count=800, used=0, budget=600, weight=1.0 * _UNACKED_WEIGHT_PENALTY,
-            base_budget=5000)
+            word_count=800, used=0, budget=600, base_budget=5000, penalty=_UNACKED_WEIGHT_PENALTY)
         assert p_unacked < p_acked   # penalty demonstrably reduces inclusion probability
 
     def test_unacked_penalty_applied_in_plan(self, in_memory_db, epub_path):

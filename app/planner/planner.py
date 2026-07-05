@@ -1,20 +1,22 @@
 """Budget / Drop Planner.
 
-Budget model (per-channel, pure-stochastic, never pre-slice):
+Budget model (per-channel, slot-diverse, weight-throttled, never pre-slice):
   Every source belongs to a channel, and each channel runs independently each cycle
   with effective budget B = base_budget + budget_credit (signed carry-over so the
   long-run mean tracks the base budget).
 
-  Candidates are each active source's next whole unit, taken in weight-ordered passes.
-  A unit of size w is *included* this cycle with probability
-  p = clamp((B − used)/w, 0, 1), biased up by the source's quota_weight (p = base ** (1/w)).
-  Included → emit + advance cursor; excluded → roll the whole unit over to a later cycle.
+  Selection is a **slot round-robin**: rotate through the channel's occupied feed slots and,
+  on each slot's turn, let one *weight-proportional* random source pinned to that slot drop its
+  next whole unit if a stochastic budget roll (p = clamp((B − used)/w, 0, 1)) passes. An idle
+  slot passes its turn, spilling its budget to slots that still have content — so drops spread
+  across the slot feeds (diversity) with no wasted budget, while quota_weight governs a source's
+  share *within* its slot (down-voting shrinks its slice relative to its slot-mates).
 
-  There is *no* guaranteed first chapter: over budget, even a source's first unit can
-  defer, and a low-weight source may get nothing some cycles. A unit larger than the
-  whole budget is posted whole (once per source per cycle) since it could never fit.
-  Units are never split — an oversized single chapter posts whole. After the pass,
-  budget_credit += base_budget − used (clamped to ±base_budget).
+  There is *no* guaranteed first chapter: over budget even a source's first unit can defer, and a
+  low-share source may get nothing some cycles. A unit larger than the whole base budget is posted
+  whole (once per source per cycle, by a prior accumulation pass) since it could never fit. Units
+  are never split. After the pass, budget_credit += base_budget − used (clamped to ±base_budget,
+  or up to the largest pending oversized unit).
 """
 from __future__ import annotations
 
@@ -38,9 +40,9 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-# Soft read-gating: a source whose most-recent drop is still unacknowledged has its effective
-# inclusion weight multiplied by this factor, so an un-caught-up reader falls behind more slowly
-# (it still trickles — this is a nudge, not a hard gate). See _unacknowledged_books / _plan_drops.
+# Soft read-gating: a source whose most-recent drop is still unacknowledged has its stochastic
+# acceptance multiplied by this factor, so an un-caught-up reader falls behind more slowly (it
+# still trickles — a nudge, not a hard gate). See _unacknowledged_books / _plan_drops.
 _UNACKED_WEIGHT_PENALTY = 0.5
 
 
@@ -126,7 +128,7 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
             continue
 
         # Soft read-gating: sources whose most-recent delivered drop is still unacknowledged
-        # get a reduced inclusion weight this cycle (they still trickle).
+        # get a reduced stochastic acceptance this cycle (they still trickle).
         unacked = _unacknowledged_books(session, active_books)
 
         # Token-bucket budget: this cycle's allowance is the base budget plus any
@@ -276,26 +278,34 @@ def _plan_drops(
     stats_out: dict | None = None,
     unacked_ids: set[int] | None = None,
 ) -> list[PlannedDrop]:
-    """Stochastic selection over whole units (chapters), never splitting.
+    """Select whole units (chapters) for one channel — slot-diverse and weight-throttled.
 
-    `budget` is this cycle's *effective* allowance (base budget + accumulated credit);
-    `base_budget` is the channel's per-cycle base (defaults to `budget`). Two passes:
+    `budget` is this cycle's effective allowance (base budget + accumulated credit);
+    `base_budget` is the per-cycle base (defaults to `budget`). Two passes:
 
-    1. **Accumulation pass** — an *oversized* unit (larger than `base_budget`) can never fit
-       in a single cycle, so rather than force it out every cycle (blowing the budget) we wait
-       until `budget` (base + saved-up credit) can afford it, then post it whole. Its long-run
-       rate tracks the base budget: a 9k chapter on a 3k budget posts once every ~3 cycles.
-    2. **Stochastic pass** — normal (fits-in-base) units are included with probability p that
-       falls as the cycle runs over budget and rises with the source's quota_weight; excluded
-       units roll over whole to a later cycle. Oversized units are skipped here (pass 1 owns
-       them). There is *no* guaranteed first chapter — a low-weight source may get nothing.
+    1. **Accumulation pass** — an *oversized* unit (larger than `base_budget`) can never fit in
+       a single cycle, so it waits until `budget` (base + saved-up credit) can afford it, then
+       posts whole (at most one per source per cycle). Its long-run rate tracks the base budget.
+    2. **Slot round-robin** — rotate through the channel's occupied slots; on each slot's turn a
+       **weight-proportional** random source pinned to that slot drops its next normal-sized unit
+       if a stochastic budget roll passes. A slot with no eligible source passes its turn, so an
+       idle slot's budget spills to slots that still have content (no wasted budget). This spreads
+       drops across the slot feeds (diversity) while `quota_weight` governs each source's share
+       *within* a slot — down-voting a source shrinks its slice relative to its slot-mates. Units
+       never split; excluded units roll over whole to a later cycle.
 
-    `stats_out`, if given, receives `max_pending_unit` (the largest next-unit size in the
-    channel) so the caller can size the credit cap to let an oversized chapter be saved up for.
+    A source whose most-recent drop is unacknowledged has its stochastic acceptance multiplied by
+    `_UNACKED_WEIGHT_PENALTY` (an *absolute* back-off, so even a lone unread source trickles slower).
+
+    `stats_out`, if given, receives `max_pending_unit` (the largest next-unit size) so the caller
+    can size the credit cap to save up for an oversized chapter.
     """
     if base_budget is None:
         base_budget = budget
-    # Pre-load remaining units for every source (highest quota first for fair ordering).
+    unacked_ids = unacked_ids or set()
+
+    # Pre-load remaining units for every source (weight order gives the pass-1 accumulation a
+    # stable, higher-weight-first claim on saved-up credit).
     ordered = sorted(active_books, key=lambda b: -b.quota_weight)
     book_remaining: dict[int, list[Unit]] = {}
     valid: list[Book] = []
@@ -322,10 +332,9 @@ def _plan_drops(
     selected: dict[int, list[Unit]] = {b.id: [] for b in valid}
     used = 0
 
-    # Pass 1 — accumulation: post an oversized next-unit (bigger than the base per-cycle
-    # budget) whole, once the effective budget has saved up enough to afford it. Weight order
-    # gives higher-weight sources first claim on the accumulated budget. At most one oversized
-    # unit per source per cycle (its next unit, if also oversized, waits for the next cycle).
+    # Pass 1 — accumulation: post an oversized next-unit (bigger than the base per-cycle budget)
+    # whole, once the effective budget has saved up enough to afford it. Weight order gives
+    # higher-weight sources first claim. At most one oversized unit per source per cycle.
     for book in valid:
         remaining = book_remaining[book.id]
         if not remaining:
@@ -336,31 +345,37 @@ def _plan_drops(
             remaining.pop(0)
             used += unit.word_count
 
-    # Pass 2 — stochastic over normal (fits-in-base) units. Oversized units return p=0 here.
-    changed = True
-    while changed:
-        changed = False
-        for book in valid:
-            remaining = book_remaining[book.id]
-            if not remaining:
-                continue
-            unit = remaining[0]
-            # Read-gating nudge: halve the effective weight while the source's last drop is unread.
-            weight = book.quota_weight
-            if unacked_ids and book.id in unacked_ids:
-                weight *= _UNACKED_WEIGHT_PENALTY
+    # Pass 2 — slot round-robin over normal (fits-in-base) units. Each occupied slot takes turns;
+    # per turn one weight-proportional source in that slot rolls for its next unit. An idle slot
+    # passes, spilling its budget to slots that still have content.
+    by_slot: dict[int, list[Book]] = {}
+    for book in valid:
+        by_slot.setdefault(book.slot_index or 0, []).append(book)
+    slots = sorted(by_slot)
+
+    progress = True
+    while progress and used < budget:
+        progress = False
+        for slot in slots:
+            candidates = [
+                b for b in by_slot[slot]
+                if book_remaining[b.id]
+                and book_remaining[b.id][0].word_count <= base_budget  # oversized → pass 1
+            ]
+            if not candidates:
+                continue  # idle slot passes its turn; its budget spills to the others
+            book = _weighted_choice(candidates)
+            unit = book_remaining[book.id][0]
+            penalty = _UNACKED_WEIGHT_PENALTY if book.id in unacked_ids else 1.0
             p = _inclusion_probability(
-                word_count=unit.word_count,
-                used=used,
-                budget=budget,
-                weight=weight,
-                base_budget=base_budget,
+                unit.word_count, used=used, budget=budget,
+                base_budget=base_budget, penalty=penalty,
             )
             if random.random() < p:
                 selected[book.id].append(unit)
-                remaining.pop(0)
+                book_remaining[book.id].pop(0)
                 used += unit.word_count
-                changed = True
+                progress = True
 
     if skips_out is not None:
         for book in valid:
@@ -379,14 +394,26 @@ def _plan_drops(
     ]
 
 
-def _inclusion_probability(
-    word_count: int, used: int, budget: int, weight: float, base_budget: int | None = None
-) -> float:
-    """Probability of including a whole *normal-sized* unit this cycle (see _plan_drops).
+def _weighted_choice(books: list[Book]) -> Book:
+    """Pick one source at random, weighted by `quota_weight` (higher weight → picked more often).
 
-    Oversized units — larger than the base per-cycle budget — are **not** selected here; the
-    accumulation pass in _plan_drops handles them once enough budget_credit has built up. So
-    this returns 0 for them. `base_budget` defaults to `budget` when unspecified.
+    This is how weight throttles a source's *share within its slot*: a down-voted source has a
+    lower weight and so wins fewer of the slot's round-robin turns. A single-candidate slot always
+    returns that source — weight is moot when nothing competes (see the round-robin spill).
+    """
+    weights = [max(b.quota_weight, 1e-6) for b in books]
+    return random.choices(books, weights=weights, k=1)[0]
+
+
+def _inclusion_probability(
+    word_count: int, used: int, budget: int,
+    base_budget: int | None = None, penalty: float = 1.0,
+) -> float:
+    """Probability of including a whole *normal-sized* unit at the current budget mark.
+
+    Falls as the cycle runs over budget; 0 for an oversized unit (larger than `base_budget` —
+    the accumulation pass owns those). `penalty` (<1 for an unacknowledged source) scales it down
+    as an absolute read-gating back-off. `base_budget` defaults to `budget` when unspecified.
     """
     if base_budget is None:
         base_budget = budget
@@ -397,9 +424,7 @@ def _inclusion_probability(
     remaining = budget - used
     if remaining <= 0:
         return 0.0
-    base = min(1.0, remaining / word_count)
-    # Weight bias: higher weight pushes p toward 1, lower weight toward 0.
-    return base ** (1.0 / max(weight, 1e-6))
+    return min(1.0, remaining / word_count) * penalty
 
 
 def _get_chapters(
@@ -409,6 +434,12 @@ def _get_chapters(
     if not epub_path.exists():
         return []
     all_chapters = chapterize(epub_path)
+    # Keep total_chapters honest for *every* active source we look at each broadcast — not just
+    # the ones we emit (see _advance_cursor). A caught-up source (cursor at the end) is never
+    # selected, so if its EPUB later shrinks — e.g. an author unpublishes chapters, common with
+    # RoyalRoad — its stale total_chapters would otherwise show phantom "N waiting" on the
+    # dashboard forever. The chapterizer is mtime-cached, so this is ~free.
+    book.total_chapters = len(all_chapters)
     return all_chapters[book.cursor_chapter_index:]
 
 

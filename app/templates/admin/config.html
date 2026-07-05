@@ -37,6 +37,12 @@
            value="{{ cfg.tracked_default_weight }}" min="0.1" max="10" step="0.1">
     <small style="color:#666">Starting priority for a newly-imported ongoing serial, vs <code>1.0</code> for backlog. <code>2.0</code> = ongoing fiction outranks the archive.</small>
   </div>
+  <div class="form-group">
+    <label for="websub_max_push_bytes">📡 WebSub push size cap (bytes)</label>
+    <input type="number" name="websub_max_push_bytes" id="websub_max_push_bytes"
+           value="{{ cfg.websub_max_push_bytes }}" min="0" step="10000">
+    <small style="color:#666">Realtime push is trimmed to the newest chapters that fit this many bytes (always ≥1). Inoreader silently drops oversized fat pings, so keep this ~<code>100000</code> (100&nbsp;KB). <code>0</code> = no cap (push the whole feed). Polled feeds are unaffected.</small>
+  </div>
   <button class="btn btn-primary" type="submit">Save</button>
 </form>
 

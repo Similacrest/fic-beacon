@@ -700,6 +700,7 @@ def save_config(
     thumbs_down_drop_threshold: int = Form(...),
     extra_boost_multiplier: float = Form(...),
     tracked_default_weight: float = Form(...),
+    websub_max_push_bytes: int = Form(...),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     cfg = db.get(Config, 1)
@@ -710,6 +711,7 @@ def save_config(
     cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold
     cfg.extra_boost_multiplier = max(1.0, extra_boost_multiplier)
     cfg.tracked_default_weight = max(0.1, tracked_default_weight)
+    cfg.websub_max_push_bytes = max(0, websub_max_push_bytes)
     db.commit()
     from app import scheduler
     try:

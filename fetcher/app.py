@@ -14,7 +14,7 @@ one process per story is wasteful):
     GET /fetch/{job_id}
       → 200 {"status": "running"|"done"|"unknown",
              "results": [{"url", "calibre_id", "chapter_count",
-                          "stub": {"old", "new"} | null, "phase": str,
+                          "stub": {"old", "new", "old_urls", "new_urls"} | null, "phase": str,
                           "error": str | null}, ...] | null}
 
 The work runs in a single-worker thread pool, so all `calibredb` writes are serialized
@@ -24,7 +24,9 @@ The work runs in a single-worker thread pool, so all `calibredb` writes are seri
 Stub = the site removed old chapters so the existing EPUB is longer than the live work.
 FanFicFare refuses to update in place ("Existing epub contains N chapters, web site only
 has M"); we then archive the old EPUB as a separate Calibre entry and force-overwrite,
-returning {old: N, new: M} so the app can keep chapter labels continuous.
+returning {old: N, new: M, old_urls, new_urls} — the ordered per-chapter canonical URLs of
+the pre- and post-stub EPUBs — so the app can match chapters by identity (labels stay exact
+past a gap anywhere, and the reader's cursor remaps to the first surviving chapter).
 
 Site logins live in /config/personal.ini (edit it directly in this container).
 """
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import re
 import subprocess
 import tempfile
@@ -150,6 +153,55 @@ def _count_chapters(epub_path: Path) -> int:
         return 0
     spine = re.search(r"<spine.*?</spine>", opf, re.DOTALL)
     return len(re.findall(r"<itemref\b", spine.group(0))) if spine else 0
+
+
+_CHAPTERURL_RE = re.compile(
+    rb'<meta[^>]*\bname=["\']chapterurl["\'][^>]*\bcontent=["\']([^"\']+)["\']'
+)
+
+
+def _chapter_urls(epub_path: Path) -> list[str]:
+    """Ordered per-chapter canonical URLs (FanFicFare <meta name="chapterurl">), in spine order.
+
+    Only spine documents that actually carry a chapterurl are included — the same "real chapter"
+    definition the app's chapterizer uses, so these indices line up with the app's physical
+    `cursor_chapter_index`. Used on a stub to diff pre- vs post-removal bodies by chapter identity.
+    Returns [] if the EPUB is unreadable or carries no chapterurls (non-FanFicFare book) — the app
+    then falls back to the count-only linear stub path.
+    """
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            opf_name = next(n for n in zf.namelist() if n.endswith(".opf"))
+            opf = zf.read(opf_name).decode("utf-8", "ignore")
+            opf_dir = posixpath.dirname(opf_name)
+            # manifest id -> href (attribute order varies, so scan each <item> tag)
+            manifest: dict[str, str] = {}
+            for tag in re.findall(r"<item\b[^>]*?>", opf):
+                idm = re.search(r'\bid=["\']([^"\']+)["\']', tag)
+                hrefm = re.search(r'\bhref=["\']([^"\']+)["\']', tag)
+                if idm and hrefm:
+                    manifest[idm.group(1)] = hrefm.group(1)
+            spine = re.search(r"<spine.*?</spine>", opf, re.DOTALL)
+            if not spine:
+                return []
+            names = set(zf.namelist())
+            urls: list[str] = []
+            for idref in re.findall(r'<itemref\b[^>]*?\bidref=["\']([^"\']+)["\']', spine.group(0)):
+                href = manifest.get(idref)
+                if not href:
+                    continue
+                name = posixpath.normpath(posixpath.join(opf_dir, href)) if opf_dir else href
+                if name not in names:  # fall back to a basename match
+                    base = href.rsplit("/", 1)[-1]
+                    name = next((n for n in names if n.rsplit("/", 1)[-1] == base), None)
+                    if name is None:
+                        continue
+                m = _CHAPTERURL_RE.search(zf.read(name))
+                if m:
+                    urls.append(m.group(1).decode("utf-8", "replace").strip())
+            return urls
+    except Exception:
+        return []
 
 
 def _epub_source_url(epub_path: Path) -> str | None:
@@ -304,8 +356,10 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
         if m:  # site dropped chapters → archive old EPUB, then force a clean re-download
             old, new = int(m.group(1)), int(m.group(2))
             _calibredb("add", str(epub))  # standalone backup of the longer pre-stub EPUB
+            old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
             _fanficfare("-u", str(epub.name), "-o", "force_update_epub_always=true", cwd=str(work))
-            stub = {"old": old, "new": new}
+            new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
+            stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
             _fanficfare("-u", str(epub.name), "-o", "force_update_epub_always=true", cwd=str(work))
         elif upd.returncode != 0 and _TRANSIENT_RE.search(combined):

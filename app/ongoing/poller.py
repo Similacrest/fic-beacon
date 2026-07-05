@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 import feedparser
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter
@@ -100,14 +101,28 @@ def poll_all_feeds(session: Session) -> int:
 def fetch_pending(session: Session) -> int:
     """Submit an initial download for every tracked book that has no Calibre EPUB yet.
 
-    Run in the background after stories are added by URL (which only creates the rows).
-    A failed fetch leaves calibre_id NULL, so it is retried on the next call. Returns count.
+    Runs both right after stories are added by URL (which only creates the rows) *and* as a
+    backstop at the start of each drop cycle, so an initial fetch that was lost — the add-time
+    trigger is one-shot and a restart/race can drop it, and `poll_all_feeds` only *seeds* a
+    feed's first-sight GUID without downloading — self-heals instead of stranding the book at
+    "pending" forever. A failed fetch leaves calibre_id NULL, so it is retried next call.
+    In-flight fetches (status "fetching…") are skipped so we never double-submit. Returns count.
     """
     from app.scheduler import submit_and_track
 
     sources = (
         session.query(Book)
-        .filter(Book.tracked.is_(True), Book.calibre_id.is_(None))
+        .filter(
+            Book.tracked.is_(True),
+            Book.calibre_id.is_(None),
+            # Not already downloading — submit_and_track sets "fetching…" on submit; skipping
+            # those avoids re-submitting a book whose (slow, ~15 min) fetch is still running.
+            # NULL status (never touched) is still eligible.
+            or_(
+                Book.last_fetch_status.is_(None),
+                ~Book.last_fetch_status.like("fetching%"),
+            ),
+        )
         .all()
     )
     if sources:

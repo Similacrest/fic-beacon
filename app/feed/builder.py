@@ -23,19 +23,22 @@ from app.config import settings
 from app.models import Channel, Drop, absolute_chapter_number
 
 
-def build_channel_slot_feed(
-    session: Session, channel: Channel, feed_key: str, secret: str
-) -> tuple[str, bytes, bytes]:
-    """Build one channel/slot feed — the single source of truth shared by the feed route and the
-    WebSub publisher, so a pushed body is byte-identical to a GET of the topic (WebSub requires it).
-
-    Returns `(self_url, atom_bytes, rss_bytes)`. `self_url` is tokened so the advertised topic is
-    fetchable; drops are the newest `channel.feed_item_limit` (older ones stay in the DB but fall
-    off the feed tail).
-    """
+def slot_feed_meta(channel: Channel, feed_key: str, secret: str) -> tuple[str, str, str]:
+    """`(self_url, title, description)` for a channel/slot feed. `self_url` is tokened so the
+    advertised WebSub topic is actually fetchable."""
     slot_label = f"Slot {feed_key}"
     self_url = f"{settings.base_url}/feed/{channel.slug}/{feed_key}?token={secret}"
-    drops = (
+    return (
+        self_url,
+        f"Fic Beacon — {channel.name} · {slot_label}",
+        f"{channel.name} — {slot_label}",
+    )
+
+
+def slot_feed_drops(session: Session, channel: Channel, feed_key: str) -> list[Drop]:
+    """The newest `channel.feed_item_limit` drops in this slot (newest first). Older drops stay
+    in the DB (their /read/ permalinks keep working) but fall off the feed tail."""
+    return (
         session.query(Drop)
         .join(Drop.book)
         .filter(Drop.channel_id == channel.id, Drop.feed_key == feed_key)
@@ -43,12 +46,21 @@ def build_channel_slot_feed(
         .limit(max(1, channel.feed_item_limit))
         .all()
     )
-    atom, rss = build_feed(
-        drops,
-        self_url=self_url,
-        title=f"Fic Beacon — {channel.name} · {slot_label}",
-        description=f"{channel.name} — {slot_label}",
-    )
+
+
+def build_channel_slot_feed(
+    session: Session, channel: Channel, feed_key: str, secret: str
+) -> tuple[str, bytes, bytes]:
+    """Build one channel/slot feed as served at `/feed/{slug}/{key}` (the full polled feed).
+
+    Returns `(self_url, atom_bytes, rss_bytes)` over the newest `channel.feed_item_limit` drops.
+    The WebSub publisher builds its *own*, byte-budgeted body from `slot_feed_drops` /
+    `slot_feed_meta` (Inoreader drops oversized fat pings), so a push is no longer byte-identical
+    to this GET — readers merge the pushed newest items into the polled feed by GUID.
+    """
+    self_url, title, description = slot_feed_meta(channel, feed_key, secret)
+    drops = slot_feed_drops(session, channel, feed_key)
+    atom, rss = build_feed(drops, self_url=self_url, title=title, description=description)
     return self_url, atom, rss
 
 

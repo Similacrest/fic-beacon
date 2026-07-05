@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 from feedparser.util import FeedParserDict
 
 from app.models import Book, BookStatus, Channel, absolute_chapter_number
-from app.ongoing.poller import _newest_guid, poll_all_feeds, sweep_feedless
+from app.ongoing.poller import _newest_guid, fetch_pending, poll_all_feeds, sweep_feedless
 from app.fetch.client import apply_result
 from app.routers.ongoing import batch_pause_sources, batch_resume_sources
 
@@ -92,6 +92,35 @@ class TestPollTriggers:
         mock_submit.assert_called_once()  # one batch, not two calls
         assert set(mock_submit.call_args[0][1]) == {a, b}
 
+    def test_fetch_pending_submits_never_downloaded(self, in_memory_db):
+        """A tracked book with no calibre_id (initial fetch lost) is (re)submitted — the
+        self-heal backstop, so it can't strand at 'pending' forever."""
+        src = _tracked(in_memory_db, calibre_id=None)
+        src.last_fetch_status = "pending"
+        in_memory_db.flush()
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 1
+        assert list(mock_submit.call_args[0][1]) == [src]
+
+    def test_fetch_pending_skips_in_flight(self, in_memory_db):
+        """A book already 'fetching…' must not be re-submitted (its slow fetch is still running)."""
+        src = _tracked(in_memory_db, calibre_id=None)
+        src.last_fetch_status = "fetching: downloading"
+        in_memory_db.flush()
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 0
+        mock_submit.assert_not_called()
+
+    def test_fetch_pending_ignores_downloaded(self, in_memory_db):
+        """A book with a calibre_id is already downloaded — never re-fetched by the backstop."""
+        _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 0
+        mock_submit.assert_not_called()
+
     def test_sweep_submits_feedless_only(self, in_memory_db):
         feedless = _tracked(in_memory_db, feed_url=None, source_url="https://x/story",
                             calibre_id=next(_next_calibre_id))
@@ -160,6 +189,94 @@ class TestApplyResult:
         assert src.chapter_label_offset == 51   # 40 + (101-90)
 
 
+def _u(n: int) -> str:
+    return f"https://s/c{n}"
+
+
+def _urls(*chapter_numbers: int) -> list[str]:
+    return [_u(n) for n in chapter_numbers]
+
+
+class TestStubIdentity:
+    """Stub folding by per-chapter URL identity (mid-work removal + cursor remap)."""
+
+    def test_middle_removal_labels_and_cursor(self, in_memory_db):
+        # 150 chapters; author removes the middle c5..c72 (68 chapters) → 82 survive.
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 100      # read through old c100 (unread: c101..c150)
+        src.cursor_floor = 0
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        # Labels stay exact across the 4 → 73 jump.
+        assert absolute_chapter_number(src, 0) == 1
+        assert absolute_chapter_number(src, 3) == 4
+        assert absolute_chapter_number(src, 4) == 73
+        assert absolute_chapter_number(src, 81) == 150
+        # Cursor remaps to the first surviving chapter ≥ old cursor (c101), which sits at new
+        # physical index 4 + (101-73) = 32 — the reader keeps c101..c150.
+        assert src.cursor_chapter_index == 32
+        assert absolute_chapter_number(src, 32) == 101
+        assert src.cursor_floor == 0        # c1 survived at index 0
+        assert "mapped" in src.last_fetch_status
+
+    def test_reader_inside_removed_range_lands_on_first_survivor(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 30       # next-unread was c31, but c31..c72 are gone
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        assert src.cursor_chapter_index == 4        # first survivor ≥ 30 is c73 at index 4
+        assert absolute_chapter_number(src, 4) == 73
+
+    def test_reader_caught_up_stays_caught_up(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 150      # read everything
+        old_urls = _urls(*range(1, 151))
+        new_urls = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": old_urls, "new_urls": new_urls}, "error": None})
+        assert src.cursor_chapter_index == 82       # no survivor past the end → caught up
+
+    def test_repeated_stub_composes_labels(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 150
+        # Round 1: 150 → 82 (remove c5..c72).
+        r1 = _urls(1, 2, 3, 4, *range(73, 151))
+        apply_result(src, {"calibre_id": 42, "chapter_count": 82,
+                           "stub": {"old": 150, "new": 82,
+                                    "old_urls": _urls(*range(1, 151)), "new_urls": r1}, "error": None})
+        # Round 2: from the 82-body, remove c79..c83 (5 chapters) → 77.
+        r2 = [u for u in r1 if u not in set(_urls(79, 80, 81, 82, 83))]
+        apply_result(src, {"calibre_id": 42, "chapter_count": 77,
+                           "stub": {"old": 82, "new": 77,
+                                    "old_urls": r1, "new_urls": r2}, "error": None})
+        # A chapter that was label 100 is still label 100 despite two gaps at different positions.
+        idx_c100 = r2.index(_u(100))
+        assert absolute_chapter_number(src, idx_c100) == 100
+        # And the label just past the second gap is right: c84 follows c78.
+        assert absolute_chapter_number(src, r2.index(_u(84))) == 84
+        assert absolute_chapter_number(src, r2.index(_u(78))) == 78
+
+    def test_inconsistent_urls_fall_back_to_linear(self, in_memory_db):
+        # URL lists whose lengths disagree with the counts → count-only linear fallback.
+        src = _tracked(in_memory_db)
+        src.cursor_chapter_index = 130
+        src.total_chapters = 141
+        apply_result(src, {"calibre_id": 42, "chapter_count": 101,
+                           "stub": {"old": 141, "new": 101,
+                                    "old_urls": ["only-one"], "new_urls": []}, "error": None})
+        assert src.label_map is None
+        assert src.chapter_label_offset == 40
+        assert src.cursor_chapter_index == 101
+        assert "mapped" not in src.last_fetch_status
+
+
 class TestBatchActions:
     def test_pause_then_resume(self, in_memory_db):
         a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
@@ -177,6 +294,38 @@ class TestBatchActions:
         a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
         batch_pause_sources(book_ids=None, db=in_memory_db)
         assert not a.paused
+
+
+class TestAddTrackedStory:
+    def test_url_added_story_gets_tracked_default_weight(self, in_memory_db):
+        # A story added by URL must get the same priority nudge as a library-imported
+        # serial (config.tracked_default_weight), not the 1.0 backlog default.
+        from app.routers.ongoing import _add_tracked_story
+        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+        book = _add_tracked_story(in_memory_db, "https://s/story", "", cid)
+        assert book.quota_weight == 2.0  # conftest Config uses the model default
+        # Blank title falls back to the URL placeholder until the first fetch resolves it.
+        assert book.title == "https://s/story"
+
+
+class TestSyncTitle:
+    def test_placeholder_title_replaced_with_calibre_title(self, in_memory_db):
+        from app import scheduler
+        src = _tracked(in_memory_db, source_url="https://s/story", calibre_id=777)
+        src.title = "https://s/story"  # URL placeholder from a blank-title add
+        cbook = MagicMock(title="Real Story Title")
+        with patch("app.calibre.adapter.CalibreAdapter.get_book", return_value=cbook):
+            scheduler._sync_title(src)
+        assert src.title == "Real Story Title"
+
+    def test_real_title_is_left_alone(self, in_memory_db):
+        from app import scheduler
+        src = _tracked(in_memory_db, source_url="https://s/story", calibre_id=778)
+        src.title = "An Already-Named Serial"
+        with patch("app.calibre.adapter.CalibreAdapter.get_book") as get_book:
+            scheduler._sync_title(src)
+            get_book.assert_not_called()  # not a placeholder → no Calibre lookup
+        assert src.title == "An Already-Named Serial"
 
 
 class TestAbsoluteChapterNumber:

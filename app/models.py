@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
@@ -37,15 +38,50 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def label_breakpoints(book: "Book") -> list[tuple[int, int]]:
+    """Parse `book.label_map` into sorted `(physical_index, cumulative_offset)` breakpoints.
+
+    Empty (no map) → the book uses the legacy scalar `chapter_label_offset` instead.
+    """
+    raw = book.label_map
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return [(int(i), int(o)) for i, o in data]
+    except (TypeError, ValueError):
+        return []
+
+
+def label_offset_at(book: "Book", physical_index: int) -> int:
+    """The chapter-label offset in effect at `physical_index`.
+
+    Piecewise from `label_map` when present (the offset of the largest breakpoint whose index
+    is ≤ `physical_index`); otherwise the flat legacy scalar `chapter_label_offset`.
+    """
+    bps = label_breakpoints(book)
+    if not bps:
+        return book.chapter_label_offset
+    offset = 0
+    for idx, off in bps:  # ascending
+        if idx <= physical_index:
+            offset = off
+        else:
+            break
+    return offset
+
+
 def absolute_chapter_number(book: "Book", physical_index: int) -> int:
     """Map a 0-based physical EPUB chapter index to its absolute, human chapter number.
 
-    Normally `physical_index + 1`. After a stub (the site removed old chapters and the
-    EPUB was overwritten shorter), `chapter_label_offset` carries the removed count so
-    labels stay continuous: e.g. if 40 chapters were dropped, physical index 101 still
-    reads as chapter 142. See Book.chapter_label_offset / cursor_floor.
+    Normally `physical_index + 1`. After a stub (the site removed chapters and the EPUB was
+    overwritten shorter), a per-chapter-URL identity diff records the removed positions so labels
+    stay exact past a gap **anywhere** in the work — including a middle gap where labels jump
+    (e.g. physical index 4 reads as chapter 73) and across repeated stubs. This piecewise offset
+    lives in `label_map`; the legacy scalar `chapter_label_offset` is the fallback for older rows
+    and count-only fallback stubs. See `label_offset_at` / Book.label_map / cursor_floor.
     """
-    return physical_index + book.chapter_label_offset + 1
+    return physical_index + label_offset_at(book, physical_index) + 1
 
 
 class Channel(Base):
@@ -130,11 +166,18 @@ class Book(Base):
     quota_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # 0-based PHYSICAL index of the next chapter to drop within the current EPUB.
     cursor_chapter_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Added to the physical index to derive the absolute chapter label after a stub
-    # (see absolute_chapter_number). 0 for normal books.
+    # Legacy scalar: added to the physical index to derive the absolute chapter label after a stub
+    # (see absolute_chapter_number). 0 for normal books. Used only when label_map is empty — the
+    # count-only fallback (non-FanFicFare EPUBs) and rows predating the piecewise map.
     chapter_label_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Lowest physical index the cursor may be rewound to. Raised on a stub so the reader
-    # can't rewind into a rewritten body. 0 for normal books.
+    # Piecewise stub label map: JSON list of [physical_index, cumulative_offset] breakpoints built
+    # by matching pre/post-stub chapters on their canonical URL, so labels stay exact past a gap
+    # anywhere in the work (front/middle/tail) and compose across repeated stubs. NULL for books
+    # with no (URL-diffed) stub. See label_offset_at / absolute_chapter_number.
+    label_map: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Lowest physical index the cursor may be rewound to. Remapped on a stub (to the first
+    # surviving chapter at/after the old floor) so it stays anchored to real content. 0 for
+    # normal books; the count-only fallback sets it to the new length instead.
     cursor_floor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_down: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -226,6 +269,12 @@ class Config(Base):
     # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog, so
     # real ongoing serials outrank the finite archive in the stochastic budget pass. Admin-tunable.
     tracked_default_weight: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
+    # Max byte size of a WebSub push body. A slot feed carries up to feed_item_limit full-content
+    # chapters (~1.6 MB for 50 items), and Inoreader silently drops oversized fat pings — it returns
+    # 200 but never ingests, so realtime dies and the feed falls back to slow polling. The push is
+    # trimmed to the newest drops that fit this budget (always ≥1 item, never splitting a chapter);
+    # the polled feed at /feed/… is unaffected. Admin-tunable. 0 disables trimming (push full feed).
+    websub_max_push_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=100_000)
 
 
 class WebSubSubscription(Base):
