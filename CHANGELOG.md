@@ -6,6 +6,34 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — WebSub realtime broke on large feeds (Inoreader dropped oversized pings)
+- **The realtime push is now trimmed to a byte budget** (`config.websub_max_push_bytes`, default
+  100 KB, on the Settings page; `0` disables). A slot feed carries up to `feed_item_limit`
+  *full-content* chapters (~1.6 MB for 50 items), and **Inoreader silently discards oversized fat
+  pings** — it returns `200` but never ingests, so realtime dies and the feed only updates on
+  Inoreader's slow poll (the "dashboard/Inoreader both say Realtime, but chapters arrive hours
+  late" symptom). The push now carries only the newest drops that fit the budget (always ≥1, never
+  splitting a chapter). This means a pushed body is **no longer byte-identical** to a GET of the
+  topic — that invariant wasn't buying realtime anyway; readers merge the pushed newest items into
+  the polled feed by GUID (WebSub permits this). The polled `/feed/…` route is unchanged. Migration
+  adds `config.websub_max_push_bytes`.
+
+### Fixed — a story added by URL could strand at "pending" forever
+- **Initial downloads now self-heal.** The first FanFicFare download of a URL-added tracked story
+  was a one-shot job fired only at add time; if it was lost (restart/race) nothing retried it —
+  `poll_all_feeds` only *seeds* a feed's first-sight GUID without downloading, so the story sat at
+  `pending` with no `calibre_id` indefinitely. `poller.fetch_pending` now also runs as a backstop
+  at the start of every drop cycle, re-submitting any tracked book still missing its EPUB (skipping
+  ones already `fetching…`).
+
+### Fixed — phantom "N chapters waiting" after a source shrinks
+- **`total_chapters` is refreshed for every active source each broadcast**, not only when it's
+  selected for a drop. A caught-up source is never selected, so if its EPUB later shrank (e.g. an
+  author unpublished chapters) its stale `total_chapters` kept showing a phantom backlog on the
+  dashboard. (The planner already used the live chapterizer, so it never actually dropped phantom
+  chapters — this was a display bug.) A single linear `chapter_label_offset` still can't represent
+  chapters removed from the *middle* of a work; a proper non-contiguous label map is planned.
+
 ### Changed — Tracked Stories page pause is now the real pause
 - **The "Tracked Stories" (`/admin/ongoing`) pause/resume now uses the same `paused` flag** as the
   feed ⏸ link and the dashboard, via the shared `pause_book`/`resume_book`. Previously it faked a
@@ -13,8 +41,9 @@ All notable changes to this project are documented here. The format is based on
   easy to confuse with actually dropping the source. Now all three pause surfaces are identical.
 - **Internal cleanup:** the cascade-delete of a source (drops → feedback events → book) is a single
   `database.delete_book_cascade` helper shared by the admin "clear dropped" sweep and the tracked
-  delete, and the channel/slot feed body is built once by `feed.builder.build_channel_slot_feed`
-  (used by both the feed route and the WebSub publisher, so pushed bodies can't drift from a GET).
+  delete, and the channel/slot feed body is built once by `feed.builder.build_channel_slot_feed`.
+  (The WebSub publisher later grew its own byte-budgeted variant — see the Unreleased WebSub fix —
+  so a push is intentionally a subset of a GET now.)
 
 ### Added — per-channel feed length cap
 - **Each channel now sets how many items its slot feeds carry** (`channel.feed_item_limit`,

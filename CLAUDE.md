@@ -139,12 +139,28 @@ fic-beacon/
   *next* one. Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
   **skip** stories whose `#status` is done (Completed / Abandoned / Published) — their EPUBs are
   already complete, so re-fetching is wasted.
+- **Initial-download self-heal:** a story added by URL has no Calibre EPUB yet; its first download is
+  a one-shot triggered at add time (`scheduler.trigger_fetch_pending`). Because that trigger can be
+  lost (restart/race) and `poll_all_feeds` only *seeds* a feed's first-sight GUID without downloading,
+  `poller.fetch_pending` also runs as a **backstop at the start of every drop cycle** — it (re)submits
+  any tracked book still missing its `calibre_id`, skipping ones already `fetching…`, so a story can't
+  strand at `pending` forever.
 - **Stub handling (chapter labels & cursor floor):** if the site removed chapters, the fetcher
   archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
   `stub {old,new}`. Fic-Beacon then bumps `book.chapter_label_offset` by `old−new` (so the next
   chapter still labels continuously — `absolute_chapter_number(book, physical_index)`), sets the
   cursor to `new`, and raises `book.cursor_floor` to `new` (the admin UI can't rewind below it).
   `cursor_chapter_index` is always a **physical** index into the current EPUB.
+  - **`total_chapters` is kept honest every broadcast**, not only when a source is selected:
+    `planner._get_chapters` writes `book.total_chapters = len(chapterize(epub))` for *every* active
+    source it inspects. A caught-up source is never selected, so if its EPUB later shrinks (e.g. an
+    author unpublishes chapters — common on RoyalRoad) a stale `total_chapters` would otherwise show
+    a phantom "N waiting" on the dashboard forever.
+  - **Known limitation — mid-work removal:** `chapter_label_offset` is a single *linear* shift, so it
+    only models chapters removed contiguously (a shrink at the boundary). If an author removes
+    chapters from the **middle** (labels jump, e.g. 4 → 73), physical indices no longer map linearly
+    to author labels and per-chapter labels past the gap can be wrong. The quick fix above keeps the
+    counts honest; a proper non-contiguous label map is a **planned** design change (not yet built).
 
 ### Drop Planner — per-channel stochastic budget
 - Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued backlog
@@ -255,6 +271,15 @@ Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<lin
 The self-hosted hub (`app/routers/websub.py`) handles subscribe/verify; `app/websub/publisher.py`
 pushes the Atom body to verified subscribers after each cycle/extra. Works on InoReader's free
 plan; degrades to polling for readers without WebSub.
+**The push body is byte-budgeted, not the full feed.** A slot feed carries up to
+`channel.feed_item_limit` *full-content* chapters (~1.6 MB for 50 items), and **Inoreader silently
+drops oversized fat pings** — it 200-acks the POST but never ingests, so realtime dies and the feed
+falls back to slow polling (the classic "dashboard says Realtime but updates arrive hours late").
+So the publisher trims the push to the **newest drops that fit `config.websub_max_push_bytes`**
+(default 100 KB; `0` disables trimming), always keeping ≥1 item and never splitting a chapter — see
+`publisher._trim_to_budget`. This means a push is **no longer byte-identical** to a GET of the topic
+(readers merge the pushed newest items into the polled feed by GUID, which WebSub permits); the
+polled `/feed/…` route still serves the full `feed_item_limit`.
 **Verification honours `hub.verify` (PuSH 0.3 sync / WebSub async).** `POST /websub/hub` validates
 the request (bad mode / foreign topic → 4xx) then picks the subscriber's preferred verification mode:
 - **sync** (what Inoreader/Superfeedr request): verify **inline** — call the subscriber's callback
@@ -270,8 +295,8 @@ subscribers match a pending subscription on *both* `hub.topic` and `hub.verify_t
 the challenge. The whole subscribe→verify→store→push path is **debug-logged** (including the full
 inbound hub form, key+value); set `BEACON_LOG_LEVEL=DEBUG` to trace it.
 The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?token=…`) so the topic
-URL is actually fetchable — WebSub requires the topic to return the *same* bytes the hub pushes, and
-the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
+URL is actually fetchable (WebSub wants the topic to resolve; the pushed body is a byte-budgeted
+*subset* of it, merged by GUID — see above), and the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
 the feed URL the reader holds, so advertising it inside the (already token-gated) feed body leaks
 nothing new. The publisher still matches subscriptions registered both with and without the
 `?token=…` (some readers subscribe with their poll URL, others with the bare `rel=self`), so push is
@@ -320,7 +345,8 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`) ·
+`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`,
+`websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.
 `last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 

@@ -17,10 +17,17 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.feed.builder import build_channel_slot_feed
+from app.feed.builder import build_feed, slot_feed_drops, slot_feed_meta
 from app.models import Channel, Config, Drop, WebSubSubscription, utcnow
 
 logger = logging.getLogger(__name__)
+
+# Rough per-entry envelope (feedback links, <entry> wrapper, permalinks) added on top of a
+# drop's stored content_html when estimating a push body's size. Deliberately generous so we
+# stay comfortably under the budget rather than overshoot it.
+_ENTRY_OVERHEAD = 2_000
+# The feed-level <feed>/author/link envelope, counted once.
+_FEED_OVERHEAD = 1_500
 
 
 def publish_updates(session: Session, drops: list[Drop]) -> None:
@@ -47,10 +54,33 @@ def _channel_slot_feed(session: Session, channel_id: int, feed_key: str) -> tupl
         return None
     cfg = session.get(Config, 1)
     secret = cfg.feed_secret if cfg else settings.feed_secret
-    # Shared builder (also used by the feed route) — the single source of truth for the feed body,
-    # so the pushed Atom is byte-identical to a GET of the topic URL (WebSub requires the match).
-    topic, atom, _ = build_channel_slot_feed(session, channel, feed_key, secret)
-    return topic, atom
+    max_bytes = cfg.websub_max_push_bytes if cfg else 100_000
+    # The push body is *trimmed to the newest drops that fit `max_bytes`* rather than the whole
+    # feed_item_limit: a full slot feed can be ~1.6 MB and Inoreader silently drops oversized fat
+    # pings (200-acked, never ingested → realtime dies). This diverges from a GET of the topic —
+    # that's fine, readers merge the pushed newest items into the polled feed by GUID.
+    self_url, title, description = slot_feed_meta(channel, feed_key, secret)
+    drops = slot_feed_drops(session, channel, feed_key)
+    drops = _trim_to_budget(drops, max_bytes)
+    atom, _ = build_feed(drops, self_url=self_url, title=title, description=description)
+    return self_url, atom
+
+
+def _trim_to_budget(drops: list[Drop], max_bytes: int) -> list[Drop]:
+    """Keep the newest drops whose estimated bytes fit `max_bytes`, always keeping ≥1 (a single
+    oversized chapter is pushed whole — we never split a unit). `drops` is newest-first.
+    `max_bytes <= 0` disables trimming (push the whole feed)."""
+    if max_bytes <= 0:
+        return drops
+    chosen: list[Drop] = []
+    total = _FEED_OVERHEAD
+    for drop in drops:
+        size = len(drop.content_html or "") + _ENTRY_OVERHEAD
+        if chosen and total + size > max_bytes:
+            break
+        chosen.append(drop)
+        total += size
+    return chosen
 
 
 # ── delivery ──────────────────────────────────────────────────────────────────

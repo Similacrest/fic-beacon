@@ -226,6 +226,12 @@ class Config(Base):
     # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog, so
     # real ongoing serials outrank the finite archive in the stochastic budget pass. Admin-tunable.
     tracked_default_weight: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
+    # Max byte size of a WebSub push body. A slot feed carries up to feed_item_limit full-content
+    # chapters (~1.6 MB for 50 items), and Inoreader silently drops oversized fat pings — it returns
+    # 200 but never ingests, so realtime dies and the feed falls back to slow polling. The push is
+    # trimmed to the newest drops that fit this budget (always ≥1 item, never splitting a chapter);
+    # the polled feed at /feed/… is unaffected. Admin-tunable. 0 disables trimming (push full feed).
+    websub_max_push_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=100_000)
 
 
 class WebSubSubscription(Base):

@@ -192,6 +192,7 @@ class TestHub:
 
 class _FakeClient:
     posts: list = []
+    bodies: list = []
 
     def __init__(self, *a, **k):
         pass
@@ -204,6 +205,7 @@ class _FakeClient:
 
     def post(self, url, content=None, headers=None):
         _FakeClient.posts.append((url, headers))
+        _FakeClient.bodies.append(content)
 
 
 class TestPublisher:
@@ -291,3 +293,64 @@ class TestPublisher:
 
         signed = [h for u, h in _FakeClient.posts if u == "https://r/signed"]
         assert signed and signed[0].get("X-Hub-Signature", "").startswith("sha1=")
+
+
+class TestTrimToBudget:
+    """The push body is trimmed to the newest drops that fit the byte budget — Inoreader
+    silently drops oversized fat pings (see publisher._trim_to_budget)."""
+
+    def _drops(self, sizes):
+        return [Drop(content_html="x" * n) for n in sizes]
+
+    def test_keeps_only_what_fits_newest_first(self):
+        # size per drop = len + _ENTRY_OVERHEAD (2000); envelope = _FEED_OVERHEAD (1500).
+        drops = self._drops([10_000, 10_000, 10_000])  # 12k each
+        kept = publisher._trim_to_budget(drops, 20_000)
+        assert kept == drops[:1]  # 1500 + 12000 fits; a second would exceed 20k
+
+    def test_always_keeps_at_least_the_newest(self):
+        drops = self._drops([500_000])  # far over budget
+        kept = publisher._trim_to_budget(drops, 1_000)
+        assert kept == drops  # never split / drop the sole newest item
+
+    def test_zero_budget_disables_trimming(self):
+        drops = self._drops([10_000, 10_000, 10_000])
+        assert publisher._trim_to_budget(drops, 0) == drops
+
+    def test_push_body_shrinks_under_budget(self, in_memory_db, monkeypatch):
+        """End-to-end: a small Config budget makes the pushed body carry fewer items than the
+        full slot feed would."""
+        from app.models import Config
+        _FakeClient.posts = []
+        _FakeClient.bodies = []
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, budget=100,
+                     feed_item_limit=50)
+        in_memory_db.add(ch)
+        cfg = in_memory_db.get(Config, 1) or Config(id=1)
+        cfg.feed_secret = "tok"
+        cfg.websub_max_push_bytes = 8_000
+        in_memory_db.add(cfg)
+        in_memory_db.flush()
+        book = Book(calibre_id=1, title="B", author="A", status=BookStatus.active,
+                    channel_id=ch.id, slot_index=1)
+        in_memory_db.add(book)
+        in_memory_db.flush()
+        drops = []
+        for i in range(5):
+            d = Drop(book_id=book.id, channel_id=ch.id, feed_key="1", word_count=10,
+                     chapter_start=i, chapter_end=i, chapter_titles=f"C{i}",
+                     content_html="y" * 5_000, feedback_token=f"t{i}", reader_slug=f"s{i}")
+            in_memory_db.add(d)
+            drops.append(d)
+        in_memory_db.add(WebSubSubscription(
+            topic_url=f"{publisher.settings.base_url}/feed/fantasy/1",
+            callback_url="https://r/cb", verified=True))
+        in_memory_db.commit()
+        monkeypatch.setattr(publisher.httpx, "Client", _FakeClient)
+
+        publisher.publish_updates(in_memory_db, [drops[-1]])
+
+        assert _FakeClient.bodies, "expected a push"
+        body = _FakeClient.bodies[-1]
+        # With a 5k content_html + 2k overhead per item and an 8k budget, only 1 item fits.
+        assert body.count(b"<entry") == 1
