@@ -175,8 +175,9 @@ class Book(Base):
     # anywhere in the work (front/middle/tail) and compose across repeated stubs. NULL for books
     # with no (URL-diffed) stub. See label_offset_at / absolute_chapter_number.
     label_map: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Lowest physical index the cursor may be rewound to. Raised on a stub so the reader
-    # can't rewind into a rewritten body. 0 for normal books.
+    # Lowest physical index the cursor may be rewound to. Remapped on a stub (to the first
+    # surviving chapter at/after the old floor) so it stays anchored to real content. 0 for
+    # normal books; the count-only fallback sets it to the new length instead.
     cursor_floor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     thumbs_down: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
