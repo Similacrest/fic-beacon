@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 from feedparser.util import FeedParserDict
 
 from app.models import Book, BookStatus, Channel, absolute_chapter_number
-from app.ongoing.poller import _newest_guid, poll_all_feeds, sweep_feedless
+from app.ongoing.poller import _newest_guid, fetch_pending, poll_all_feeds, sweep_feedless
 from app.fetch.client import apply_result
 from app.routers.ongoing import batch_pause_sources, batch_resume_sources
 
@@ -91,6 +91,35 @@ class TestPollTriggers:
         assert queued == 2
         mock_submit.assert_called_once()  # one batch, not two calls
         assert set(mock_submit.call_args[0][1]) == {a, b}
+
+    def test_fetch_pending_submits_never_downloaded(self, in_memory_db):
+        """A tracked book with no calibre_id (initial fetch lost) is (re)submitted — the
+        self-heal backstop, so it can't strand at 'pending' forever."""
+        src = _tracked(in_memory_db, calibre_id=None)
+        src.last_fetch_status = "pending"
+        in_memory_db.flush()
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 1
+        assert list(mock_submit.call_args[0][1]) == [src]
+
+    def test_fetch_pending_skips_in_flight(self, in_memory_db):
+        """A book already 'fetching…' must not be re-submitted (its slow fetch is still running)."""
+        src = _tracked(in_memory_db, calibre_id=None)
+        src.last_fetch_status = "fetching: downloading"
+        in_memory_db.flush()
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 0
+        mock_submit.assert_not_called()
+
+    def test_fetch_pending_ignores_downloaded(self, in_memory_db):
+        """A book with a calibre_id is already downloaded — never re-fetched by the backstop."""
+        _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
+        with patch("app.scheduler.submit_and_track") as mock_submit:
+            n = fetch_pending(in_memory_db)
+        assert n == 0
+        mock_submit.assert_not_called()
 
     def test_sweep_submits_feedless_only(self, in_memory_db):
         feedless = _tracked(in_memory_db, feed_url=None, source_url="https://x/story",

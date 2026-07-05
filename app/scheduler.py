@@ -211,13 +211,18 @@ def _resume_pending_polls() -> None:
 # ── Recurring jobs ───────────────────────────────────────────────────────────────────────
 
 def _run_cycle() -> None:
-    from app.ongoing.poller import poll_all_feeds
+    from app.ongoing.poller import fetch_pending, poll_all_feeds
     from app.planner.planner import run_drop_cycle
     from app.websub.publisher import publish_updates
     with db_session() as session:
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
         # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
         poll_all_feeds(session)
+        # Backstop: (re)submit initial downloads for any tracked book still missing its EPUB —
+        # self-heals a story whose one-shot add-time fetch was lost (restart/race) or whose feed
+        # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
+        # any submit land next cycle.
+        fetch_pending(session)
         drops = run_drop_cycle(session, settings.calibre_library_path)
         session.commit()
         publish_updates(session, drops)
