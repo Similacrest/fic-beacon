@@ -47,7 +47,7 @@ SQLite, Jinja + HTMX.
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
 | Sources | One unified model: every source is a Calibre EPUB (`book.calibre_id`). A `tracked` flag (no `kind`) marks the ones that auto-update; `feed_url?` is an optional RSS trigger and `source_url` doubles as the FanFicFare fetch URL. All are weighted, votable, droppable, and live in a channel. |
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
-| Stubs | If the site removed chapters, the fetcher archives the old EPUB as a separate Calibre entry and overwrites the book; the app bumps `chapter_label_offset` (labels stay continuous) and raises `cursor_floor` (can't rewind into the rewritten body). |
+| Stubs | If the site removed chapters, the fetcher archives the old EPUB as a separate Calibre entry, overwrites the book, and returns the ordered per-chapter canonical URLs of both bodies. The app matches chapters by URL **identity**: it builds a piecewise `label_map` (labels stay exact past front/middle/tail gaps and across repeated stubs) and remaps `cursor_chapter_index`/`cursor_floor` to the first surviving chapter (no unread chapter is skipped). Falls back to the legacy linear `chapter_label_offset` if a body has no per-chapter URLs. |
 | Budgeting | **Per-channel, pure-stochastic.** Marginal whole units are included with a probability that falls as the cycle runs over budget; weight/votes bias the draw; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
 | Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a short broadcast cooldown; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
@@ -159,7 +159,8 @@ C4Component
   `cooldown_remaining` (👎-down: sit out N broadcasts), `channel_id` (**NOT NULL**),
   `slot_index?` (pinned feed slot; unique per active backlog book, *shared* by tracked stories
   pinned to it), `queue_position`, `quota_weight`, `cursor_chapter_index` (physical EPUB index),
-  `chapter_label_offset` (stub continuity), `cursor_floor` (lowest rewindable index), `thumbs_up`,
+  `chapter_label_offset` (legacy scalar stub offset), `label_map?` (JSON piecewise stub offsets,
+  by-URL identity), `cursor_floor` (lowest rewindable index), `thumbs_up`,
   `thumbs_down`, `added_at`.
 - **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"`, = source's pinned slot),
   `created_at`, `published_at`, `word_count`, `chapter_start`, `chapter_end`, `chapter_titles`,
@@ -207,8 +208,12 @@ the call is **asynchronous**: the fetcher returns a `job_id` (HTTP 202) and work
 pass; existing ones update per-story with force-detection + a 3-try backoff). The app marks the
 books `fetching…`, persists the `job→book` map in `app_state`, and a transient `fetch_poll_{id}`
 interval job polls `GET /fetch/{job_id}` — surfacing each book's live `phase` on the dashboard —
-until `done`, then folds each result (`apply_result`). On a **stub** (`old > new`) it bumps
-`chapter_label_offset` by `old − new`, sets the cursor to `new`, and raises `cursor_floor` to `new`.
+until `done`, then folds each result (`apply_result`). On a **stub** (`old > new`) the fetcher also
+returns the ordered per-chapter URLs of both bodies; the app matches chapters by URL identity to
+build a piecewise `label_map` (labels exact past any gap, composing across repeated stubs) and to
+remap `cursor_chapter_index`/`cursor_floor` to the first surviving chapter — preserving unread
+chapters. It falls back to bumping the scalar `chapter_label_offset` by `old − new` (cursor/floor →
+`new`) only when a body carries no per-chapter URLs.
 The triggering broadcast does **not** wait; fetched chapters drop on the **next** cycle. Tracked
 stories with **no** feed (auth-gated, fetchable only via `personal.ini`) are refreshed by a **daily
 sweep**. No feed body is ever stored — RSS is purely a trigger.

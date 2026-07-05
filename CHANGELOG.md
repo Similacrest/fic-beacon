@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — correct chapter labels & cursor after mid-work chapter removal (stubs)
+- **Stubs are now handled by per-chapter URL identity, not a single linear offset.** When a site
+  removes chapters, the fetcher returns the ordered per-chapter canonical URLs (`chapterurl`) of the
+  pre- and post-stub EPUBs; the app matches chapters by URL to build a piecewise `book.label_map`
+  (JSON `[physical_index, offset]` breakpoints) so `absolute_chapter_number` stays exact past a gap
+  **anywhere** — front, middle (labels jump, e.g. 4 → 73), or tail — and **composes** across
+  repeated stubs on one book (a chapter that was label 100 stays 100). Migration adds
+  `book.label_map`; the legacy scalar `chapter_label_offset` remains as the fallback.
+- **The reader's cursor is remapped by identity instead of reset to "caught-up".**
+  `cursor_chapter_index` (and `cursor_floor`) now move to the new physical index of the first
+  surviving chapter at or after the reader's old position, so a reader who was behind resumes at the
+  exact same chapter and keeps every surviving unread chapter. Previously any stub set the cursor to
+  the new (shorter) length, silently skipping unread chapters after a non-tail removal.
+- **Count-only fallback preserved:** if a body carries no per-chapter URLs (non-FanFicFare EPUBs),
+  `apply_result` still bumps the scalar `chapter_label_offset` by `old − new` and sets cursor/floor
+  to `new`, exactly as before.
+
 ### Fixed — WebSub realtime broke on large feeds (Inoreader dropped oversized pings)
 - **The realtime push is now trimmed to a byte budget** (`config.websub_max_push_bytes`, default
   100 KB, on the Settings page; `0` disables). A slot feed carries up to `feed_item_limit`
@@ -31,8 +48,8 @@ All notable changes to this project are documented here. The format is based on
   selected for a drop. A caught-up source is never selected, so if its EPUB later shrank (e.g. an
   author unpublished chapters) its stale `total_chapters` kept showing a phantom backlog on the
   dashboard. (The planner already used the live chapterizer, so it never actually dropped phantom
-  chapters — this was a display bug.) A single linear `chapter_label_offset` still can't represent
-  chapters removed from the *middle* of a work; a proper non-contiguous label map is planned.
+  chapters — this was a display bug.) The related mid-work-removal label problem is now fixed too —
+  see the identity-based `label_map` entry above.
 
 ### Changed — Tracked Stories page pause is now the real pause
 - **The "Tracked Stories" (`/admin/ongoing`) pause/resume now uses the same `paused` flag** as the

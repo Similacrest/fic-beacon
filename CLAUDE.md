@@ -145,22 +145,35 @@ fic-beacon/
   `poller.fetch_pending` also runs as a **backstop at the start of every drop cycle** — it (re)submits
   any tracked book still missing its `calibre_id`, skipping ones already `fetching…`, so a story can't
   strand at `pending` forever.
-- **Stub handling (chapter labels & cursor floor):** if the site removed chapters, the fetcher
-  archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
-  `stub {old,new}`. Fic-Beacon then bumps `book.chapter_label_offset` by `old−new` (so the next
-  chapter still labels continuously — `absolute_chapter_number(book, physical_index)`), sets the
-  cursor to `new`, and raises `book.cursor_floor` to `new` (the admin UI can't rewind below it).
-  `cursor_chapter_index` is always a **physical** index into the current EPUB.
+- **Stub handling (chapter labels & cursor) — identity-based:** if the site removed chapters, the
+  fetcher archives the old EPUB as a separate Calibre entry, overwrites the book, and returns
+  `stub {old, new, old_urls, new_urls}` where `old_urls`/`new_urls` are the **ordered per-chapter
+  canonical URLs** (`<meta name="chapterurl">`) of the pre- and post-stub EPUBs, in the same
+  spine/chapter order the app's chapterizer uses for physical indices. Chapters are matched by URL
+  **identity**, so removal from *anywhere* (front, middle, or tail) is handled — including a middle
+  gap where labels jump (e.g. 4 → 73) and **repeated** stubs on one book.
+  - **Labels — piecewise `book.label_map`:** `apply_result` builds a JSON list of
+    `[physical_index, cumulative_offset]` breakpoints from the URL diff so
+    `absolute_chapter_number(book, physical_index)` stays exact past *every* gap (each surviving
+    chapter keeps its original author label; new tail chapters continue from the last offset). The
+    map **composes** across successive stubs (a chapter that was label 100 stays 100). The legacy
+    scalar `chapter_label_offset` is the fallback when `label_map` is empty (old rows, or a
+    count-only fallback stub — see below).
+  - **Cursor — remapped by identity, not reset:** the reader's `cursor_chapter_index` is remapped
+    to the **new physical index of the first surviving chapter at or after their old cursor** (and
+    `cursor_floor` likewise), so a reader who was behind resumes at the exact same chapter and keeps
+    every surviving unread chapter. This replaces the old "set cursor = `new` (mark caught-up)"
+    behaviour, which silently dropped unread chapters after a non-tail removal. `cursor_chapter_index`
+    is always a **physical** index into the current EPUB.
+  - **Count-only fallback:** if a site's EPUB carries no `chapterurl`s (URL lists absent or their
+    lengths disagree with `old`/`new`), `apply_result` falls back to the previous *linear* behaviour
+    — bump the scalar `chapter_label_offset` by `old−new`, set cursor and `cursor_floor` to `new`.
+    This only degrades non-FanFicFare EPUBs (which have no per-chapter identity anyway).
   - **`total_chapters` is kept honest every broadcast**, not only when a source is selected:
     `planner._get_chapters` writes `book.total_chapters = len(chapterize(epub))` for *every* active
     source it inspects. A caught-up source is never selected, so if its EPUB later shrinks (e.g. an
     author unpublishes chapters — common on RoyalRoad) a stale `total_chapters` would otherwise show
     a phantom "N waiting" on the dashboard forever.
-  - **Known limitation — mid-work removal:** `chapter_label_offset` is a single *linear* shift, so it
-    only models chapters removed contiguously (a shrink at the boundary). If an author removes
-    chapters from the **middle** (labels jump, e.g. 4 → 73), physical indices no longer map linearly
-    to author labels and per-chapter labels past the gap can be wrong. The quick fix above keeps the
-    counts honest; a proper non-contiguous label map is a **planned** design change (not yet built).
 
 ### Drop Planner — per-channel stochastic budget
 - Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued backlog
@@ -341,7 +354,8 @@ broadcast or an admin request.
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
 `slot_index`, `queue_position`,
-`quota_weight`, `cursor_chapter_index`, `chapter_label_offset`, `cursor_floor`, thumbs) · `drop`
+`quota_weight`, `cursor_chapter_index`, `chapter_label_offset` (legacy scalar), `label_map?`
+(piecewise stub offsets, JSON), `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
@@ -374,4 +388,5 @@ stories at `fetching…` (see CHANGELOG).
 - The `beacon` container never writes the Calibre library (mount is `:ro`); the `fetcher` does.
 - Batching never splits a unit; oversized units post whole; stochastic mean tracks the budget.
 - A trigger feed's new GUID drives a FanFicFare fetch into Calibre; the chapters then drop via the
-  normal cursor path. A stub keeps labels continuous (`chapter_label_offset`) and floors the cursor.
+  normal cursor path. A stub keeps labels continuous (`label_map`, per-chapter URL identity) and
+  remaps the cursor to the first surviving chapter — no unread chapter is skipped, even mid-work.
