@@ -296,6 +296,38 @@ class TestBatchActions:
         assert not a.paused
 
 
+class TestAddTrackedStory:
+    def test_url_added_story_gets_tracked_default_weight(self, in_memory_db):
+        # A story added by URL must get the same priority nudge as a library-imported
+        # serial (config.tracked_default_weight), not the 1.0 backlog default.
+        from app.routers.ongoing import _add_tracked_story
+        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+        book = _add_tracked_story(in_memory_db, "https://s/story", "", cid)
+        assert book.quota_weight == 2.0  # conftest Config uses the model default
+        # Blank title falls back to the URL placeholder until the first fetch resolves it.
+        assert book.title == "https://s/story"
+
+
+class TestSyncTitle:
+    def test_placeholder_title_replaced_with_calibre_title(self, in_memory_db):
+        from app import scheduler
+        src = _tracked(in_memory_db, source_url="https://s/story", calibre_id=777)
+        src.title = "https://s/story"  # URL placeholder from a blank-title add
+        cbook = MagicMock(title="Real Story Title")
+        with patch("app.calibre.adapter.CalibreAdapter.get_book", return_value=cbook):
+            scheduler._sync_title(src)
+        assert src.title == "Real Story Title"
+
+    def test_real_title_is_left_alone(self, in_memory_db):
+        from app import scheduler
+        src = _tracked(in_memory_db, source_url="https://s/story", calibre_id=778)
+        src.title = "An Already-Named Serial"
+        with patch("app.calibre.adapter.CalibreAdapter.get_book") as get_book:
+            scheduler._sync_title(src)
+            get_book.assert_not_called()  # not a placeholder → no Calibre lookup
+        assert src.title == "An Already-Named Serial"
+
+
 class TestAbsoluteChapterNumber:
     def test_no_offset_is_one_based(self, in_memory_db):
         src = _tracked(in_memory_db)

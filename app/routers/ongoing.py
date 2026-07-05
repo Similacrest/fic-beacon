@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import delete_book_cascade, ensure_default_channel, get_db
-from app.models import Book, BookStatus, Channel
+from app.models import Book, BookStatus, Channel, Config
 from app.ongoing.feed_url import infer_feed_url
 from app.planner.planner import pause_book, resume_book
 from app.version import __version__
@@ -46,6 +46,7 @@ def _add_tracked_story(
     if db.query(Book).filter(Book.source_url == story_url).first() is not None:
         return None
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
+    cfg = db.get(Config, 1)
     book = Book(
         tracked=True,
         source_url=story_url,
@@ -55,6 +56,10 @@ def _add_tracked_story(
         queue_position=max_pos + 1,
         channel_id=channel_id,
         last_fetch_status="pending",
+        # Prioritise ongoing serials over the finite backlog, same as library import
+        # (admin.add_library). A blank title is a placeholder replaced by the real
+        # Calibre title once the first fetch lands (see scheduler._sync_title).
+        quota_weight=cfg.tracked_default_weight if cfg else 2.0,
     )
     db.add(book)
     db.flush()

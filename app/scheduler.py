@@ -179,9 +179,26 @@ def _poll_fetch_job(job_id: str) -> None:
                 book.last_fetch_status = "error: no result from fetcher"
             else:
                 apply_result(book, raw_result)
+                _sync_title(book)
         delete_value(session, FETCH_JOB_PREFIX + job_id)
         session.commit()
     _unschedule_poll(job_id)
+
+
+def _sync_title(book) -> None:
+    """Replace a URL-placeholder title with the real Calibre title once the EPUB exists.
+
+    A story added by URL on the Tracked Stories page starts with `title == source_url`
+    (no title known yet). After the first fetch links a `calibre_id`, read the actual
+    title from Calibre (RO) so the dashboard/feeds show the story name, not the URL.
+    """
+    from app.calibre.adapter import CalibreAdapter
+
+    if book.calibre_id is None or book.title != book.source_url:
+        return  # nothing fetched yet, or the user/import already gave it a real title
+    cbook = CalibreAdapter(settings.calibre_library_path).get_book(book.calibre_id)
+    if cbook is not None and cbook.title:
+        book.title = cbook.title
 
 
 def _expired(meta: dict) -> bool:

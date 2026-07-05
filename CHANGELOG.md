@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — URL-added tracked stories: default weight & title
+- **A story added by URL on the Tracked Stories page now gets `config.tracked_default_weight`**
+  (default 2.0), the same priority nudge library-imported serials already received. It was being
+  created at the 1.0 backlog default, so URL-added serials competed with the archive instead of
+  being prioritised over it.
+- **Its URL placeholder title is replaced with the real Calibre title once the first fetch lands**
+  (`scheduler._sync_title`). Previously a story added without a title stayed named after its URL
+  forever, because `apply_result` never refreshed the title from Calibre.
+
 ### Added — correct chapter labels & cursor after mid-work chapter removal (stubs)
 - **Stubs are now handled by per-chapter URL identity, not a single linear offset.** When a site
   removes chapters, the fetcher returns the ordered per-chapter canonical URLs (`chapterurl`) of the
