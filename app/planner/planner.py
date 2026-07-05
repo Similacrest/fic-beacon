@@ -409,6 +409,12 @@ def _get_chapters(
     if not epub_path.exists():
         return []
     all_chapters = chapterize(epub_path)
+    # Keep total_chapters honest for *every* active source we look at each broadcast — not just
+    # the ones we emit (see _advance_cursor). A caught-up source (cursor at the end) is never
+    # selected, so if its EPUB later shrinks — e.g. an author unpublishes chapters, common with
+    # RoyalRoad — its stale total_chapters would otherwise show phantom "N waiting" on the
+    # dashboard forever. The chapterizer is mtime-cached, so this is ~free.
+    book.total_chapters = len(all_chapters)
     return all_chapters[book.cursor_chapter_index:]
 
 
