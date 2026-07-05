@@ -31,7 +31,7 @@
            hx-swap="none" class="autosave"
            style="width:52px; padding:.2em .3em; font-size:.85em">
     {% if book.total_chapters %}<span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>{% endif %}
-    {% if book.chapter_label_offset %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
+    {% if book.chapter_label_offset or book.label_map %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
   </form>
   <form method="post" action="/admin/books/{{ book.id }}/cursor-start" hx-post="/admin/books/{{ book.id }}/cursor-start"
         style="display:inline" title="Read from the start (chapter 1)">
