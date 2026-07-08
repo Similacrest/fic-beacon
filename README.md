@@ -78,6 +78,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 |---|---|---|
 | `CALIBRE_LIBRARY_PATH` | Host path to your Calibre library (RO in app, RW in fetcher) | `.` |
 | `FETCHER_CONFIG_PATH` | Host path holding the fetcher's `personal.ini` | `./fetcher/config` |
+| `FETCHER_UID` / `FETCHER_GID` | Run the fetcher as this uid/gid so new library files match your Calibre owner instead of `root:root` (`stat -c '%u:%g' "$CALIBRE_LIBRARY_PATH"`) | `0` / `0` |
 | `BEACON_BASE_URL` | Public base URL used in feed/links | `http://localhost:8000` |
 | `BEACON_PORT` | Host port to expose | `8000` |
 | `BEACON_FEED_SECRET` | Secret token gating the feeds (auto-generated if unset) | random |
@@ -90,6 +91,18 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 
 Generate a feed secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+### Maintenance scripts
+
+If you update EPUBs in the Calibre library *outside* the fetcher (e.g. a manual bulk transfer),
+run `scripts/refresh_cursors.py` inside the `beacon` container to recompute each source's max
+chapter count and clamp any cursor left pointing past the EPUB's end (reading positions still in
+range are untouched, so unread new chapters still drop):
+
+```bash
+docker exec fic-beacon-beacon-1 /app/.venv/bin/python /app/scripts/refresh_cursors.py          # dry-run
+docker exec fic-beacon-beacon-1 /app/.venv/bin/python /app/scripts/refresh_cursors.py --apply   # write
+```
 
 ## Development
 

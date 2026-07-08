@@ -36,11 +36,19 @@ services:
     build:
       context: ./fetcher
     restart: unless-stopped
+    # Run as the library's owner so EPUBs/folders calibredb creates match it (default root:root
+    # otherwise — the fetcher is the sole writer). Set FETCHER_UID/FETCHER_GID in .env to the
+    # library owner (find it: `stat -c '%u:%g' "$CALIBRE_LIBRARY_PATH"`). Unset → 0:0 (root),
+    # the old behaviour. FanFicFare works in /tmp and calibredb's config lives under HOME, so
+    # HOME is pointed at world-writable /tmp for the arbitrary non-root UID.
+    user: "${FETCHER_UID:-0}:${FETCHER_GID:-0}"
     volumes:
       # Same library as beacon, but READ-WRITE here.
       - ${CALIBRE_LIBRARY_PATH:-.}:/calibre-library
       # personal.ini (site logins) — edit it directly in this container/host path.
       - ${FETCHER_CONFIG_PATH:-./fetcher/config}:/config
+    environment:
+      HOME: /tmp
     # Not published by default — beacon reaches it over the internal compose network.
     expose:
       - "8080"

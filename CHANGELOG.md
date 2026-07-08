@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — fetcher runs as the library owner (no more root:root writes)
+- The fetcher container is the sole library writer and ran as **root**, so every EPUB/folder
+  `calibredb` created came out `root:root`. New `FETCHER_UID`/`FETCHER_GID` env (defaults `0:0` =
+  old behaviour) make just the fetcher run as your Calibre library's owner; `HOME` is pointed at
+  `/tmp` so `calibredb`'s config works under a non-root uid. Documented in `.env.example`/README.
+
+### Added — `scripts/refresh_cursors.py` maintenance script
+- After EPUBs are updated in Calibre *outside* the fetcher (e.g. a manual bulk transfer), this
+  recomputes every source's `total_chapters` (the dashboard "max chapter") — caught-up or not —
+  and clamps any `cursor_chapter_index`/`cursor_floor` left pointing past the EPUB end. In-range
+  reading positions are untouched, so unread new chapters still drop. Dry-run by default;
+  `--apply` writes. Run inside the `beacon` container.
+
 ### Fixed — XenForo threadmark ordering (stale chapters leaking to the feed)
 - **XenForo serials (SB/SV/QQ) group threadmarks by category, not chronologically**, so FanFicFare
   builds the EPUB with Story/Sidestory/Apocrypha/…/Informational in a fixed order. A new Story
