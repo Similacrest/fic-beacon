@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-08
+
 ### Changed — "drop cycle" renamed to **release cycle** (disambiguation)
 - The scheduled cycle that emits `drop` rows is now called a **release cycle** everywhere the user
   sees it — the dashboard button (**▶ Run release cycle now**), the "Last/Next release cycle" status
