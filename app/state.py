@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AppState, utcnow
 
-LAST_DROP_RUN = "last_drop_run_at"
+LAST_RELEASE_RUN = "last_release_run_at"
 LAST_POLL_RUN = "last_poll_run_at"
 LAST_SKIPS = "last_broadcast_skips"  # JSON: sources held out / partly deferred last broadcast
 FETCH_JOB_PREFIX = "fetch_job:"  # + job_id → JSON {submitted_at, url_to_book} for in-flight fetches

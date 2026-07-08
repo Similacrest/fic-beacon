@@ -93,7 +93,7 @@ C4Container
 
   Container_Boundary(b, "Fic-Beacon deployment") {
     Container(app, "Web/API app (beacon)", "FastAPI, Jinja+HTMX", "Admin UI, per-slot feeds, feedback, reader pages, WebSub hub")
-    Container(sched, "Scheduler / engine", "APScheduler", "Drop cycle on cadence (polls triggers first); daily feedless sweep; WebSub push")
+    Container(sched, "Scheduler / engine", "APScheduler", "Release cycle on cadence (polls triggers first); daily feedless sweep; WebSub push")
     ContainerDb(db, "App database", "SQLite + SQLAlchemy", "Channels, sources, cursors, drops, tokens, subscriptions, config")
     Container(fetcher, "Fetcher", "FanFicFare + calibredb", "POST /fetch {urls}→202 job_id; async batch download/update into Calibre; archive-on-stub")
   }
@@ -129,7 +129,7 @@ C4Component
   Component(websub, "WebSub Hub + Publisher", "Subscribe/verify; push Atom to subscribers on new drops")
   Component(readerpg, "Reader Page", "Serves /read/{slug} fallback HTML")
   Component(admin, "Admin UI", "Jinja+HTMX; channels/slots/budget; sources; tracked-story registration")
-  Component(scheduler, "Scheduler", "APScheduler (BEACON_TZ); drop cron (polls first) + daily sweep")
+  Component(scheduler, "Scheduler", "APScheduler (BEACON_TZ); release cron (polls first) + daily sweep")
 
   Rel(planner, adapter, "List books, resolve paths, tags")
   Rel(planner, chapterizer, "EPUB chapters + word counts")
@@ -142,7 +142,7 @@ C4Component
   Rel(fb, db, "Write feedback; update quota/status")
   Rel(websub, db, "Subscriptions")
   Rel(websub, reader_app, "Push Atom")
-  Rel(scheduler, planner, "Drop cycle on cadence")
+  Rel(scheduler, planner, "Release cycle on cadence")
   Rel(scheduler, poller, "Poll pre-drop")
   Rel(adapter, calibre, "Read metadata.db + EPUBs", "RO")
 ```
@@ -174,7 +174,7 @@ C4Component
   `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
   live per-channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
-  `last_drop_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
+  `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
   adds it on existing volumes without a migration.
 
 ## 6. Core Flows
@@ -182,7 +182,9 @@ C4Component
 ### 6.1 Broadcast cycle (scheduled, per channel)
 1. Scheduler fires on `cadence_cron` (in `BEACON_TZ`) and **polls every trigger feed first**
    (§6.2): any tracked story whose newest GUID changed is fetched into Calibre *now*, so the
-   broadcast reads the freshest EPUB state. The manual "Run drop cycle" trigger does the same.
+   broadcast reads the freshest EPUB state. The manual "Run release cycle" trigger does the same,
+   but runs off the request path (a one-shot scheduler job, guarded by an in-process lock so a new
+   run is refused while one is in flight); the POST returns at once, so the tab is safe to close.
 2. For each channel, **assign slots** (`_assign_slots`): promote queued backlog books into free
    slots up to `parallel_slots` (≤ N active, one per slot; sticky), and pin every active tracked
    story to a balanced slot (fewest pinned works, tie-break fewest chapters ever dropped there;

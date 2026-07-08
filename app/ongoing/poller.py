@@ -11,7 +11,7 @@ fetching and hands them to `scheduler.submit_and_track`, which submits a single 
 the fetcher (one warm FanFicFare process for the new ones) and polls for completion in the
 background — broadcasts never block on a slow (~15 min) download.
 
-Polling runs **pre-drop** (the drop cycle submits fetches first); freshly fetched chapters
+Polling runs **pre-drop** (the release cycle submits fetches first); freshly fetched chapters
 land in the *next* broadcast. Tracked books *without* a feed (auth-gated stories fetchable
 only via FanFicFare's personal.ini) have no RSS signal and are handled by the daily sweep.
 """
@@ -102,7 +102,7 @@ def fetch_pending(session: Session) -> int:
     """Submit an initial download for every tracked book that has no Calibre EPUB yet.
 
     Runs both right after stories are added by URL (which only creates the rows) *and* as a
-    backstop at the start of each drop cycle, so an initial fetch that was lost — the add-time
+    backstop at the start of each release cycle, so an initial fetch that was lost — the add-time
     trigger is one-shot and a restart/race can drop it, and `poll_all_feeds` only *seeds* a
     feed's first-sight GUID without downloading — self-heals instead of stranding the book at
     "pending" forever. A failed fetch leaves calibre_id NULL, so it is retried next call.

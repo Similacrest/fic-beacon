@@ -99,8 +99,8 @@ def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
     ]
 
 
-def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
-    """Execute one scheduled drop cycle across every channel.
+def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
+    """Execute one scheduled release cycle across every channel.
 
     Every source belongs to a channel; each channel drops independently using its own
     budget and slots. Cadence is global — every channel drops this cycle.
@@ -179,8 +179,8 @@ def run_drop_cycle(session: Session, library_path: Path) -> list[Drop]:
 
     import json
 
-    from app.state import LAST_DROP_RUN, LAST_SKIPS, mark_run, set_value
-    mark_run(session, LAST_DROP_RUN)
+    from app.state import LAST_RELEASE_RUN, LAST_SKIPS, mark_run, set_value
+    mark_run(session, LAST_RELEASE_RUN)
     set_value(session, LAST_SKIPS, json.dumps(skip_log))
     session.flush()
     return drops
@@ -325,7 +325,7 @@ def _plan_drops(
         return []
 
     # Largest next-unit in the channel — the caller uses this to cap accumulated credit so an
-    # oversized chapter can be saved up for (but idle channels don't runaway). See run_drop_cycle.
+    # oversized chapter can be saved up for (but idle channels don't runaway). See run_release_cycle.
     if stats_out is not None:
         stats_out["max_pending_unit"] = max(book_remaining[b.id][0].word_count for b in valid)
 

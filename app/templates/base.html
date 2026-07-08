@@ -64,6 +64,19 @@
     }
     .progress-bar-wrap { background: #e9ecef; border-radius: 4px; height: 8px; width: 120px; display: inline-block; vertical-align: middle; }
     .progress-bar-fill { display: block; background: #0d6efd; height: 100%; border-radius: 4px; }
+    button:disabled, .btn:disabled { opacity: .6; cursor: progress; }
+    button:disabled:hover, .btn:disabled:hover { background: #0d6efd; }
+    .spinner {
+      display: inline-block; width: .9em; height: .9em; vertical-align: -.1em;
+      border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .cycle-banner {
+      display: flex; align-items: center; gap: .6em; width: 100%;
+      background: #e7f1ff; border: 1px solid #b6d4fe; color: #084298;
+      border-radius: 6px; padding: .6em .9em; font-size: .95em;
+    }
     details.section { border: 1px solid #e3e3e3; border-radius: 6px; background: #fff; margin: .8em 0; padding: 0 1em; }
     details.section > summary {
       cursor: pointer; font-size: 1.1em; font-weight: 600; color: #444;

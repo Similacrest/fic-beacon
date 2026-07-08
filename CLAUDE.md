@@ -34,8 +34,13 @@ feedback links to steer the rotation.
 ## Stack
 
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
-- **APScheduler** (in-process: drop cycle on `cadence_cron`, which polls feeds first; a daily
-  feedless sweep). There is **no hourly poll** — feeds are checked pre-drop.
+- **APScheduler** (in-process: release cycle on `cadence_cron`, which polls feeds first; a daily
+  feedless sweep). There is **no hourly poll** — feeds are checked pre-drop. The admin
+  **"Run release cycle now" / "Check feeds now"** buttons run **off the request path** (a one-shot
+  scheduler job), so the POST returns immediately and the tab is safe to close/refresh — the work
+  runs in the scheduler thread. An **in-process lock** (`scheduler.cycle_status()`, single-worker)
+  refuses a second run while one is in flight; the dashboard disables the buttons and shows a live
+  progress banner (HTMX-polls `#dash-main` every 3s until the run clears).
 - **SQLAlchemy + SQLite** (app state; schema is **Alembic-migration-owned** — `init_db()` runs
   `alembic upgrade head` on startup. **Never `create_all` in production and never hand-edit a
   deployed schema; add a migration** (`alembic revision --autogenerate -m "…"`, review it, ship
@@ -116,8 +121,11 @@ fic-beacon/
   across the occupied slots** so drops spread over the slot feeds instead of one slot hogging the
   budget. `quota_weight` throttles a source's share *within* its slot; an idle slot's budget spills
   to the others.
-- Terminology: a scheduled **broadcast** is one drop cycle (it emits `drop` rows); **dropping**
-  (❌) means *cancelling a source*. Don't conflate the two.
+- Terminology: a scheduled **broadcast** is one **release cycle** (it emits `drop` rows);
+  **dropping** (❌) means *cancelling a source*. Don't conflate the two — the user-facing name is
+  deliberately "release cycle" (button, dashboard, `run_release_cycle`, the `release_cycle` cron
+  job, `last_release_run_at`) precisely to avoid the "run a drop cycle" vs "drop a source"
+  ambiguity. The `drop` **row/table** and the ❌ drop **action** keep the word "drop".
 
 ### Sources & units (one unified, EPUB-backed model)
 - A **source** is a `book` row — always a Calibre EPUB (`calibre_id`). `tracked=True` marks one that
@@ -144,7 +152,7 @@ fic-beacon/
 - **Initial-download self-heal:** a story added by URL has no Calibre EPUB yet; its first download is
   a one-shot triggered at add time (`scheduler.trigger_fetch_pending`). Because that trigger can be
   lost (restart/race) and `poll_all_feeds` only *seeds* a feed's first-sight GUID without downloading,
-  `poller.fetch_pending` also runs as a **backstop at the start of every drop cycle** — it (re)submits
+  `poller.fetch_pending` also runs as a **backstop at the start of every release cycle** — it (re)submits
   any tracked book still missing its `calibre_id`, skipping ones already `fetching…`, so a story can't
   strand at `pending` forever.
 - **Stub handling (chapter labels & cursor) — identity-based:** when the site removes chapters the
@@ -376,7 +384,7 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 `thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`,
 `websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.
-`last_drop_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
+`last_release_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 
 The app **version** has a single source of truth — `[project].version` in `pyproject.toml`,
 read at runtime by `app/version.py` (no baked env var). Bump it there on release.

@@ -4,11 +4,17 @@ Runs in-process with the FastAPI app (single worker only — see docker-compose.
 The cron schedule is read from Config at startup and can be updated via the admin UI.
 
 Recurring jobs:
-  - drop_cycle: fires on cadence_cron. Polls tracked feeds first (submitting async fetches
+  - release_cycle: fires on cadence_cron. Polls tracked feeds first (submitting async fetches
     for any with new chapters), then materialises chapter drops from the *current* EPUB
     state. It does NOT wait for fetches — a 15-minute FanFicFare run can't block the
     broadcast, so freshly fetched chapters land in the next cycle.
   - feedless_sweep: once a day, fetches tracked stories that have no RSS feed (auth-gated).
+
+Manual triggers (admin dashboard buttons) run the release cycle / feed check **off the
+request path** via a one-shot job, guarded by an in-process lock so at most one runs at a
+time (the scheduled cron shares the same guard). The HTTP request returns immediately, so
+the admin can safely close or refresh the tab — the work runs in the scheduler thread, not
+the request. `cycle_status()` exposes the running op for the dashboard's progress banner.
 
 Async fetch lifecycle: a fetch is *submitted* to the fetcher (which returns a job_id and
 works in the background); a transient per-job `fetch_poll_{id}` interval job polls until the
@@ -17,6 +23,7 @@ app_state so a restart mid-fetch resumes polling.
 """
 import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -227,9 +234,52 @@ def _resume_pending_polls() -> None:
 
 # ── Recurring jobs ───────────────────────────────────────────────────────────────────────
 
-def _run_cycle() -> None:
+# ── Manual-trigger guard ─────────────────────────────────────────────────────────────────
+# At most one release cycle / feed check runs at a time. Single-worker + in-process scheduler
+# (see docker-compose.yml) means this in-memory state is visible to both the dashboard route
+# and the background job. `_active_op` is set optimistically when a manual run is queued (so the
+# dashboard banner shows immediately) and cleared when the run finishes; a staleness guard hides
+# a flag that outlived any plausible run (e.g. a crash mid-cycle).
+_cycle_lock = threading.Lock()
+_active_op: dict | None = None
+_MANUAL_STALE_AFTER = timedelta(minutes=20)
+
+
+def cycle_status() -> dict | None:
+    """The release cycle / feed check currently running (or queued), or None.
+
+    Shape: {"op": "release"|"feedcheck", "started": datetime}. Used by the dashboard to
+    render the progress banner and disable the trigger buttons.
+    """
+    op = _active_op
+    if op is None:
+        return None
+    if _now() - op["started"] > _MANUAL_STALE_AFTER:  # stale (crashed mid-run) — treat as idle
+        return None
+    return dict(op)
+
+
+def _execute(op: str, fn) -> None:
+    """Run `fn` under the shared cycle lock, publishing status for the dashboard.
+
+    Non-blocking: if a cycle is already running, this manual trigger is skipped (the buttons
+    are disabled while busy, but a scheduled cron and a manual click could still race).
+    """
+    global _active_op
+    if not _cycle_lock.acquire(blocking=False):
+        logger.info("A release cycle is already running — %s trigger skipped.", op)
+        return
+    _active_op = {"op": op, "started": _now()}
+    try:
+        fn()
+    finally:
+        _active_op = None
+        _cycle_lock.release()
+
+
+def _run_release_cycle() -> None:
     from app.ongoing.poller import fetch_pending, poll_all_feeds
-    from app.planner.planner import run_drop_cycle
+    from app.planner.planner import run_release_cycle
     from app.websub.publisher import publish_updates
     with db_session() as session:
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
@@ -240,10 +290,60 @@ def _run_cycle() -> None:
         # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
         # any submit land next cycle.
         fetch_pending(session)
-        drops = run_drop_cycle(session, settings.calibre_library_path)
+        drops = run_release_cycle(session, settings.calibre_library_path)
         session.commit()
         publish_updates(session, drops)
-    logger.info("Drop cycle complete — %d drop(s) created.", len(drops))
+    logger.info("Release cycle complete — %d drop(s) created.", len(drops))
+
+
+def _run_feed_check() -> None:
+    """Poll every tracked feed (the manual 'Check feeds now' action), off the request path."""
+    from app.ongoing.poller import poll_all_feeds
+    with db_session() as session:
+        poll_all_feeds(session)
+        session.commit()
+    logger.info("Manual feed check complete.")
+
+
+def _scheduled_release_cycle() -> None:
+    """Cron entry point — the guarded release cycle (shares the manual-trigger lock)."""
+    _execute("release", _run_release_cycle)
+
+
+def trigger_release_now() -> bool:
+    """Kick a manual release cycle off the request path. False if one is already running.
+
+    Safe to call from a request handler: returns immediately; the cycle runs in the scheduler
+    thread, so closing/refreshing the tab does not interrupt it.
+    """
+    global _active_op
+    if cycle_status() is not None:
+        return False
+    _active_op = {"op": "release", "started": _now()}  # optimistic — banner shows at once
+    if not _scheduler.running:  # tests / scheduler down: run inline so the work still happens
+        _execute("release", _run_release_cycle)
+        return True
+    _scheduler.add_job(
+        _scheduled_release_cycle, trigger="date", run_date=_now() + timedelta(seconds=1),
+        id="manual_release", replace_existing=True,
+    )
+    return True
+
+
+def trigger_feed_check() -> bool:
+    """Kick a manual feed check off the request path. False if a cycle is already running."""
+    global _active_op
+    if cycle_status() is not None:
+        return False
+    _active_op = {"op": "feedcheck", "started": _now()}
+    if not _scheduler.running:
+        _execute("feedcheck", _run_feed_check)
+        return True
+    _scheduler.add_job(
+        lambda: _execute("feedcheck", _run_feed_check), trigger="date",
+        run_date=_now() + timedelta(seconds=1), id="manual_feedcheck", replace_existing=True,
+    )
+    return True
 
 
 def _run_feedless_sweep() -> None:
@@ -285,9 +385,9 @@ def start(cadence_cron: str) -> None:
     if tz is not None:
         _scheduler.configure(timezone=tz)
     _scheduler.add_job(
-        _run_cycle,
+        _scheduled_release_cycle,
         trigger=CronTrigger.from_crontab(cadence_cron, timezone=tz),
-        id="drop_cycle",
+        id="release_cycle",
         replace_existing=True,
         misfire_grace_time=300,
     )
@@ -304,9 +404,9 @@ def start(cadence_cron: str) -> None:
 
 
 def update_cadence(cadence_cron: str) -> None:
-    """Reschedule the drop cycle with a new cron expression (called after config save)."""
+    """Reschedule the release cycle with a new cron expression (called after config save)."""
     _scheduler.reschedule_job(
-        "drop_cycle",
+        "release_cycle",
         trigger=CronTrigger.from_crontab(cadence_cron, timezone=_timezone()),
     )
 
@@ -314,7 +414,7 @@ def update_cadence(cadence_cron: str) -> None:
 def next_run_times() -> dict[str, object]:
     """Next scheduled fire time per job (None if not scheduled), for the dashboard."""
     out: dict[str, object] = {}
-    for job_id in ("drop_cycle", "feedless_sweep"):
+    for job_id in ("release_cycle", "feedless_sweep"):
         job = _scheduler.get_job(job_id) if _scheduler.running else None
         out[job_id] = job.next_run_time if job else None
     return out

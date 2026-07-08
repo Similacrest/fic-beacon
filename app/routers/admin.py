@@ -24,7 +24,7 @@ from app.models import (
     WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
-from app.state import LAST_DROP_RUN, LAST_POLL_RUN, LAST_SKIPS, get_run, get_value
+from app.state import LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_SKIPS, get_run, get_value
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -52,11 +52,14 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     # ── System status: cron last/next runs + WebSub subscribers ───────────────
     next_runs = scheduler.next_run_times()
     status = {
-        "last_drop": get_run(db, LAST_DROP_RUN),
+        "last_drop": get_run(db, LAST_RELEASE_RUN),
         "last_poll": get_run(db, LAST_POLL_RUN),
-        "next_drop": next_runs.get("drop_cycle"),
+        "next_drop": next_runs.get("release_cycle"),
         "next_sweep": next_runs.get("feedless_sweep"),
     }
+    # Manual release cycle / feed check currently running (drives the progress banner and
+    # disables the trigger buttons). None when idle.
+    cycle = scheduler.cycle_status()
     subscribers = _build_subscriber_view(db)
 
     try:
@@ -78,6 +81,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "subscribers": subscribers,
         "last_skips": last_skips,
         "fetch_progress": fetch_progress,
+        "cycle": cycle,
     })
 
 
@@ -573,7 +577,7 @@ def cursor_latest(book_id: int, db: Session = Depends(get_db)) -> RedirectRespon
     """Jump the cursor to the current EPUB end — 'ongoing' handling, only new chapters drop.
 
     Computes the chapter count on demand, so it works immediately after adding a book (before
-    any drop cycle has populated total_chapters).
+    any release cycle has populated total_chapters).
     """
     book = db.get(Book, book_id)
     if book is not None:
@@ -737,25 +741,21 @@ def regenerate_feed_secret(db: Session = Depends(get_db)) -> RedirectResponse:
     return RedirectResponse(url="/admin/channels", status_code=303)
 
 
-# ── Manual drop / poll triggers ───────────────────────────────────────────────
+# ── Manual release / feed-check triggers ──────────────────────────────────────
+# Both run OFF the request path: the scheduler runs the work in its own thread and the
+# request returns at once, so the admin can safely close/refresh the tab. An in-process
+# lock (scheduler.cycle_status) means a new run is refused while one is in flight; the
+# dashboard also disables the buttons and shows a progress banner while busy.
 
-@router.post("/trigger-drop")
-def trigger_drop(db: Session = Depends(get_db)) -> RedirectResponse:
-    from app.ongoing.poller import poll_all_feeds
-    from app.planner.planner import run_drop_cycle
-    from app.websub.publisher import publish_updates
-    # Check feeds first so any new chapters are queued for fetch (async — they land in a
-    # later broadcast); this drop broadcasts the current EPUB state.
-    poll_all_feeds(db)
-    drops = run_drop_cycle(db, settings.calibre_library_path)
-    db.commit()
-    publish_updates(db, drops)
+@router.post("/release-now")
+def release_now(db: Session = Depends(get_db)) -> RedirectResponse:
+    from app import scheduler
+    scheduler.trigger_release_now()  # no-op if a cycle is already running
     return RedirectResponse(url="/admin/", status_code=303)
 
 
 @router.post("/poll-now")
 def poll_now(db: Session = Depends(get_db)) -> RedirectResponse:
-    from app.ongoing.poller import poll_all_feeds
-    poll_all_feeds(db)
-    db.commit()
+    from app import scheduler
+    scheduler.trigger_feed_check()  # no-op if a cycle is already running
     return RedirectResponse(url="/admin/", status_code=303)

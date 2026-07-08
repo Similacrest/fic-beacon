@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — "drop cycle" renamed to **release cycle** (disambiguation)
+- The scheduled cycle that emits `drop` rows is now called a **release cycle** everywhere the user
+  sees it — the dashboard button (**▶ Run release cycle now**), the "Last/Next release cycle" status
+  rows, `run_release_cycle()`, the `release_cycle` cron job, and the `POST /admin/release-now` route.
+  This removes the long-standing ambiguity between "run a **drop** cycle" and ❌ "**drop** a source".
+  The `drop` **row/table** and the ❌ drop **action** intentionally keep the word "drop".
+- The persisted `app_state` key `last_drop_run_at` is renamed to `last_release_run_at` via migration
+  `b8c9d0e1f2a3` (data is preserved — the dashboard keeps showing the last run).
+
+### Changed — manual triggers run off the request path (fixes "unresponsive" buttons)
+- **"Run release cycle now" and "Check feeds now" no longer block the HTTP request.** They enqueue a
+  one-shot scheduler job and return immediately, so the tab is **safe to close or refresh** — the
+  work runs in the scheduler thread, not the request. Previously the whole cycle (feed polling +
+  chapterizing every EPUB) ran inline; on the ARM prod box that could exceed the reverse-proxy read
+  timeout and appear to hang with no feedback.
+
+### Added — release-cycle progress indicator + concurrency safeguard
+- While a release cycle / feed check is running the dashboard shows a **live progress banner**
+  (spinner + "running in the background; safe to close or refresh this tab") and **disables both
+  trigger buttons**. The banner HTMX-polls `#dash-main` every 3s and clears itself when the run
+  finishes.
+- An **in-process lock** (`scheduler.cycle_status()`; the app runs single-worker) refuses a second
+  run while one is in flight — the scheduled cron and a manual click share the same guard, so they
+  can never overlap. A staleness guard (20 min) prevents a crash mid-cycle from wedging the buttons.
+
 ## [0.10.0] — 2026-07-08
 
 ### Added — fetcher runs as the library owner (no more root:root writes)

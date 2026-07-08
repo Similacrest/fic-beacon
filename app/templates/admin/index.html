@@ -99,13 +99,29 @@
    page never reloads or jumps to the top. Value inputs (cursor/weight) override hx-swap to
    "none" and auto-save on change. Forms keep method/action so they still work without JS. #}
 <div id="dash-main" hx-target="#dash-main" hx-select="#dash-main" hx-swap="outerHTML scroll:none" hx-push-url="false">
-<div style="display:flex; gap:.6em; flex-wrap:wrap; margin-bottom:1.5em">
-  <form method="post" action="/admin/trigger-drop" hx-post="/admin/trigger-drop">
-    <button class="btn btn-primary">▶ Run drop cycle now</button>
+<div style="display:flex; gap:.6em; flex-wrap:wrap; align-items:center; margin-bottom:1.5em">
+  {% if cycle %}
+  {# A release cycle / feed check is running in the background. Show a live banner and disable
+     the triggers; this element re-fetches #dash-main every few seconds (inheriting the wrapper's
+     hx-target/hx-select/hx-swap) and vanishes once the run finishes, which stops the polling.
+     The work runs in the scheduler thread, so it is safe to close or refresh this tab. #}
+  <div class="cycle-banner" hx-get="/admin/" hx-trigger="load delay:3s">
+    <span class="spinner"></span>
+    <span>
+      {% if cycle.op == 'feedcheck' %}🔄 Checking feeds…{% else %}▶ Release cycle running…{% endif %}
+      <span class="muted" style="font-size:.85em">— running in the background; safe to close or refresh this tab.</span>
+    </span>
+  </div>
+  <button class="btn btn-primary" disabled aria-busy="true">▶ Release cycle running…</button>
+  <button class="btn" disabled aria-busy="true">🔄 Check feeds now</button>
+  {% else %}
+  <form method="post" action="/admin/release-now" hx-post="/admin/release-now">
+    <button class="btn btn-primary" title="Run a release cycle now — polls feeds, then broadcasts pending chapters. Runs in the background.">▶ Run release cycle now</button>
   </form>
   <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now">
     <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
   </form>
+  {% endif %}
 </div>
 
 {# ── Now broadcasting: per-channel slot feeds (post + chapter level) ───────── #}
@@ -228,8 +244,8 @@
 <details class="section" data-section="system-status">
   <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
   <div class="kv" style="margin:.5em 0 1em">
-    <span class="muted">Last broadcast (drop cron)</span><span>{{ fmt_dt(status.last_drop) }}</span>
-    <span class="muted">Next broadcast</span><span>{{ fmt_dt(status.next_drop) }}</span>
+    <span class="muted">Last release cycle</span><span>{{ fmt_dt(status.last_drop) }}</span>
+    <span class="muted">Next release cycle</span><span>{{ fmt_dt(status.next_drop) }}</span>
     <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
     <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
   </div>

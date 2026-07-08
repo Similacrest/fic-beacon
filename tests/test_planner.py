@@ -18,7 +18,7 @@ import pytest
 
 from app.models import Book, BookStatus, BudgetMode, Drop, FeedbackAction
 from app.planner.planner import (
-    run_drop_cycle,
+    run_release_cycle,
     apply_feedback,
     _plan_drops,
     _assign_slots,
@@ -201,7 +201,7 @@ class TestDropCycle:
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
         assert len(drops) >= 1
         assert all(isinstance(d, Drop) for d in drops)
 
@@ -212,7 +212,7 @@ class TestDropCycle:
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            run_drop_cycle(in_memory_db, Path("/fake"))
+            run_release_cycle(in_memory_db, Path("/fake"))
 
         in_memory_db.refresh(book)
         assert book.cursor_chapter_index > initial_cursor
@@ -225,7 +225,7 @@ class TestDropCycle:
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
             # Big budget → will consume last chapter and mark complete
-            run_drop_cycle(in_memory_db, Path("/fake"))
+            run_release_cycle(in_memory_db, Path("/fake"))
 
         in_memory_db.refresh(book)
         assert book.status == BookStatus.completed
@@ -249,7 +249,7 @@ class TestDropCycle:
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
 
         # parallel_slots=2 → 2 books promoted to active and dropped from.
         assert len(drops) >= 1
@@ -269,7 +269,7 @@ class TestDropCycle:
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            run_drop_cycle(in_memory_db, Path("/fake"))
+            run_release_cycle(in_memory_db, Path("/fake"))
 
         in_memory_db.refresh(book2)
         assert book2.status == BookStatus.active
@@ -389,7 +389,7 @@ class TestChannels:
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
 
         active = (
             in_memory_db.query(Book)
@@ -410,7 +410,7 @@ class TestChannels:
         in_memory_db.commit()
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
             MockAdapter.return_value = _mock_adapter(1, epub_path)
-            drops = run_drop_cycle(in_memory_db, Path("/fake"))
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
         assert len(drops) >= 1
         assert drops[0].channel_id == general.id
         assert drops[0].feed_key == "1"

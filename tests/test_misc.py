@@ -66,11 +66,11 @@ class TestRegenerateFeedSecret:
 
 class TestStateHelpers:
     def test_run_stamp_roundtrip_and_missing(self, in_memory_db):
-        from app.state import LAST_DROP_RUN, get_run, mark_run
-        assert get_run(in_memory_db, LAST_DROP_RUN) is None
-        mark_run(in_memory_db, LAST_DROP_RUN)
+        from app.state import LAST_RELEASE_RUN, get_run, mark_run
+        assert get_run(in_memory_db, LAST_RELEASE_RUN) is None
+        mark_run(in_memory_db, LAST_RELEASE_RUN)
         in_memory_db.flush()
-        stamped = get_run(in_memory_db, LAST_DROP_RUN)
+        stamped = get_run(in_memory_db, LAST_RELEASE_RUN)
         assert stamped is not None and stamped.tzinfo is not None
 
 
