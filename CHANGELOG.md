@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-08
+
 ### Added — fetcher runs as the library owner (no more root:root writes)
 - The fetcher container is the sole library writer and ran as **root**, so every EPUB/folder
   `calibredb` created came out `root:root`. New `FETCHER_UID`/`FETCHER_GID` env (defaults `0:0` =
