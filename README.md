@@ -61,7 +61,11 @@ docker compose up -d --build
 
 This starts two containers: `beacon` (the app, with the Calibre library mounted **read-only**) and
 `fetcher` (FanFicFare + `calibredb`, library **read-write** — the only writer). Put your site
-logins in `fetcher/config/personal.ini` (copy `fetcher/personal.ini.example`).
+logins in `fetcher/config/personal.ini` (copy `fetcher/personal.ini.example`). If you track XenForo
+serials (SpaceBattles / SufficientVelocity / QuestionableQuesting), keep the `[base_xenforoforum]`
+block from the example: it drops non-story threadmark categories and date-orders the rest so new
+chapters append at the EPUB end — without it, category-grouped threadmarks make stale chapters leak
+to the feed (Fic-Beacon's cursor is positional/append-only).
 
 Then open the admin UI at `http://localhost:8000/admin/`, create channels (or use the auto-created
 **General** one), import books from Calibre into a channel, add tracked stories by URL on the

@@ -349,6 +349,17 @@ broadcast or an admin request.
   A transient `fetch_poll_{id}` interval job polls until `done`, reflecting each book's live `phase`
   on the dashboard, then `apply_result(book, raw)` folds calibre_id / chapter_count / stub into the
   row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them.
+- **XenForo threadmark ordering is a fetcher-config concern.** SB/SV/QQ threads group threadmarks by
+  *category* (Story/Threadmarks, Sidestory, Apocrypha, Omake, Media, Informational, Staff Post) in a
+  fixed, non-chronological order, so a new Story chapter inserts *mid-EPUB* and shifts the trailing
+  categories forward. The reading cursor (`cursor_chapter_index`) is a **positional index that
+  assumes chapters only ever append at the end** (`planner.py` slices `all_chapters[cursor:]`), so a
+  mid-EPUB insert makes stale tail chapters leak to the feed instead of the new one. This is **not**
+  the stub path (that only fires on a chapter-count *shrink*). The fix lives entirely in the
+  fetcher's `personal.ini` `[base_xenforoforum]` block (see `fetcher/personal.ini.example`):
+  `skip_threadmarks_categories` drops the categories you don't read and
+  `order_threadmarks_by_date_categories` date-orders the rest so new chapters append at the EPUB end,
+  restoring the append-only invariant. No app code is involved.
 
 ## Data model (summary)
 

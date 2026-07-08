@@ -8,6 +8,22 @@
 include_subject_tags: false
 keep_html_attrs: true
 
+# XenForo forums (SpaceBattles, SufficientVelocity, QuestionableQuesting) group threadmarks by
+# CATEGORY (Story/Threadmarks, Sidestory, Apocrypha, Omake, Media, Informational, Staff Post) in a
+# fixed order — NOT chronologically. A new Story chapter therefore lands in the *middle* of the EPUB
+# and shoves the trailing categories forward. Fic-Beacon's reading cursor is a positional index that
+# assumes chapters only ever append at the end, so that mid-EPUB insert makes stale tail chapters
+# (e.g. old Informationals) leak to the feed instead of the new Story chapter. Keep only the
+# categories you read and date-order them so new chapters always append at the end.
+[base_xenforoforum]
+# Keep only Story + Sidestory; drop the rest so they never enter the EPUB.
+skip_threadmarks_categories: Apocrypha,Omake,Media,Informational,Staff Post
+# Sort the kept categories by post date and interleave them, so a new chapter of EITHER lands at the
+# END of the EPUB. (Preferred over the blunt order_threadmarks_by_date:true, which FFF ignores when
+# this per-category form is set.) NOTE: category labels are author-defined per thread — these are the
+# common defaults; adjust the lists if a particular thread uses custom labels.
+order_threadmarks_by_date_categories: Threadmarks,Sidestory
+
 # Example: a site that needs a login.
 # [www.fimfiction.net]
 # username: your-user

@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — XenForo threadmark ordering (stale chapters leaking to the feed)
+- **XenForo serials (SB/SV/QQ) group threadmarks by category, not chronologically**, so FanFicFare
+  builds the EPUB with Story/Sidestory/Apocrypha/…/Informational in a fixed order. A new Story
+  chapter therefore lands *mid-EPUB* and shifts the trailing categories forward — and because the
+  reading cursor is a positional, append-only index, the stale tail chapters (e.g. old
+  Informationals) leaked to the feed instead of the genuinely-new chapter.
+- **Fixed via fetcher config, no app change:** `fetcher/personal.ini.example` now ships a
+  `[base_xenforoforum]` block that keeps only Story + Sidestory (`skip_threadmarks_categories`) and
+  date-orders them (`order_threadmarks_by_date_categories`) so new chapters always append at the EPUB
+  end. Documented in the README and CLAUDE.md. Existing XenForo tracked stories should be re-added
+  from scratch so they import in the new order with a fresh cursor.
+
 ### Changed — drop selection is now a slot round-robin (feed diversity + weight throttles share)
 - **The per-channel budget pass rotates through the channel's occupied slots** instead of draining
   the whole channel budget into whichever source had the most pending chapters. Each slot takes
