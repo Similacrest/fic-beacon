@@ -712,6 +712,7 @@ def save_config(
     extra_boost_step: float = Form(...),
     weight_skip_floor: float = Form(...),
     unacked_penalty_floor: float = Form(...),
+    extra_per_channel_per_cycle: int = Form(1),
     tracked_default_weight: float = Form(...),
     websub_max_push_bytes: int = Form(...),
     db: Session = Depends(get_db),
@@ -725,6 +726,7 @@ def save_config(
     cfg.extra_boost_step = max(0.0, extra_boost_step)
     cfg.weight_skip_floor = max(0.0, weight_skip_floor)
     cfg.unacked_penalty_floor = min(1.0, max(0.05, unacked_penalty_floor))
+    cfg.extra_per_channel_per_cycle = max(0, extra_per_channel_per_cycle)
     cfg.tracked_default_weight = max(0.1, tracked_default_weight)
     cfg.websub_max_push_bytes = max(0, websub_max_push_bytes)
     db.commit()

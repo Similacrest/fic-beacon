@@ -37,6 +37,7 @@ from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
     FeedbackEvent, utcnow,
 )
+from app.state import EXTRA_USED_PREFIX, delete_value, get_value, list_with_prefix, set_value
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,9 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
     drops: list[Drop] = []
     skip_log: list[dict] = []
 
+    # A new batch opens: every channel's 🪝 extra allowance starts over.
+    reset_extra_allowance(session)
+
     channels = (
         session.query(Channel)
         .order_by(Channel.queue_order, Channel.id)
@@ -189,7 +193,7 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
 
     import json
 
-    from app.state import LAST_RELEASE_RUN, LAST_SKIPS, mark_run, set_value
+    from app.state import LAST_RELEASE_RUN, LAST_SKIPS, mark_run
     mark_run(session, LAST_RELEASE_RUN)
     set_value(session, LAST_SKIPS, json.dumps(skip_log))
     session.flush()
@@ -282,8 +286,45 @@ def _tick_cooldowns(session: Session, channel_id: int) -> None:
     )
 
 
+def reset_extra_allowance(session: Session) -> None:
+    """Start a new batch: forget how many 🪝 extras each channel has used."""
+    for key, _ in list_with_prefix(session, EXTRA_USED_PREFIX):
+        delete_value(session, key)
+
+
+def _extras_used(session: Session, channel_id: int) -> int:
+    raw = get_value(session, f"{EXTRA_USED_PREFIX}{channel_id}")
+    try:
+        return int(raw) if raw is not None else 0
+    except ValueError:
+        return 0
+
+
+def extra_limit_reached(session: Session, drop: Drop) -> bool:
+    """True if a 🪝 click on `drop` must be refused: its channel has already used its
+    `config.extra_per_channel_per_cycle` extras since the last release cycle.
+
+    Callers check this **before** `apply_feedback`, because `apply_feedback` records the
+    `FeedbackEvent` that makes `(drop, extra)` idempotent — recording it for a refused click would
+    permanently block a legitimate retry on the same drop after the next release. A repeat click on
+    a drop whose extra was already granted is not a new request, so it is never "refused" (it is
+    simply a no-op in `apply_feedback`).
+    """
+    already = (
+        session.query(FeedbackEvent.id)
+        .filter(FeedbackEvent.drop_id == drop.id, FeedbackEvent.action == FeedbackAction.extra)
+        .first()
+    )
+    if already is not None:
+        return False
+    cfg = _get_config(session)
+    return _extras_used(session, drop.book.channel_id) >= max(0, cfg.extra_per_channel_per_cycle)
+
+
 def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop | None:
     """Inject one out-of-cycle drop for the given book (triggered by 'extra' feedback)."""
+    if book.paused or book.status != BookStatus.active:
+        return None  # a stale feed link on a paused/dropped/completed source must not resurrect it
     cfg = _get_config(session)
     adapter = CalibreAdapter(library_path)
     units = _remaining_units(book, adapter)
@@ -747,6 +788,9 @@ def apply_feedback(
         book.thumbs_up += 3
         book.quota_weight = min(WEIGHT_CAP, book.quota_weight + cfg.extra_boost_step)
         extra_drop = create_extra_drop(session, book, library_path)
+        if extra_drop is not None:  # spend one of this channel's per-batch extras
+            key = f"{EXTRA_USED_PREFIX}{book.channel_id}"
+            set_value(session, key, str(_extras_used(session, book.channel_id) + 1))
 
     elif action == FeedbackAction.read:
         # Explicit ✓ Mark-read: acknowledge only (handled above) — no weight change, no event

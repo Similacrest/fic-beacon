@@ -15,15 +15,20 @@ against reader/proxy prefetching bare GET links:
 
 apply_feedback() is additionally idempotent per (drop, action), so even a prefetched
 action counts at most once.
+
+🪝 extra is rate-limited per channel per release cycle (config.extra_per_channel_per_cycle):
+an over-limit click gets an explanatory page and changes nothing (see extra_limit_reached).
 """
+from html import escape
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import Drop, FeedbackAction
-from app.planner.planner import apply_feedback
+from app.models import Channel, Drop, FeedbackAction
+from app.planner.planner import apply_feedback, extra_limit_reached
 
 router = APIRouter(prefix="/fb")
 
@@ -66,6 +71,8 @@ def confirm_get(
     if action not in _CONFIRM_LABELS:
         raise HTTPException(status_code=400, detail="Unknown action")
     drop = _get_drop(token, db)
+    if action == "extra" and extra_limit_reached(db, drop):
+        return _extra_limit_response(db, drop)
     label, description = _CONFIRM_LABELS[action]
     return HTMLResponse(_confirm_page(token, action, label, description, drop.book.title))
 
@@ -75,10 +82,13 @@ def confirm_post(
     token: str,
     action: str = Form(...),
     db: Session = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     if action not in _CONFIRM_LABELS:
         raise HTTPException(status_code=400, detail="Unknown action")
     drop = _get_drop(token, db)
+    if action == "extra" and extra_limit_reached(db, drop):
+        # Refuse *before* apply_feedback records the FeedbackEvent (see extra_limit_reached).
+        return _extra_limit_response(db, drop)
     extra_drop = apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
     db.commit()
     if extra_drop is not None:
@@ -102,6 +112,21 @@ def instant_get(
     apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
     db.commit()
     return HTMLResponse(_DONE_HTML)
+
+
+def _extra_limit_response(db: Session, drop: Drop) -> HTMLResponse:
+    """The 🪝 allowance for this channel is spent — say so and when the next release lands."""
+    from app import scheduler
+    channel = db.get(Channel, drop.book.channel_id)
+    nxt = scheduler.next_release_time()
+    when = f" The next release is {nxt.strftime('%a %H:%M')}." if nxt else ""
+    name = escape(channel.name if channel else "this channel")
+    return HTMLResponse(
+        "<html><body style='font-family:sans-serif;max-width:480px;margin:4em auto;padding:1em'>"
+        f"<h2>🪝 No extra chapters left for {name}</h2>"
+        f"<p>You've used this channel's extra-chapter allowance until the next release.{when}</p>"
+        "<p>Nothing was changed.</p></body></html>"
+    )
 
 
 def _confirm_page(

@@ -171,7 +171,7 @@ C4Component
 - **`websub_subscription`** — `id`, `topic_url`, `callback_url`, `secret?`, `lease_expires_at`,
   `verified`, `created_at`.
 - **`config`** — single-row globals only: `wpm`, `cadence_cron`, `vote_step`,
-  `extra_boost_step`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
+  `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
   live per-channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
   `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
@@ -240,7 +240,9 @@ drop) and at chapter 1 otherwise. Chapter count comes from chapterizing the exis
 - `GET /fb/{token}?action=up|down` — **instant**, idempotent per `(drop, action)`. `up`: thumbs+,
   weight `+= vote_step`. `down`: thumbs+, weight `−= vote_step`; weight reaching 0 → `dropped` + promote next.
 - `GET /fb/confirm/{token}?action=extra|drop` → confirm page → POST. `extra`: +3 thumbs, weight
-  `+= extra_boost_step`, inject an out-of-cycle drop (shown only when a next unit exists). `drop`: set
+  `+= extra_boost_step`, inject an out-of-cycle drop (shown only when a next unit exists). Limited to
+  `extra_per_channel_per_cycle` (default 1) per channel per release cycle; over the limit the click gets
+  an explanatory page and nothing is recorded. `drop`: set
   source `dropped` immediately + promote next.
 
 ### 6.4 Permalink resolution

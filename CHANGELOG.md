@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — cap on extra-chapter requests (migration `d0e1f2a3b4c5`)
+- Each channel honours at most `config.extra_per_channel_per_cycle` 🪝 requests (default **1**,
+  Settings page; `0` disables) between two release cycles, so extras can't hook you into binging.
+  The count is kept in `app_state` and reset at the start of every release cycle.
+- An over-limit click gets a page naming the channel and the next release and changes nothing. The
+  refusal happens *before* the feedback event is recorded, so the same drop can be 🪝'd again after the
+  next release. The 🪝 link still appears in feed items (bodies stay byte-stable); it's enforced on click.
+- 🪝 on a paused/dropped/completed source no longer injects a chapter, and the feed hides the link for
+  those sources.
+
 ### Changed — additive weights, gentler penalties (migration `c9d0e1f2a3b4`)
 - **Votes are additive.** 👍/👎 add/subtract `config.vote_step` (default 0.25) and 🪝 adds
   `config.extra_boost_step` (default 0.5) to `quota_weight`, which keeps its natural ~0–3 scale but is

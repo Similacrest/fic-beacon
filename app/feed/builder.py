@@ -146,7 +146,7 @@ def _extra_available(drop: Drop) -> bool:
     the cursor. (Tracked stories self-gate the same way; a fetch later adds more.)
     """
     book = drop.book
-    if book.status.value == "completed":
+    if book.status.value in ("completed", "dropped") or book.paused is True:
         return False
     return book.total_chapters is None or book.cursor_chapter_index < book.total_chapters
 

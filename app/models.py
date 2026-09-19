@@ -272,6 +272,10 @@ class Config(Base):
     # Floor of the transient unread-drop ramp (see planner._unread_penalty): a reader who is
     # several drops behind slows a source down, but never below this fraction and never via weight.
     unacked_penalty_floor: Mapped[float] = mapped_column(Float, nullable=False, default=0.2)
+    # Max 🪝 extra-chapter requests honoured per channel between two release cycles, so extra
+    # chapters can't hook the reader into binging. Counted in app_state (`extra_used:{channel_id}`),
+    # reset at the start of every release cycle. 0 disables extras.
+    extra_per_channel_per_cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog, so
     # real ongoing serials outrank the finite archive in the stochastic budget pass. Admin-tunable.
     tracked_default_weight: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)

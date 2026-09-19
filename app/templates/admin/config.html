@@ -33,6 +33,12 @@
     <small style="color:#666">Added to a source's weight when you request an extra chapter. <code>0</code> = just the extra chapter, no boost.</small>
   </div>
   <div class="form-group">
+    <label for="extra_per_channel_per_cycle">🪝 Extra chapters per channel per release</label>
+    <input type="number" name="extra_per_channel_per_cycle" id="extra_per_channel_per_cycle"
+           value="{{ cfg.extra_per_channel_per_cycle }}" min="0" max="20">
+    <small style="color:#666">How many extra-chapter requests each channel honours between two releases, so you don't get hooked into binging. Over the limit, the 🪝 link explains and changes nothing. <code>0</code> disables extras.</small>
+  </div>
+  <div class="form-group">
     <label for="weight_skip_floor">Fade-out floor (weight)</label>
     <input type="number" name="weight_skip_floor" id="weight_skip_floor"
            value="{{ cfg.weight_skip_floor }}" min="0" max="10" step="0.05">

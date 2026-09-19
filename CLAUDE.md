@@ -285,7 +285,15 @@ Links render as **bare emoji** (no text label); the wording lives in each link's
   admin weight box does *not* drop it (it just never posts). **Instant bare GET.**
 - `extra` (super-up) → `thumbs_up += 3`, `quota_weight += config.extra_boost_step` (admin-configurable,
   default **0.5**; additive — the old multiplicative boost compounded too fast), **and** inject an
-  out-of-cycle drop (born acknowledged, see read-gating).
+  out-of-cycle drop (born acknowledged, see read-gating). **Rate-limited per channel per release
+  cycle** (`config.extra_per_channel_per_cycle`, default **1**, `0` disables): the count lives in
+  `app_state[extra_used:{channel_id}]` and is wiped at the start of every release cycle. Over the limit
+  the confirm page (and the POST) return an explanatory page naming the next release and change
+  **nothing** — the refusal returns *before* `apply_feedback` records the `FeedbackEvent`, else the
+  `(drop, extra)` idempotency guard would block a legitimate retry on that drop after the next
+  release. The 🪝 link stays in the feed regardless (bodies stay byte-stable for WebSub); it's
+  enforced at click time. A repeat click on an already-granted drop is a no-op, not a refusal. An extra
+  on a paused/dropped/completed source injects nothing, and `_extra_available` hides the link for them.
   **Confirm page** (`/fb/confirm/{token}`).
 - `pause` → set `book.paused` — the source broadcasts nothing until resumed. **Instant bare GET**
   (reversible, so no confirm page). A **backlog** book frees its slot (re-enters the queue so the
@@ -396,8 +404,8 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`vote_step`, `extra_boost_step`, `weight_skip_floor`, `unacked_penalty_floor`,
-`tracked_default_weight`, `websub_max_push_bytes`, `feed_secret`) ·
+`vote_step`, `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`,
+`unacked_penalty_floor`, `tracked_default_weight`, `websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.
 `last_release_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 

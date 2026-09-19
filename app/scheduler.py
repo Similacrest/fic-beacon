@@ -420,6 +420,12 @@ def next_run_times() -> dict[str, object]:
     return out
 
 
+def next_release_time():
+    """When the next release cycle fires (tz-aware), or None — for the 🪝 refusal page."""
+    job = _scheduler.get_job("release_cycle") if _scheduler.running else None
+    return job.next_run_time if job else None
+
+
 def shutdown() -> None:
     if _scheduler.running:
         _scheduler.shutdown(wait=False)

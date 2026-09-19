@@ -1038,3 +1038,103 @@ class TestCooldownStall:
 
             second = run_release_cycle(in_memory_db, Path("/fake"))
         assert len(second) >= 1                     # eligible again — not frozen
+
+
+class TestExtraCap:
+    """🪝 extras are limited per channel per release cycle (config.extra_per_channel_per_cycle)."""
+
+    def _drop(self, db, book, n):
+        d = Drop(book_id=book.id, feedback_token=f"xt{n}", reader_slug=f"xs{n}", chapter_start=0,
+                 chapter_end=0, word_count=100, channel_id=book.channel_id, feed_key="1")
+        db.add(d); db.flush()
+        return d
+
+    def _extra(self, db, drop, epub_path):
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            return apply_feedback(db, drop, FeedbackAction.extra, Path("/fake"))
+
+    def test_second_extra_in_a_batch_is_refused_by_the_gate(self, in_memory_db, epub_path):
+        from app.planner.planner import extra_limit_reached
+        book = _make_book(in_memory_db, calibre_id=1)
+        d1, d2 = self._drop(in_memory_db, book, 1), self._drop(in_memory_db, book, 2)
+
+        assert not extra_limit_reached(in_memory_db, d1)
+        assert self._extra(in_memory_db, d1, epub_path) is not None
+        assert extra_limit_reached(in_memory_db, d2)          # default allowance is 1
+
+    def test_repeat_click_on_granted_drop_is_not_refused(self, in_memory_db, epub_path):
+        from app.planner.planner import extra_limit_reached
+        book = _make_book(in_memory_db, calibre_id=1)
+        d1 = self._drop(in_memory_db, book, 1)
+        self._extra(in_memory_db, d1, epub_path)
+        assert not extra_limit_reached(in_memory_db, d1)       # a double-click, not a new request
+
+    def test_allowance_is_configurable(self, in_memory_db, epub_path):
+        from app.models import Config
+        from app.planner.planner import extra_limit_reached
+        in_memory_db.get(Config, 1).extra_per_channel_per_cycle = 2
+        book = _make_book(in_memory_db, calibre_id=1)
+        d1, d2, d3 = (self._drop(in_memory_db, book, i) for i in (1, 2, 3))
+        self._extra(in_memory_db, d1, epub_path)
+        assert not extra_limit_reached(in_memory_db, d2)
+        self._extra(in_memory_db, d2, epub_path)
+        assert extra_limit_reached(in_memory_db, d3)
+
+    def test_release_cycle_resets_the_allowance(self, in_memory_db, epub_path):
+        from app.planner.planner import extra_limit_reached
+        book = _make_book(in_memory_db, calibre_id=1)
+        d1, d2 = self._drop(in_memory_db, book, 1), self._drop(in_memory_db, book, 2)
+        self._extra(in_memory_db, d1, epub_path)
+        assert extra_limit_reached(in_memory_db, d2)
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            run_release_cycle(in_memory_db, Path("/fake"))
+        assert not extra_limit_reached(in_memory_db, d2)
+
+    def test_allowance_is_per_channel(self, in_memory_db, epub_path):
+        from app.models import Channel
+        from app.planner.planner import extra_limit_reached
+        other = Channel(name="Other", slug="other", parallel_slots=1, budget=1000)
+        in_memory_db.add(other); in_memory_db.flush()
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        b = _make_book(in_memory_db, calibre_id=2, title="B", channel_id=other.id)
+        da, db_ = self._drop(in_memory_db, a, 1), self._drop(in_memory_db, b, 2)
+        self._extra(in_memory_db, da, epub_path)
+        assert not extra_limit_reached(in_memory_db, db_)
+
+    def test_refused_confirm_post_records_no_event_and_no_weight_change(self, in_memory_db, epub_path):
+        """The idempotency trap: a refusal must not insert the FeedbackEvent, or the same drop
+        could never be extra'd again after the next release."""
+        from app.models import FeedbackEvent
+        from app.routers.feedback import confirm_post
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=1.0)
+        d1, d2 = self._drop(in_memory_db, book, 1), self._drop(in_memory_db, book, 2)
+        self._extra(in_memory_db, d1, epub_path)
+        in_memory_db.commit()
+        weight = book.quota_weight
+
+        resp = confirm_post(d2.feedback_token, action="extra", db=in_memory_db)
+
+        assert resp.status_code == 200 and b"No extra chapters left" in resp.body
+        assert book.quota_weight == weight
+        assert in_memory_db.query(FeedbackEvent).filter_by(drop_id=d2.id).count() == 0
+        assert d2.acknowledged_at is None
+
+        # ...and after a new batch opens the very same drop can be extra'd.
+        from app.planner.planner import reset_extra_allowance
+        reset_extra_allowance(in_memory_db)
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter, \
+                patch("app.websub.publisher.publish_updates"):
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            resp = confirm_post(d2.feedback_token, action="extra", db=in_memory_db)
+        assert resp.status_code == 303
+        assert in_memory_db.query(FeedbackEvent).filter_by(drop_id=d2.id).count() == 1
+
+    def test_extra_on_paused_source_injects_nothing(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1)
+        book.paused = True
+        d1 = self._drop(in_memory_db, book, 1)
+        assert self._extra(in_memory_db, d1, epub_path) is None
