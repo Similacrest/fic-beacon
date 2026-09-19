@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — adding a tracked story no longer fails with "fanficfare produced no epub" (migration `e1f2a3b4c5d6`)
+- **Root cause of the spurious error:** the fetcher matched each downloaded EPUB to a submitted URL by
+  exact string, but FanFicFare canonicalises URLs (FFN `/s/123` → `/s/123/1/Title`, dropped `www.`,
+  XenForo `/page-N`), so in a bulk add a *successful* download was reported as "no epub" and the EPUB
+  silently discarded. Matching is now by story identity (host + numeric id).
+- New-story downloads are **retried with backoff** on transient errors (429/503/timeout) like updates
+  already were, instead of failing permanently on the first try.
+- A genuine failure now carries **FanFicFare's own output** in the error (attributed per URL — a batch's
+  failures are re-run alone), rather than the bare "produced no epub".
+- The first download adopts the canonical story URL as `source_url`, so later updates find the library
+  entry instead of re-downloading the story as a duplicate.
+- The Tracked Stories tab now reports a duplicate/blank add instead of silently ignoring it.
+
+### Added — ongoing vs completed stories are recorded
+- New `book.story_status` (migration `e1f2a3b4c5d6`), filled from the downloaded EPUB (title page
+  `Status:` / OPF subject). Shown on the Tracked Stories tab; a completed story stays tracked (keeps its
+  slot, keeps delivering chapters) but is no longer re-fetched by the poller/sweep. Calibre is not written.
+
 ### Added — cap on extra-chapter requests (migration `d0e1f2a3b4c5`)
 - Each channel honours at most `config.extra_per_channel_per_cycle` 🪝 requests (default **1**,
   Settings page; `0` disables) between two release cycles, so extras can't hook you into binging.

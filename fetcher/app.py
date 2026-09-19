@@ -43,6 +43,7 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -219,6 +220,65 @@ def _epub_source_url(epub_path: Path) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _story_key(url: str | None) -> str:
+    """A site-stable identity for a story URL, so a submitted URL can be matched to the canonical
+    one FanFicFare writes into the EPUB.
+
+    FanFicFare rewrites URLs (FFN `/s/123` → `/s/123/1/Story-Title`, a dropped `www.`, a trailing
+    slash, XenForo `/threads/slug.123/page-2` → `/threads/slug.123/`), so an exact-string compare
+    misses a perfectly good download. We key on `host` + the story's numeric id where there is one
+    (XenForo's id is the number after the last dot of the thread slug; elsewhere the first long run
+    of digits in the path), falling back to the normalised path.
+    """
+    if not url:
+        return ""
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    path = parsed.path
+    xf = re.search(r"/threads/[^/]*?\.(\d+)(?:/|$)", path)
+    if xf:
+        return f"{host}|{xf.group(1)}"
+    num = re.search(r"\d{3,}", path)
+    if num:
+        return f"{host}|{num.group(0)}"
+    return f"{host}|{path.rstrip('/').lower()}"
+
+
+_STATUS_TOKENS = {
+    "completed", "complete", "in-progress", "in progress", "hiatus", "abandoned",
+    "incomplete", "ongoing", "published",
+}
+
+
+def _epub_status(epub_path: Path) -> str | None:
+    """The story's publication status as FanFicFare recorded it (e.g. `Completed`, `In-Progress`).
+
+    FanFicFare writes it in two places: the title page's `<b>Status:</b> X<br />` line and as a
+    `dc:subject` in the OPF. The title page is the specific one, so prefer it; fall back to a
+    recognised status token among the OPF subjects.
+    """
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            names = zf.namelist()
+            title = next((n for n in names if n.endswith("title_page.xhtml")), None)
+            if title:
+                m = re.search(r"<b>Status:</b>\s*([^<]+?)\s*<", zf.read(title).decode("utf-8", "ignore"))
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
+            opf_name = next((n for n in names if n.endswith(".opf")), None)
+            if opf_name:
+                opf = zf.read(opf_name).decode("utf-8", "ignore")
+                for subject in re.findall(r"<dc:subject>([^<]*)</dc:subject>", opf):
+                    if subject.strip().lower() in _STATUS_TOKENS:
+                        return subject.strip()
+    except Exception:
+        return None
+    return None
+
+
 def _only_epub(directory: Path) -> Path | None:
     epubs = list(directory.glob("*.epub"))
     return epubs[0] if epubs else None
@@ -238,7 +298,8 @@ def fetch(req: FetchRequest) -> dict:
         "status": "running",
         "finished_at": None,
         "results": [{"url": u, "phase": "queued", "calibre_id": None,
-                     "chapter_count": None, "stub": None, "error": None} for u in urls],
+                     "chapter_count": None, "stub": None, "error": None,
+                     "story_url": None, "story_status": None} for u in urls],
     }
     _executor.submit(_run_job, job_id)
     return {"job_id": job_id}
@@ -291,35 +352,101 @@ def _run_job(job_id: str) -> None:
         job["finished_at"] = time.time()
 
 
-def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
-    """Download all brand-new stories in a single warm `fanficfare -i` pass, add to Calibre."""
+def _tail(text: str, limit: int = 300) -> str:
+    """The last few non-empty lines of subprocess output — where FanFicFare puts the reason."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return " | ".join(lines[-4:])[-limit:]
+
+
+def _download_new(urls: list[str], by_url: dict[str, dict]) -> str:
+    """One `fanficfare` pass over `urls` (a warm `-i` batch, or a single URL), adding every EPUB
+    it produced to Calibre and marking its entry done. Returns FanFicFare's combined output.
+
+    Each EPUB is matched back to a submitted URL by **story identity** (`_story_key`), not exact
+    string: FanFicFare canonicalises URLs, and an exact compare used to report a successful
+    download as "no epub" *and* silently discard it. A lone unmatched EPUB against a lone
+    unmatched URL still pairs up as a last resort.
+    """
     for u in urls:
         by_url[u]["phase"] = "downloading"
+    by_key = {_story_key(u): u for u in urls}
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         infile = work / "urls.txt"
         infile.write_text("\n".join(urls) + "\n")
-        _fanficfare("-i", str(infile), cwd=str(work))
-        produced = list(work.glob("*.epub"))
+        res = _fanficfare("-i", str(infile), cwd=str(work))
+        output = (res.stdout or "") + (res.stderr or "")
         matched: set[str] = set()
-        for epub in produced:
+        for epub in sorted(work.glob("*.epub")):
             src = _epub_source_url(epub)
-            entry = by_url.get(src) if src else None
-            if entry is None:  # fall back to single unmatched url if exactly one remains
+            url = by_key.get(_story_key(src)) if src else None
+            if url is None or url in matched:  # fall back to the single URL still unmatched
                 remaining = [u for u in urls if u not in matched]
-                entry = by_url[remaining[0]] if len(remaining) == 1 else None
-            if entry is None:
+                url = remaining[0] if len(remaining) == 1 else None
+            if url is None:
+                logger.warning("no submitted URL matches produced epub %s (source %s)", epub.name, src)
                 continue
+            entry = by_url[url]
             add = _calibredb("add", str(epub))
+            if add.returncode != 0:
+                _fail(entry, f"calibredb add failed: {_tail((add.stdout or '') + (add.stderr or ''))}")
+                entry["phase"] = "error"
+                matched.add(url)
+                continue
             m = re.search(r"ids?\s*[:#]?\s*(\d+)", add.stdout or "")
-            entry["calibre_id"] = int(m.group(1)) if m else _find_calibre_id(entry["url"])
+            entry["calibre_id"] = int(m.group(1)) if m else _find_calibre_id(src or url)
             entry["chapter_count"] = _count_chapters(epub)
+            entry["story_url"] = src
+            entry["story_status"] = _epub_status(epub)
             entry["phase"] = "done"
-            matched.add(entry["url"])
-        for u in urls:  # any new url that produced no epub
-            if by_url[u]["phase"] != "done":
-                by_url[u]["error"] = "fanficfare produced no epub"
-                by_url[u]["phase"] = "error"
+            matched.add(url)
+    return output
+
+
+def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
+    """Download brand-new stories and add them to Calibre.
+
+    A warm batch first; URLs that come back empty are retried with exponential backoff while the
+    failure looks transient (a 429/503/timeout used to become a permanent error on the first try —
+    only the EXISTING path retried). Whatever is still missing is reported with FanFicFare's real
+    output instead of a bare "produced no epub". When several URLs fail together the batch output
+    can't be attributed to any one of them, so each is re-run alone to get its own reason.
+    """
+    def _pending() -> list[str]:
+        return [u for u in urls if by_url[u]["phase"] not in ("done", "error")]
+
+    pending = list(urls)
+    output = ""
+    ran = len(pending)  # how many URLs the last run covered (1 ⇒ its output is that URL's alone)
+    for attempt in range(RETRY_ATTEMPTS):
+        ran = len(pending)
+        output = _download_new(pending, by_url)
+        pending = _pending()
+        if not pending or not _TRANSIENT_RE.search(output):
+            break
+        if attempt < RETRY_ATTEMPTS - 1:
+            delay = RETRY_BASE_SECONDS * (2 ** attempt)
+            logger.warning("new-story batch: transient failure; retry %d/%d in %.0fs",
+                           attempt + 1, RETRY_ATTEMPTS - 1, delay)
+            time.sleep(delay)
+    if not pending:
+        return
+
+    if ran > 1:  # the output covers several stories — re-run each failure alone for its own reason
+        for u in list(pending):
+            single = _download_new([u], by_url)
+            if by_url[u]["phase"] not in ("done", "error"):
+                _no_epub(by_url[u], single, transient=bool(_TRANSIENT_RE.search(single)))
+        return
+    _no_epub(by_url[pending[0]], output, transient=bool(_TRANSIENT_RE.search(output)))
+
+
+def _no_epub(entry: dict, output: str, transient: bool) -> None:
+    """Record why a new story produced no EPUB, using what FanFicFare actually said."""
+    reason = _tail(output) or "no output"
+    prefix = f"failed after {RETRY_ATTEMPTS} attempts" if transient else "fanficfare produced no epub"
+    entry["error"] = f"{prefix}: {reason}"[:400]
+    entry["phase"] = "error"
 
 
 def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
@@ -337,6 +464,8 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
             m = re.search(r"ids?\s*[:#]?\s*(\d+)", add.stdout or "")
             entry["calibre_id"] = int(m.group(1)) if m else _find_calibre_id(url)
             entry["chapter_count"] = _count_chapters(epub)
+            entry["story_url"] = _epub_source_url(epub)
+            entry["story_status"] = _epub_status(epub)
             return entry, None
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -368,6 +497,8 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
         _calibredb("add_format", str(calibre_id), str(epub))
         entry["calibre_id"] = calibre_id
         entry["chapter_count"] = _count_chapters(epub)
+        entry["story_url"] = _epub_source_url(epub)
+        entry["story_status"] = _epub_status(epub)
         entry["stub"] = stub
         return entry, None
 

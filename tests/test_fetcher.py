@@ -69,3 +69,161 @@ def test_chapter_urls_empty_for_non_fanficfare_epub(tmp_path):
 
 def test_chapter_urls_unreadable_returns_empty(tmp_path):
     assert fetcher._chapter_urls(tmp_path / "missing.epub") == []
+
+
+# ── new-story download path (the "fanficfare produced no epub" bug) ───────────────────────────
+
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _fff_epub(path: Path, source_url: str, status: str | None = "In-Progress") -> None:
+    """A FanFicFare-shaped EPUB: dc:source + status subject in the OPF, status on the title page."""
+    subject = f"<dc:subject>{status}</dc:subject>" if status else ""
+    opf = (
+        '<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        f'<metadata>{subject}<dc:source>{source_url}</dc:source></metadata>'
+        '<manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+        '<spine><itemref idref="c1"/></spine></package>'
+    )
+    title = (
+        f'<html><body><b>Status:</b> {status}<br /></body></html>' if status
+        else '<html><body></body></html>'
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("content.opf", opf)
+        zf.writestr("OEBPS/title_page.xhtml", title)
+        zf.writestr("c1.xhtml", _chapter_doc(source_url))
+
+
+def _entry(url: str) -> dict:
+    return {"url": url, "phase": "queued", "calibre_id": None, "chapter_count": None,
+            "stub": None, "error": None, "story_url": None, "story_status": None}
+
+
+@pytest.fixture
+def fake_tools(monkeypatch):
+    """Replace the subprocess wrappers. `script` maps a call number to (files_to_write, output)."""
+    state = {"calls": [], "script": [], "next_id": 100}
+
+    def fanficfare(*args, cwd):
+        call = len(state["calls"])
+        state["calls"].append(args)
+        files, output = state["script"][min(call, len(state["script"]) - 1)]
+        for name, url, status in files:
+            _fff_epub(Path(cwd) / name, url, status)
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    def calibredb(*args):
+        if args[0] == "add":
+            state["next_id"] += 1
+            return subprocess.CompletedProcess(args, 0, stdout=f"Added book ids: {state['next_id']}", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+    monkeypatch.setattr(fetcher, "_find_calibre_id", lambda url: None)
+    monkeypatch.setattr(fetcher.time, "sleep", lambda s: None)
+    return state
+
+
+def test_story_key_matches_canonicalised_urls():
+    k = fetcher._story_key
+    assert k("https://www.fanfiction.net/s/13051824") == k("https://www.fanfiction.net/s/13051824/1/New-Blood")
+    assert k("https://forums.spacebattles.com/threads/elixir.1258552/page-3") == \
+        k("https://forums.spacebattles.com/threads/elixir.1258552/")
+    assert k("https://archiveofourown.org/works/19992961") == k("http://archiveofourown.org/works/19992961/chapters/1")
+    assert k("https://royalroad.com/fiction/12345") == k("https://www.royalroad.com/fiction/12345/some-title")
+    assert k("https://www.fanfiction.net/s/1") != k("https://www.fanfiction.net/s/2")
+    assert k(None) == ""
+
+
+def test_epub_status_prefers_title_page_then_opf(tmp_path):
+    a = tmp_path / "a.epub"; _fff_epub(a, "https://x/s/1", "Completed")
+    assert fetcher._epub_status(a) == "Completed"
+    b = tmp_path / "b.epub"; _fff_epub(b, "https://x/s/2", None)
+    assert fetcher._epub_status(b) is None
+    # No title page, status only as an OPF subject.
+    c = tmp_path / "c.epub"
+    with zipfile.ZipFile(c, "w") as zf:
+        zf.writestr("content.opf", "<package><dc:subject>fantasy</dc:subject><dc:subject>Hiatus</dc:subject></package>")
+    assert fetcher._epub_status(c) == "Hiatus"
+
+
+def test_bulk_add_matches_canonical_urls_and_records_status(fake_tools):
+    """Regression: submitted FFN/SB URLs differ from the canonical dc:source FanFicFare writes, so
+    exact matching reported success as 'produced no epub' and discarded the EPUB."""
+    a, b = "https://www.fanfiction.net/s/13051824", "https://forums.spacebattles.com/threads/x.906680/page-2"
+    fake_tools["script"] = [([
+        ("a.epub", "https://www.fanfiction.net/s/13051824/1/New-Blood", "In-Progress"),
+        ("b.epub", "https://forums.spacebattles.com/threads/x.906680/", "Completed"),
+    ], "")]
+    by_url = {a: _entry(a), b: _entry(b)}
+
+    fetcher._process_new_batch([a, b], by_url)
+
+    assert by_url[a]["phase"] == by_url[b]["phase"] == "done"
+    assert by_url[a]["error"] is None and by_url[b]["error"] is None
+    assert by_url[a]["story_url"] == "https://www.fanfiction.net/s/13051824/1/New-Blood"
+    assert (by_url[a]["story_status"], by_url[b]["story_status"]) == ("In-Progress", "Completed")
+    assert by_url[a]["calibre_id"] != by_url[b]["calibre_id"]
+
+
+def test_new_story_retries_transient_failure(fake_tools):
+    url = "https://www.royalroad.com/fiction/12345"
+    fake_tools["script"] = [
+        ([], "HTTP Error 503: Service Unavailable"),                       # attempt 1: nothing
+        ([("a.epub", "https://www.royalroad.com/fiction/12345/t", "In-Progress")], ""),  # attempt 2
+    ]
+    by_url = {url: _entry(url)}
+
+    fetcher._process_new_batch([url], by_url)
+
+    assert by_url[url]["phase"] == "done" and by_url[url]["error"] is None
+    assert len(fake_tools["calls"]) == 2
+
+
+def test_permanent_failure_reports_fanficfare_output(fake_tools):
+    url = "https://www.royalroad.com/fiction/99999"
+    fake_tools["script"] = [([], "Traceback...\nStoryDoesNotExist: story not found at 99999")]
+    by_url = {url: _entry(url)}
+
+    fetcher._process_new_batch([url], by_url)
+
+    e = by_url[url]
+    assert e["phase"] == "error"
+    assert "fanficfare produced no epub" in e["error"] and "StoryDoesNotExist" in e["error"]
+    assert len(fake_tools["calls"]) == 1        # not transient → no pointless retries
+
+
+def test_transient_exhaustion_says_so(fake_tools):
+    url = "https://www.royalroad.com/fiction/12345"
+    fake_tools["script"] = [([], "connection reset by peer")]
+    by_url = {url: _entry(url)}
+
+    fetcher._process_new_batch([url], by_url)
+
+    assert by_url[url]["error"].startswith("failed after 3 attempts")
+    assert len(fake_tools["calls"]) == 3
+
+
+def test_multi_url_failure_is_attributed_per_url(fake_tools):
+    good = "https://www.royalroad.com/fiction/111"
+    bad = "https://www.royalroad.com/fiction/222"
+
+    def script_for(call_args):  # decided by which URL each run was given
+        return None
+
+    # batch: only `good` produced; then `bad` is re-run alone and fails with its own message.
+    fake_tools["script"] = [
+        ([("g.epub", "https://www.royalroad.com/fiction/111/g", "Completed")], "batch output"),
+        ([], "StoryDoesNotExist: 222 is private"),
+    ]
+    by_url = {good: _entry(good), bad: _entry(bad)}
+
+    fetcher._process_new_batch([good, bad], by_url)
+
+    assert by_url[good]["phase"] == "done"
+    assert by_url[bad]["phase"] == "error"
+    assert "222 is private" in by_url[bad]["error"]

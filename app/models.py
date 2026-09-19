@@ -149,6 +149,12 @@ class Book(Base):
     channel_id: Mapped[int] = mapped_column(
         ForeignKey("channel.id"), nullable=False, index=True
     )
+    # The story's publication status as the fetcher last saw it (FanFicFare's own words, e.g.
+    # "In-Progress" / "Completed" / "Hiatus" / "Abandoned"), read from the downloaded EPUB.
+    # `calibredb add` sets no custom columns, so a story added by URL has a blank Calibre #status
+    # forever; this is where we remember ongoing-vs-completed for it. A done value stops the poller
+    # re-fetching (the story stays tracked so it keeps its slot and finishes delivering chapters).
+    story_status: Mapped[str | None] = mapped_column(String, nullable=True)
     # Stable slot number within the channel (1..parallel_slots), set when active.
     slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Paused sources broadcast nothing: they're excluded from candidate selection and slot

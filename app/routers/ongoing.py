@@ -87,11 +87,14 @@ def add_story(
 ) -> RedirectResponse:
     from app import scheduler
     target_id = channel_id or ensure_default_channel(db).id
-    _add_tracked_story(db, source_url, title, target_id)
+    book = _add_tracked_story(db, source_url, title, target_id)
+    if book is None:  # blank or already tracked — say so instead of silently doing nothing
+        reason = "blank" if not source_url.strip() else "duplicate"
+        return RedirectResponse(url=f"/admin/ongoing/?error={reason}", status_code=303)
     assign_channel_slots(db, target_id)
     db.commit()
     scheduler.trigger_fetch_pending()
-    return RedirectResponse(url="/admin/ongoing/", status_code=303)
+    return RedirectResponse(url="/admin/ongoing/?added=1", status_code=303)
 
 
 @router.post("/add-bulk")

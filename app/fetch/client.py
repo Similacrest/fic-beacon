@@ -19,6 +19,7 @@ import logging
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy.orm import object_session
 
 from app.config import settings
 from app.models import Book, label_offset_at, utcnow
@@ -47,6 +48,9 @@ class FetchResult:
     chapter_count: int | None = None
     stub: StubInfo | None = None
     error: str | None = None
+    # Canonical story URL and publication status read from the downloaded EPUB by the fetcher.
+    story_url: str | None = None
+    story_status: str | None = None
 
 
 def submit_fetch(urls: list[str]) -> str | None:
@@ -96,6 +100,8 @@ def _to_result(raw: dict) -> FetchResult:
         ok=True,
         calibre_id=raw.get("calibre_id"),
         chapter_count=raw.get("chapter_count"),
+        story_url=raw.get("story_url"),
+        story_status=raw.get("story_status"),
         stub=StubInfo(
             old=int(stub["old"]), new=int(stub["new"]),
             old_urls=stub.get("old_urls"), new_urls=stub.get("new_urls"),
@@ -119,6 +125,9 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
 
     if book.calibre_id is None and result.calibre_id is not None:
         book.calibre_id = result.calibre_id
+        _adopt_canonical_url(book, result.story_url)
+    if result.story_status:
+        book.story_status = result.story_status
     if result.chapter_count is not None:
         book.total_chapters = result.chapter_count
 
@@ -128,6 +137,24 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
         book.last_fetch_status = "ok"
 
     return result
+
+
+def _adopt_canonical_url(book: Book, story_url: str | None) -> None:
+    """After a story's *first* download, adopt the canonical URL FanFicFare recorded.
+
+    The Calibre `url:` identifier the fetcher later searches by is the canonical one (FFN adds the
+    `/1/Title` slug, XenForo drops `/page-N`, …), not what the user pasted — so keeping the pasted
+    URL made every later update miss the library entry and re-download the story as a duplicate.
+    Skipped if another source already owns that URL.
+    """
+    if not story_url or story_url == book.source_url:
+        return
+    session = object_session(book)
+    if session is not None and session.query(Book.id).filter(
+        Book.source_url == story_url, Book.id != book.id
+    ).first() is not None:
+        return
+    book.source_url = story_url
 
 
 def _apply_stub(book: Book, stub: StubInfo) -> None:

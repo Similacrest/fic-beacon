@@ -148,6 +148,23 @@ class TestPollTriggers:
         assert list(mock_submit.call_args[0][1]) == [ongoing]
 
 
+    def test_sweep_skips_story_marked_done_by_the_fetcher(self, in_memory_db):
+        """A URL-added story has a blank Calibre #status forever; the fetcher-recorded
+        story_status is what lets the sweep stop re-fetching it once it completes."""
+        ongoing = _tracked(in_memory_db, feed_url=None, source_url="https://o/story",
+                           calibre_id=next(_next_calibre_id))
+        done = _tracked(in_memory_db, feed_url=None, source_url="https://d/story",
+                        calibre_id=next(_next_calibre_id))
+        done.story_status = "Completed"
+        adapter = MagicMock()
+        adapter.status_map.return_value = {}          # Calibre #status blank for both
+        with patch("app.ongoing.poller.CalibreAdapter", return_value=adapter), \
+             patch("app.scheduler.submit_and_track") as mock_submit:
+            queued = sweep_feedless(in_memory_db)
+        assert queued == 1
+        assert list(mock_submit.call_args[0][1]) == [ongoing]
+
+
 # ── fetch result folding + stub mechanic ────────────────────────────────────────
 
 class TestApplyResult:
@@ -333,3 +350,64 @@ class TestAbsoluteChapterNumber:
         src = _tracked(in_memory_db)
         assert absolute_chapter_number(src, 0) == 1
         assert absolute_chapter_number(src, 9) == 10
+
+
+class TestStoryStatusAndCanonicalUrl:
+    def test_status_recorded_from_fetch_result(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        apply_result(src, {"url": src.source_url, "calibre_id": 42, "chapter_count": 12,
+                           "story_status": "Completed", "error": None, "stub": None})
+        assert src.story_status == "Completed"
+
+    def test_status_kept_when_fetcher_reports_none(self, in_memory_db):
+        src = _tracked(in_memory_db)
+        src.story_status = "In-Progress"
+        apply_result(src, {"url": src.source_url, "calibre_id": 42, "chapter_count": 12,
+                           "story_status": None, "error": None, "stub": None})
+        assert src.story_status == "In-Progress"
+
+    def test_first_download_adopts_canonical_url(self, in_memory_db):
+        """The pasted URL differs from the canonical one FanFicFare recorded; keeping it made every
+        later update miss the Calibre `url:` identifier and re-download the story as a duplicate."""
+        src = _tracked(in_memory_db, source_url="https://www.fanfiction.net/s/13051824",
+                       calibre_id=None)
+        apply_result(src, {"url": src.source_url, "calibre_id": 77, "chapter_count": 5,
+                           "story_url": "https://www.fanfiction.net/s/13051824/1/New-Blood",
+                           "story_status": "In-Progress", "error": None, "stub": None})
+        assert src.calibre_id == 77
+        assert src.source_url == "https://www.fanfiction.net/s/13051824/1/New-Blood"
+
+    def test_canonical_url_not_adopted_when_already_downloaded(self, in_memory_db):
+        src = _tracked(in_memory_db, source_url="https://s.example.com/story", calibre_id=42)
+        apply_result(src, {"url": src.source_url, "calibre_id": 42, "chapter_count": 11,
+                           "story_url": "https://s.example.com/story/canonical",
+                           "story_status": None, "error": None, "stub": None})
+        assert src.source_url == "https://s.example.com/story"
+
+    def test_canonical_url_not_adopted_if_another_source_owns_it(self, in_memory_db):
+        _tracked(in_memory_db, source_url="https://x/s/1/1/Title", calibre_id=1)
+        src = _tracked(in_memory_db, source_url="https://x/s/1", calibre_id=None)
+        apply_result(src, {"url": src.source_url, "calibre_id": 2, "chapter_count": 5,
+                           "story_url": "https://x/s/1/1/Title", "error": None, "stub": None})
+        assert src.source_url == "https://x/s/1"
+
+
+class TestAddStoryFeedback:
+    def test_duplicate_url_is_reported_not_silent(self, in_memory_db):
+        from app.routers.ongoing import add_story
+        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+        with patch("app.scheduler.trigger_fetch_pending"):
+            first = add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
+            dup = add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
+            blank = add_story(source_url="  ", title="", channel_id=cid, db=in_memory_db)
+        assert first.headers["location"].endswith("?added=1")
+        assert dup.headers["location"].endswith("?error=duplicate")
+        assert blank.headers["location"].endswith("?error=blank")
+
+    def test_added_story_is_placed_in_a_slot_immediately(self, in_memory_db):
+        from app.routers.ongoing import add_story
+        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+        with patch("app.scheduler.trigger_fetch_pending"):
+            add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
+        book = in_memory_db.query(Book).filter(Book.source_url == "https://s/story").one()
+        assert book.slot_index is not None

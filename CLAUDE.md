@@ -359,6 +359,20 @@ paths derive from the library folder structure. Missing custom columns degrade g
 Do not require a running Calibre. The fetcher container is what *writes* (via `calibredb`); the app
 only ever reads.
 
+### Ongoing vs completed (`book.story_status`)
+`calibredb add` sets no custom columns, so a story added by URL has a blank Calibre `#status` forever
+(→ `classify_status` "unknown" → never skipped, re-fetched every cycle for the rest of time). The
+fetcher therefore reports each story's status and `apply_result` records it on **`book.story_status`**
+(Beacon DB only — Calibre is never written by the app). The poller/sweep skip a story if **either**
+`story_status` or the Calibre `#status` is done (`_drop_done`); a completed story stays **tracked**
+(keeps its slot, keeps delivering its remaining chapters) and just stops being re-fetched. The manual
+**Fetch now** button bypasses the skip, so a story that resumes can refresh its status. On a story's
+*first* download `apply_result` also adopts the canonical `story_url` as `source_url` (unless another
+source owns it) — the Calibre `url:` identifier the fetcher later searches by is the canonical one, so
+keeping the pasted URL made every later update miss the library entry and re-download a duplicate.
+The Tracked Stories tab shows the status next to the title, and reports a duplicate/blank add instead
+of silently ignoring it.
+
 ### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`) — batched & async
 FanFicFare runs can take **~15 min**, so fetches are batched and asynchronous; they never block a
 broadcast or an admin request.
@@ -366,7 +380,13 @@ broadcast or an admin request.
   works in a background `ThreadPoolExecutor(max_workers=1)` (one worker ⇒ `calibredb` writes never
   overlap, preserving the single-writer invariant). **NEW** stories (no matching `url:` identifier)
   download together in one warm `fanficfare -i` pass; **EXISTING** ones update per-story (`-u`,
-  archive-on-stub, `add_format`). It borrows two ideas from AutomatedFanfic, trimmed: broad
+  archive-on-stub, `add_format`). The NEW path is hardened the same way as EXISTING: each produced
+  EPUB is matched back to its submitted URL by **story identity** (`_story_key`: host + numeric story
+  id — FanFicFare canonicalises URLs, e.g. FFN `/s/123` → `/s/123/1/Title`, so an exact-string match
+  used to report a *successful* download as `fanficfare produced no epub` and silently discard it);
+  empty results are retried with backoff while the output looks transient; and a genuine failure
+  carries **FanFicFare's own output** (tail) in `error`, attributed per URL (a multi-URL batch's
+  failures are re-run alone so each gets its own reason). It borrows two ideas from AutomatedFanfic, trimmed: broad
   **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is
   the stub case) and a **3-try exponential backoff** on transient site/network errors.
   **Every `subprocess.run` has a wall-clock `timeout=`** (`FETCHER_FANFICFARE_TIMEOUT`, default
@@ -374,7 +394,11 @@ broadcast or an admin request.
   lone worker forever and stall every queued job behind it (the "stuck at `fetching…`" failure). On
   timeout the child is killed and surfaced as a transient error so the worker always frees.
 - `GET {BEACON_FETCHER_URL}/fetch/{job_id}` → `{status: running|done|unknown, results:[{url,
-  calibre_id, chapter_count, stub:{old,new}|null, phase, error}]|null}`.
+  calibre_id, chapter_count, stub:{old,new}|null, story_url, story_status, phase, error}]|null}`.
+  `url` is always the **submitted** URL (the app maps results back by it); `story_url` is the
+  canonical URL FanFicFare wrote into the EPUB, and `story_status` its publication status
+  (`In-Progress`/`Completed`/`Hiatus`/…), read from the title page's `Status:` line or the OPF
+  `dc:subject`.
 - App side: `submit_fetch(urls)` posts the batch and returns the `job_id`; `scheduler.submit_and_track`
   marks the books `fetching…` and persists the job→book map in `app_state` (so a restart resumes).
   A transient `fetch_poll_{id}` interval job polls until `done`, reflecting each book's live `phase`

@@ -12,6 +12,12 @@
 </p>
 
 {% set added = request.query_params.get('added') %}
+{% set error = request.query_params.get('error') %}
+{% if error %}
+<p style="background:#f8d7da; color:#721c24; padding:.6em 1em; border-radius:4px">
+  {% if error == 'duplicate' %}That story is already tracked.{% else %}Enter a story URL to add.{% endif %}
+</p>
+{% endif %}
 {% if added %}
 <p style="background:#d4edda; color:#155724; padding:.6em 1em; border-radius:4px">
   Added {{ added }} story(ies). Their first download runs in the background — refresh to see status.
@@ -51,7 +57,13 @@
   {% for s in sources %}
   <tr style="{{ 'opacity:.55' if s.paused }}">
     <td><input type="checkbox" name="book_ids" value="{{ s.id }}" class="ongoing-check" form="ongoing-batch-form"></td>
-    <td>{{ s.title }}</td>
+    <td>{{ s.title }}
+      {% if s.story_status %}
+        {% set done = s.story_status|lower in ['completed', 'complete', 'abandoned', 'published', 'dropped'] %}
+        <span title="Story status as reported by the source site"
+              style="font-size:.7em; padding:.1em .5em; border-radius:9px; white-space:nowrap; background:{{ '#d4edda' if done else '#e2e3f3' }}; color:{{ '#155724' if done else '#383d6c' }}">{{ '✔' if done else '⏳' }} {{ s.story_status }}</span>
+      {% endif %}
+    </td>
     <td>{{ chan_name.get(s.channel_id, '—') }}</td>
     <td style="font-size:.82em" title="{{ s.last_fetch_at }}">
       {% if s.last_fetch_status %}
