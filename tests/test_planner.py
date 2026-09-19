@@ -299,7 +299,7 @@ class TestFeedback:
         in_memory_db.commit()
 
         apply_feedback(in_memory_db, drop, FeedbackAction.up, Path("/fake"))
-        assert book.quota_weight > 1.0
+        assert book.quota_weight == pytest.approx(1.25)   # additive: + Config.vote_step (0.25)
         assert book.thumbs_up == 1
 
     def test_thumbs_down_reduces_quota(self, in_memory_db, epub_path):
@@ -308,17 +308,36 @@ class TestFeedback:
         in_memory_db.commit()
 
         apply_feedback(in_memory_db, drop, FeedbackAction.down, Path("/fake"))
-        assert book.quota_weight < 1.0
+        assert book.quota_weight == pytest.approx(0.75)   # additive: − Config.vote_step
         assert book.thumbs_down == 1
 
-    def test_thumbs_down_threshold_drops_book(self, in_memory_db, epub_path):
-        book = _make_book(in_memory_db, calibre_id=1)
-        book.thumbs_down = 2  # threshold is 3 in test config
+    def test_thumbs_down_to_zero_drops_book(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=0.25)
         drop = self._make_drop(in_memory_db, book)
         in_memory_db.commit()
 
         apply_feedback(in_memory_db, drop, FeedbackAction.down, Path("/fake"))
+        assert book.quota_weight == 0.0
         assert book.status == BookStatus.dropped
+
+    def test_many_thumbs_down_do_not_drop_while_weight_positive(self, in_memory_db, epub_path):
+        """The old count threshold is retired: only the weight reaching 0 auto-drops."""
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=3.0)
+        book.thumbs_down = 10
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        apply_feedback(in_memory_db, drop, FeedbackAction.down, Path("/fake"))
+        assert book.status == BookStatus.active
+        assert book.quota_weight == pytest.approx(2.75)
+
+    def test_weight_capped_at_100(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=99.9)
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        apply_feedback(in_memory_db, drop, FeedbackAction.up, Path("/fake"))
+        assert book.quota_weight == 100.0
 
     def test_feedback_event_recorded(self, in_memory_db, epub_path):
         from app.models import FeedbackEvent
@@ -341,10 +360,27 @@ class TestFeedback:
             apply_feedback(in_memory_db, drop, FeedbackAction.extra, Path("/fake"))
 
         assert book.thumbs_up == 3
-        # ×Config.extra_boost_multiplier (default 1.5; configurable in admin settings).
+        # + Config.extra_boost_step (default 0.5; configurable in admin settings) — additive.
         assert book.quota_weight == pytest.approx(1.5)
         # An out-of-cycle drop was injected (original + injected = 2 for this book).
         assert in_memory_db.query(Drop).filter(Drop.book_id == book.id).count() == 2
+
+    def test_extra_drop_is_born_acknowledged_and_does_not_penalise(self, in_memory_db, epub_path):
+        """Regression — "I asked for an extra chapter and got skipped next time": the injected
+        drop used to sit unread and trigger the unread penalty on the next cycle."""
+        from app.planner.planner import _unread_penalties
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=1.0)
+        drop = self._make_drop(in_memory_db, book)
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            apply_feedback(in_memory_db, drop, FeedbackAction.extra, Path("/fake"))
+
+        injected = (in_memory_db.query(Drop).filter(Drop.book_id == book.id, Drop.id != drop.id)
+                    .one())
+        assert injected.acknowledged_at is not None
+        assert _unread_penalties(in_memory_db, [book], floor=0.2) == {}
 
     def test_drop_action_drops_immediately(self, in_memory_db, epub_path):
         book = _make_book(in_memory_db, calibre_id=1)
@@ -366,7 +402,7 @@ class TestFeedback:
         apply_feedback(in_memory_db, drop, FeedbackAction.up, Path("/fake"))
 
         assert book.thumbs_up == 1                       # counted once
-        assert book.quota_weight == pytest.approx(1.25)  # not compounded to 1.5625
+        assert book.quota_weight == pytest.approx(1.25)  # counted once, not 1.5
         events = in_memory_db.query(FeedbackEvent).filter_by(
             drop_id=drop.id, action=FeedbackAction.up
         ).count()
@@ -577,10 +613,10 @@ class TestStochasticBudget:
 
     def test_penalty_lowers_probability(self):
         # The read-gating penalty scales acceptance down (absolute back-off), independent of weight.
-        from app.planner.planner import _inclusion_probability, _UNACKED_WEIGHT_PENALTY
+        from app.planner.planner import _inclusion_probability
         base = _inclusion_probability(100, used=950, budget=1000)
-        gated = _inclusion_probability(100, used=950, budget=1000, penalty=_UNACKED_WEIGHT_PENALTY)
-        assert gated < base
+        gated = _inclusion_probability(100, used=950, budget=1000, penalty=0.5)
+        assert gated == pytest.approx(base * 0.5)
 
     def test_oversized_returns_zero_deferred_to_accumulation(self):
         # A unit larger than the base per-cycle budget is not selected by the stochastic pass
@@ -849,7 +885,8 @@ class TestCooldown:
 
 
 class TestReadGating:
-    """1.1.A — a source whose most-recent drop is unacknowledged trickles more slowly."""
+    """Soft read-gating: a *streak* of unread drops ramps a source's acceptance down (transient —
+    never touches quota_weight); a single unread drop is free."""
 
     def _drop_for(self, db, book, acked: bool, token, slug):
         from app.models import utcnow
@@ -859,24 +896,43 @@ class TestReadGating:
         db.add(d); db.flush()
         return d
 
-    def test_no_drops_not_flagged(self, in_memory_db):
-        from app.planner.planner import _unacknowledged_books
-        a = _make_book(in_memory_db, calibre_id=1, title="A")
-        assert _unacknowledged_books(in_memory_db, [a]) == set()
+    def _streak(self, db, book, n_unread, prefix="u"):
+        for i in range(n_unread):
+            self._drop_for(db, book, acked=False, token=f"{prefix}t{i}", slug=f"{prefix}s{i}")
 
-    def test_unacked_latest_flagged(self, in_memory_db):
-        from app.planner.planner import _unacknowledged_books
-        a = _make_book(in_memory_db, calibre_id=1, title="A")
-        self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
-        assert _unacknowledged_books(in_memory_db, [a]) == {a.id}
+    def test_ramp_ladder(self):
+        from app.planner.planner import _unread_penalty
+        assert _unread_penalty(0, 0.2) == 1.0
+        assert _unread_penalty(1, 0.2) == 1.0          # one unread drop costs nothing
+        assert _unread_penalty(2, 0.2) == pytest.approx(0.8)
+        assert _unread_penalty(3, 0.2) == pytest.approx(0.6)
+        assert _unread_penalty(4, 0.2) == pytest.approx(0.4)
+        assert _unread_penalty(5, 0.2) == pytest.approx(0.2)
+        assert _unread_penalty(50, 0.2) == pytest.approx(0.2)   # floored, never zero
 
-    def test_acked_latest_not_flagged(self, in_memory_db):
-        from app.planner.planner import _unacknowledged_books
+    def test_no_drops_not_penalised(self, in_memory_db):
+        from app.planner.planner import _unread_penalties
         a = _make_book(in_memory_db, calibre_id=1, title="A")
-        # older unacked, but the most-recent is acked → caught up
-        self._drop_for(in_memory_db, a, acked=False, token="t1", slug="s1")
-        self._drop_for(in_memory_db, a, acked=True, token="t2", slug="s2")
-        assert _unacknowledged_books(in_memory_db, [a]) == set()
+        assert _unread_penalties(in_memory_db, [a], 0.2) == {}
+
+    def test_single_unread_not_penalised(self, in_memory_db):
+        from app.planner.planner import _unread_penalties
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        self._streak(in_memory_db, a, 1)
+        assert _unread_penalties(in_memory_db, [a], 0.2) == {}
+
+    def test_streak_of_three_is_penalised(self, in_memory_db):
+        from app.planner.planner import _unread_penalties
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        self._streak(in_memory_db, a, 3)
+        assert _unread_penalties(in_memory_db, [a], 0.2) == {a.id: pytest.approx(0.6)}
+
+    def test_reading_the_latest_resets_the_streak(self, in_memory_db):
+        from app.planner.planner import _unread_penalties
+        a = _make_book(in_memory_db, calibre_id=1, title="A")
+        self._streak(in_memory_db, a, 4)
+        self._drop_for(in_memory_db, a, acked=True, token="rt", slug="rs")  # newest, read
+        assert _unread_penalties(in_memory_db, [a], 0.2) == {}
 
     def test_feedback_acknowledges_drop(self, in_memory_db, epub_path):
         a = _make_book(in_memory_db, calibre_id=1, title="A")
@@ -891,34 +947,77 @@ class TestReadGating:
         assert a.quota_weight == 1.0   # ✓ read is neutral
         assert a.thumbs_up == 0 and a.thumbs_down == 0
 
-    def test_unacked_penalty_lowers_probability(self):
-        from app.planner.planner import _inclusion_probability, _UNACKED_WEIGHT_PENALTY
-        # base_budget high so the unit isn't oversized; the penalty scales acceptance down.
-        p_acked = _inclusion_probability(word_count=800, used=0, budget=600, base_budget=5000)
-        p_unacked = _inclusion_probability(
-            word_count=800, used=0, budget=600, base_budget=5000, penalty=_UNACKED_WEIGHT_PENALTY)
-        assert p_unacked < p_acked   # penalty demonstrably reduces inclusion probability
-
-    def test_unacked_penalty_applied_in_plan(self, in_memory_db, epub_path):
-        """_plan_drops routes the penalty: an unacked source is picked less over many cycles."""
+    def test_penalty_applied_in_plan_and_weight_untouched(self, in_memory_db, epub_path):
+        """_plan_drops routes the penalty: a penalised source is picked less over many cycles."""
         from app.planner.planner import _plan_drops
         random.seed(1)
         book = _make_book(in_memory_db, calibre_id=1)
         adapter = _mock_adapter(1, epub_path)  # 5×~500-word chapters
 
-        def count(unacked_ids):
+        def count(penalties):
             total = 0
             for _ in range(60):
                 book.cursor_chapter_index = 0  # reset so the same first unit is a candidate
-                # base_budget high (not oversized); effective budget < unit so base<1 and weight bites.
+                # base_budget high (not oversized); effective budget < unit so p<1 and the penalty bites.
                 plans = _plan_drops([book], adapter, budget=400, base_budget=5000,
-                                    unacked_ids=unacked_ids)
+                                    penalties=penalties)
                 total += sum(len(p.chapters) for p in plans)
             return total
 
-        acked = count(set())
-        unacked = count({book.id})
-        assert unacked < acked
+        assert count({book.id: 0.2}) < count({})
+        assert book.quota_weight == 1.0
+
+
+class TestWeightFade:
+    """Below the skip floor a source fades in proportion to its weight — no hard skip."""
+
+    def test_fade_factor(self):
+        from app.planner.planner import _weight_fade
+        b = MagicMock(); b.quota_weight = 0.5
+        assert _weight_fade(b, 1.0) == pytest.approx(0.5)
+        b.quota_weight = 1.0
+        assert _weight_fade(b, 1.0) == 1.0
+        b.quota_weight = 3.0
+        assert _weight_fade(b, 1.0) == 1.0
+        b.quota_weight = 0.0
+        assert _weight_fade(b, 1.0) == 0.0
+        b.quota_weight = 0.3
+        assert _weight_fade(b, 0.0) == 1.0    # floor 0 disables the fade
+
+    def test_faded_source_posts_less_often(self, in_memory_db, epub_path):
+        from app.planner.planner import _plan_drops
+        random.seed(2)
+        book = _make_book(in_memory_db, calibre_id=1)
+        adapter = _mock_adapter(1, epub_path)
+
+        def count(weight):
+            book.quota_weight = weight
+            total = 0
+            for _ in range(80):
+                book.cursor_chapter_index = 0
+                plans = _plan_drops([book], adapter, budget=400, base_budget=5000,
+                                    weight_skip_floor=1.0)
+                total += sum(len(p.chapters) for p in plans)
+            return total
+
+        assert count(0.3) < count(1.0)
+        assert count(0.0) == 0            # weight 0 never posts (but isn't dropped)
+        assert book.status == BookStatus.active
+
+
+class TestAdminSetWeight:
+    def test_zero_does_not_drop_and_cap_applies(self, in_memory_db):
+        from types import SimpleNamespace
+        from app.routers.admin import set_weight
+        book = _make_book(in_memory_db, calibre_id=1, quota_weight=1.0)
+        in_memory_db.commit()
+        req = SimpleNamespace(headers={})
+
+        set_weight(book.id, req, weight=0.0, db=in_memory_db)
+        assert book.quota_weight == 0.0 and book.status == BookStatus.active
+
+        set_weight(book.id, req, weight=500.0, db=in_memory_db)
+        assert book.quota_weight == 100.0
 
 
 class TestCooldownStall:

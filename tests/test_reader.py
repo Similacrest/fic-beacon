@@ -21,7 +21,7 @@ def client():
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     db.add(Config(id=1, wpm=250, cadence_cron="0 8 * * *",
-                  thumbs_down_drop_threshold=3, feed_secret="test-secret"))
+                  feed_secret="test-secret"))
     db.flush()
     ensure_default_channel(db)
     db.commit()

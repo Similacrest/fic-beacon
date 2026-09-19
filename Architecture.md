@@ -49,7 +49,7 @@ SQLite, Jinja + HTMX.
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
 | Stubs | Site removed chapters → the fetcher archives the old EPUB, overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
 | Budgeting | **Per-channel slot round-robin.** The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
-| Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a short broadcast cooldown; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
+| Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
 | Permalinks | Source-aware and uniform (all sources are FanFicFare EPUBs): per-chapter `chapterurl` → whole-work `url:` identifier → reader page. `guid` always per-drop and independent of link. |
@@ -170,8 +170,8 @@ C4Component
   (`up|down|extra|drop|pause|read`), `created_at`.
 - **`websub_subscription`** — `id`, `topic_url`, `callback_url`, `secret?`, `lease_expires_at`,
   `verified`, `created_at`.
-- **`config`** — single-row globals only: `wpm`, `cadence_cron`, `thumbs_down_drop_threshold`,
-  `extra_boost_multiplier`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
+- **`config`** — single-row globals only: `wpm`, `cadence_cron`, `vote_step`,
+  `extra_boost_step`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
   live per-channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
   `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
@@ -197,7 +197,7 @@ C4Component
    drop is unacknowledged — soft read-gating). An idle slot passes its turn, spilling its budget to
    slots with content — so drops spread across the slot feeds (diversity) and weight throttles a
    source's share *within* its slot. Excluded units roll over whole; never split. Then
-   `budget_credit += budget − used`, and tick down each source's cooldown.
+   `budget_credit += budget − used`. (Cooldowns are ticked at the *start* of the channel's turn.)
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance cursors;
    complete+free **backlog** books that ran out (next queued book rebalances in). A **tracked** book
    that runs out is *not* completed — it self-gates until the next fetch adds chapters. Sources whose
@@ -238,9 +238,9 @@ drop) and at chapter 1 otherwise. Chapter count comes from chapterizing the exis
 
 ### 6.3 Feedback (reader click)
 - `GET /fb/{token}?action=up|down` — **instant**, idempotent per `(drop, action)`. `up`: thumbs+,
-  weight ×1.25. `down`: thumbs+, weight ×0.8; at threshold → `dropped` + promote next.
-- `GET /fb/confirm/{token}?action=extra|drop` → confirm page → POST. `extra`: +3 thumbs, strong
-  weight boost, inject an out-of-cycle drop (shown only when a next unit exists). `drop`: set
+  weight `+= vote_step`. `down`: thumbs+, weight `−= vote_step`; weight reaching 0 → `dropped` + promote next.
+- `GET /fb/confirm/{token}?action=extra|drop` → confirm page → POST. `extra`: +3 thumbs, weight
+  `+= extra_boost_step`, inject an out-of-cycle drop (shown only when a next unit exists). `drop`: set
   source `dropped` immediately + promote next.
 
 ### 6.4 Permalink resolution

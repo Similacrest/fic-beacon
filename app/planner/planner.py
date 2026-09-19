@@ -40,10 +40,16 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-# Soft read-gating: a source whose most-recent drop is still unacknowledged has its stochastic
-# acceptance multiplied by this factor, so an un-caught-up reader falls behind more slowly (it
-# still trickles — a nudge, not a hard gate). See _unacknowledged_books / _plan_drops.
-_UNACKED_WEIGHT_PENALTY = 0.5
+# Hard ceiling on quota_weight. Votes are additive (cfg.vote_step / cfg.extra_boost_step), so the
+# natural range is ~0–3; the cap only bites for someone who spams 🪝 for months.
+WEIGHT_CAP = 100.0
+
+# Soft read-gating: a source with several *consecutive* unread drops has its stochastic acceptance
+# scaled down (0.8, 0.6, 0.4 … floored at cfg.unacked_penalty_floor), so an un-caught-up reader falls
+# behind more slowly. It's a transient nudge: it never touches quota_weight and evaporates the
+# moment any drop is read. See _unread_penalties / _plan_drops.
+_UNREAD_RAMP_STEP = 0.2
+_UNREAD_STREAK_LOOKBACK = 8
 
 
 @dataclass
@@ -134,9 +140,9 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         if not active_books:
             continue
 
-        # Soft read-gating: sources whose most-recent delivered drop is still unacknowledged
-        # get a reduced stochastic acceptance this cycle (they still trickle).
-        unacked = _unacknowledged_books(session, active_books)
+        # Soft read-gating: sources with a streak of unread drops get a ramped-down stochastic
+        # acceptance this cycle (they still trickle). One unread drop is normal — no penalty.
+        penalties = _unread_penalties(session, active_books, cfg.unacked_penalty_floor)
 
         # Token-bucket budget: this cycle's allowance is the base budget plus any
         # signed carry-over from prior cycles, so the long-run mean tracks the base.
@@ -147,7 +153,8 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         stats: dict = {}
         plans = _plan_drops(
             active_books, adapter, effective, base_budget=int(base_budget),
-            skips_out=skips, stats_out=stats, unacked_ids=unacked,
+            skips_out=skips, stats_out=stats, penalties=penalties,
+            weight_skip_floor=cfg.weight_skip_floor,
         )
         used = 0
         for plan in plans:
@@ -209,23 +216,51 @@ def _active_books_in(session: Session, channel_id: int) -> list[Book]:
     )
 
 
-def _unacknowledged_books(session: Session, books: list[Book]) -> set[int]:
-    """Ids of sources whose most-recent delivered drop is still unacknowledged (read-gating).
+def _unread_penalty(streak: int, floor: float) -> float:
+    """Acceptance multiplier for `streak` consecutive unread drops.
 
-    A source with no drops yet is *not* included (nothing to be behind on). Best-effort: a drop
-    is acknowledged on /read/ open, any /fb/ click, or the explicit ✓ Mark-read action.
+    0 or 1 unread → 1.0 (one unread drop is just "not read yet", never penalised); then 0.8, 0.6,
+    0.4 …, never below `floor`.
     """
-    unacked: set[int] = set()
+    if streak <= 1:
+        return 1.0
+    return max(floor, 1.0 - _UNREAD_RAMP_STEP * (streak - 1))
+
+
+def _unread_penalties(session: Session, books: list[Book], floor: float) -> dict[int, float]:
+    """Per-source unread-streak multipliers (only sources actually penalised are present).
+
+    The streak is the number of *consecutive* most-recent drops still unacknowledged, derived from
+    the drop rows themselves (no counter to keep in sync with the three ack paths). A 🪝-injected
+    drop is created already acknowledged, so asking for an extra chapter resets the streak — it is
+    evidence of engagement, never of falling behind. Best-effort: a drop is acknowledged on /read/
+    open, any /fb/ click, or the explicit ✓ Mark-read action.
+    """
+    out: dict[int, float] = {}
     for book in books:
-        latest = (
-            session.query(Drop)
+        recent = (
+            session.query(Drop.acknowledged_at)
             .filter(Drop.book_id == book.id)
             .order_by(Drop.published_at.desc(), Drop.id.desc())
-            .first()
+            .limit(_UNREAD_STREAK_LOOKBACK)
+            .all()
         )
-        if latest is not None and latest.acknowledged_at is None:
-            unacked.add(book.id)
-    return unacked
+        streak = 0
+        for (acked_at,) in recent:
+            if acked_at is not None:
+                break
+            streak += 1
+        penalty = _unread_penalty(streak, floor)
+        if penalty < 1.0:
+            out[book.id] = penalty
+    return out
+
+
+def _weight_fade(book: Book, floor: float) -> float:
+    """Below `floor` a source fades in proportion to its weight (0 → never posts); else 1.0."""
+    if floor <= 0 or book.quota_weight >= floor:
+        return 1.0
+    return max(0.0, book.quota_weight) / floor
 
 
 def _tick_cooldowns(session: Session, channel_id: int) -> None:
@@ -257,6 +292,11 @@ def create_extra_drop(session: Session, book: Book, library_path: Path) -> Drop 
     plan = PlannedDrop(book=book, chapters=[units[0]], word_count=units[0].word_count)
     drop = _materialise(session, plan, book.channel_id)  # sets feed_key from book.slot_index
     if drop:
+        # The reader explicitly asked for this chapter, so it is *not* evidence they're behind:
+        # born acknowledged, it also resets the unread streak (see _unread_penalties). Without this
+        # the injected drop sat unread and penalised the source next cycle — "asked for more, got
+        # skipped".
+        drop.acknowledged_at = utcnow()
         _advance_cursor(session, plan, adapter, cfg)
     session.flush()
     return drop
@@ -279,7 +319,8 @@ def _plan_drops(
     base_budget: int | None = None,
     skips_out: list["SkippedSource"] | None = None,
     stats_out: dict | None = None,
-    unacked_ids: set[int] | None = None,
+    penalties: dict[int, float] | None = None,
+    weight_skip_floor: float = 1.0,
 ) -> list[PlannedDrop]:
     """Select whole units (chapters) for one channel — slot-diverse and weight-throttled.
 
@@ -297,15 +338,16 @@ def _plan_drops(
        *within* a slot — down-voting a source shrinks its slice relative to its slot-mates. Units
        never split; excluded units roll over whole to a later cycle.
 
-    A source whose most-recent drop is unacknowledged has its stochastic acceptance multiplied by
-    `_UNACKED_WEIGHT_PENALTY` (an *absolute* back-off, so even a lone unread source trickles slower).
+    A source's stochastic acceptance is also scaled by `penalties[book.id]` (the transient unread-
+    streak ramp — an *absolute* back-off, so even a lone unread source trickles slower) and by the
+    weight fade (`weight / weight_skip_floor` when its weight is below the floor).
 
     `stats_out`, if given, receives `max_pending_unit` (the largest next-unit size) so the caller
     can size the credit cap to save up for an oversized chapter.
     """
     if base_budget is None:
         base_budget = budget
-    unacked_ids = unacked_ids or set()
+    penalties = penalties or {}
 
     # Pre-load remaining units for every source (weight order gives the pass-1 accumulation a
     # stable, higher-weight-first claim on saved-up credit).
@@ -369,7 +411,7 @@ def _plan_drops(
                 continue  # idle slot passes its turn; its budget spills to the others
             book = _weighted_choice(candidates)
             unit = book_remaining[book.id][0]
-            penalty = _UNACKED_WEIGHT_PENALTY if book.id in unacked_ids else 1.0
+            penalty = penalties.get(book.id, 1.0) * _weight_fade(book, weight_skip_floor)
             p = _inclusion_probability(
                 unit.word_count, used=used, budget=budget,
                 base_budget=base_budget, penalty=penalty,
@@ -684,24 +726,26 @@ def apply_feedback(
 
     if action == FeedbackAction.up:
         book.thumbs_up += 1
-        book.quota_weight = max(0.1, book.quota_weight * 1.25)
+        book.quota_weight = min(WEIGHT_CAP, book.quota_weight + cfg.vote_step)
 
     elif action == FeedbackAction.down:
         book.thumbs_down += 1
-        if book.thumbs_down >= cfg.thumbs_down_drop_threshold:
+        book.quota_weight = max(0.0, book.quota_weight - cfg.vote_step)
+        if book.quota_weight <= 0.0:
+            # Auto-drop fires only from here — a source ground down to zero by 👎s. (An admin
+            # typing 0 into the weight box does not drop it; it just never posts.)
             book.status = BookStatus.dropped
             book.slot_index = None
             _refill_book_channel(session, book)
         else:
-            # Gently reduce share AND back the source off for a couple of broadcasts so a
-            # thumbs-down is felt immediately, not just as a slow weight nudge.
-            book.quota_weight = max(0.1, book.quota_weight * 0.8)
+            # Back the source off for one broadcast so a thumbs-down is felt immediately (2 = the
+            # tick at the start of the next cycle leaves 1, so it sits that one out).
             book.cooldown_remaining = max(2, book.cooldown_remaining)
 
     elif action == FeedbackAction.extra:
-        # Super-up: count as three upvotes, boost weight by the configurable factor, inject a drop.
+        # Super-up: count as three upvotes, add the configurable boost, inject a drop.
         book.thumbs_up += 3
-        book.quota_weight = max(0.1, book.quota_weight * cfg.extra_boost_multiplier)
+        book.quota_weight = min(WEIGHT_CAP, book.quota_weight + cfg.extra_boost_step)
         extra_drop = create_extra_drop(session, book, library_path)
 
     elif action == FeedbackAction.read:

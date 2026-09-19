@@ -214,17 +214,24 @@ fic-beacon/
   (`app_state[last_broadcast_skips]`) surfaced on the dashboard.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
-- **Soft read-gating.** A source whose **most-recent delivered drop is still unacknowledged**
-  (`drop.acknowledged_at is None`) has its stochastic acceptance multiplied by
-  `_UNACKED_WEIGHT_PENALTY` (0.5) — an *absolute* back-off (unlike `quota_weight`, which is relative
-  within a slot), so even a lone unread source trickles more slowly and an un-caught-up reader falls
-  behind less. It's a *nudge, not a hard gate* (the source still trickles), and a source with no
-  drops yet is never penalised. A drop is acknowledged on opening `/read/{slug}`, clicking **any**
+- **Soft read-gating (transient unread ramp).** A source's stochastic acceptance is scaled by how
+  many of its **most-recent drops in a row are unacknowledged** (`drop.acknowledged_at is None`):
+  **0 or 1 unread → no penalty at all** (one unread drop is just "not read yet"), then **0.8× / 0.6× /
+  0.4× …**, floored at `config.unacked_penalty_floor` (0.2). It's an *absolute* back-off (unlike
+  `quota_weight`, which is relative within a slot), a *nudge, not a hard gate* (the source still
+  trickles), and it **never touches `quota_weight`** — the streak is derived from the drop rows and
+  evaporates the moment any drop is read, so a week away costs nothing permanent (nothing is
+  auto-dropped for being unread). A source with no drops yet is never penalised. A **🪝-injected
+  drop is created already acknowledged**: asking for an extra chapter is engagement, not falling
+  behind (it used to sit unread and penalise the source next cycle). A drop is acknowledged on opening `/read/{slug}`, clicking **any**
   `/fb/` link, or the explicit **✓ Mark read** action. This is best-effort and reader-agnostic:
   passive read-detection is unreliable (most permalinks point at the source site, not `/read/`, and
   readers don't report reads), so we deliberately chose an explicit/opt-in signal over a tracking
   pixel — image proxies (e.g. Inoreader) prefetch on poll and would mark everything read on ingest.
-  See `planner.py:_unacknowledged_books`.
+  See `planner.py:_unread_penalties`.
+- **Weight fade.** Below `config.weight_skip_floor` (default 1.0) a source's acceptance is scaled by
+  `weight / floor` (`planner._weight_fade`), so a low-rated source trickles ever more slowly rather than
+  being skipped outright; weight `0` never posts. The weight is capped at **100.0** (`WEIGHT_CAP`).
 - Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
 
 ### Permalinks (source-aware, per-chapter) — EPUB
@@ -267,15 +274,18 @@ unwrapped (links dropped, authored number kept); note images use the image route
 Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
 Links render as **bare emoji** (no text label); the wording lives in each link's `title=`/`aria-label=`
 (hover tooltip + screen readers). Same markup in the feed and on `/read/{slug}` (`feedback_block`).
-- `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
-- `down` → `thumbs_down++`, `quota_weight ×= 0.8`, **and** `cooldown_remaining = max(2, …)` so the
-  source sits out the next ≥2 broadcasts (the planner excludes candidates with
-  `cooldown_remaining > 0` via `_active_books_in` and ticks it down once per broadcast in
-  `_tick_cooldowns`); at `>= thumbs_down_drop_threshold` the book is `dropped` instead.
-  **Instant bare GET.**
-- `extra` (super-up) → `thumbs_up += 3`, `quota_weight ×= config.extra_boost_multiplier`
-  (admin-configurable, default **1.5**; was a hard-coded `1.25**3 ≈ 1.95`), **and** inject an
-  out-of-cycle drop.
+- Weights are **additive**: `quota_weight` lives on its natural ~0–3 scale, hard-capped at **100.0**.
+- `up` → `thumbs_up++`, `quota_weight += config.vote_step` (default **0.25**). **Instant bare GET**
+  `GET /fb/{token}?action=up`.
+- `down` → `thumbs_down++`, `quota_weight −= config.vote_step`, **and** `cooldown_remaining = max(2, …)`.
+  `_tick_cooldowns` runs at the *start* of each channel's turn (before selection, and before the
+  empty-channel exit — a lone cooling source must not freeze its channel), so a 2 is 1 when selection
+  runs: the source sits out **exactly one** broadcast. Weight reaching **0 via a 👎** auto-drops the
+  source (`dropped`); the old `thumbs_down_drop_threshold` count is retired, and typing 0 into the
+  admin weight box does *not* drop it (it just never posts). **Instant bare GET.**
+- `extra` (super-up) → `thumbs_up += 3`, `quota_weight += config.extra_boost_step` (admin-configurable,
+  default **0.5**; additive — the old multiplicative boost compounded too fast), **and** inject an
+  out-of-cycle drop (born acknowledged, see read-gating).
   **Confirm page** (`/fb/confirm/{token}`).
 - `pause` → set `book.paused` — the source broadcasts nothing until resumed. **Instant bare GET**
   (reversible, so no confirm page). A **backlog** book frees its slot (re-enters the queue so the
@@ -386,8 +396,8 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
 `secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
-`thumbs_down_drop_threshold`, `extra_boost_multiplier`, `tracked_default_weight`,
-`websub_max_push_bytes`, `feed_secret`) ·
+`vote_step`, `extra_boost_step`, `weight_skip_floor`, `unacked_penalty_floor`,
+`tracked_default_weight`, `websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.
 `last_release_run_at` / `last_poll_run_at`). See `Architecture.md §5`.
 

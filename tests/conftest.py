@@ -30,7 +30,6 @@ def in_memory_db():
         id=1,
         wpm=250,
         cadence_cron="0 8 * * *",
-        thumbs_down_drop_threshold=3,
         feed_secret="test-secret",
     ))
     session.flush()

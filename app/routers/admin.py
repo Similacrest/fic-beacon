@@ -615,9 +615,10 @@ def set_weight(
     weight: float = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
+    from app.planner.planner import WEIGHT_CAP
     book = db.get(Book, book_id)
     if book is not None:
-        book.quota_weight = max(0.1, min(10.0, round(weight, 3)))
+        book.quota_weight = max(0.0, min(WEIGHT_CAP, round(weight, 3)))  # never auto-drops
         db.commit()
     return _saved(request)
 
@@ -707,8 +708,10 @@ def config_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
 def save_config(
     wpm: int = Form(...),
     cadence_cron: str = Form(...),
-    thumbs_down_drop_threshold: int = Form(...),
-    extra_boost_multiplier: float = Form(...),
+    vote_step: float = Form(...),
+    extra_boost_step: float = Form(...),
+    weight_skip_floor: float = Form(...),
+    unacked_penalty_floor: float = Form(...),
     tracked_default_weight: float = Form(...),
     websub_max_push_bytes: int = Form(...),
     db: Session = Depends(get_db),
@@ -718,8 +721,10 @@ def save_config(
         return RedirectResponse(url="/admin/config", status_code=303)
     cfg.wpm = wpm
     cfg.cadence_cron = cadence_cron
-    cfg.thumbs_down_drop_threshold = thumbs_down_drop_threshold
-    cfg.extra_boost_multiplier = max(1.0, extra_boost_multiplier)
+    cfg.vote_step = max(0.01, vote_step)
+    cfg.extra_boost_step = max(0.0, extra_boost_step)
+    cfg.weight_skip_floor = max(0.0, weight_skip_floor)
+    cfg.unacked_penalty_floor = min(1.0, max(0.05, unacked_penalty_floor))
     cfg.tracked_default_weight = max(0.1, tracked_default_weight)
     cfg.websub_max_push_bytes = max(0, websub_max_push_bytes)
     db.commit()

@@ -251,7 +251,7 @@ class Config(Base):
 
     Budget, parallel slots, and budget-mode are per-channel (see Channel); this row
     holds only settings that are inherently global: reading speed, the drop cadence,
-    the auto-drop threshold, and the feed secret.
+    the vote/fade tuning, and the feed secret.
     """
     __tablename__ = "config"
 
@@ -260,12 +260,18 @@ class Config(Base):
     # reading-time estimates in the UI.
     wpm: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
     cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 7,19 * * *")
-    thumbs_down_drop_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
-    # Factor by which a 🪝 extra (super-up) click multiplies a source's quota_weight. The old
-    # hard-coded boost was 1.25**3 ≈ 1.95 (very aggressive); the default is gentler now and
-    # tunable in the admin config UI.
-    extra_boost_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
+    # Additive vote steps on quota_weight (natural scale ~0–3, hard cap 100.0). 👍 adds and 👎
+    # subtracts `vote_step`; 🪝 extra adds `extra_boost_step`. A 👎 that takes the weight to 0 drops
+    # the source (only the 👎 path auto-drops — typing 0 in the admin UI does not).
+    vote_step: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
+    extra_boost_step: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    # Below this weight a source *fades*: its stochastic acceptance is scaled by weight/floor, so it
+    # trickles ever more slowly instead of being skipped outright (weight 0 never posts).
+    weight_skip_floor: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Floor of the transient unread-drop ramp (see planner._unread_penalty): a reader who is
+    # several drops behind slows a source down, but never below this fraction and never via weight.
+    unacked_penalty_floor: Mapped[float] = mapped_column(Float, nullable=False, default=0.2)
     # Default quota_weight given to a *tracked* (ongoing) source on import, vs 1.0 for backlog, so
     # real ongoing serials outrank the finite archive in the stochastic budget pass. Admin-tunable.
     tracked_default_weight: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)

@@ -19,7 +19,7 @@ def client():
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     db.add(Config(id=1, wpm=250, cadence_cron="0 8 * * *",
-                  thumbs_down_drop_threshold=3, feed_secret="secret"))
+                  feed_secret="secret"))
     db.flush()
     ensure_default_channel(db)
     db.add(Channel(name="Fantasy", slug="fantasy", genre_match="", parallel_slots=3))

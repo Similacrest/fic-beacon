@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — additive weights, gentler penalties (migration `c9d0e1f2a3b4`)
+- **Votes are additive.** 👍/👎 add/subtract `config.vote_step` (default 0.25) and 🪝 adds
+  `config.extra_boost_step` (default 0.5) to `quota_weight`, which keeps its natural ~0–3 scale but is
+  now hard-capped at **100.0**. This replaces the ×1.25 / ×0.8 / ×`extra_boost_multiplier` compounding.
+  Existing per-source weights are untouched.
+- **Below a weight floor a source fades, it isn't skipped.** Under `config.weight_skip_floor`
+  (default 1.0) acceptance is scaled by `weight / floor`; weight 0 never posts. The ≥2-broadcast 👎
+  blackout is gone (👎 now sits a source out one broadcast, on top of the weight drop). A 👎 that takes
+  the weight to **0** auto-drops the source; `thumbs_down_drop_threshold` is retired. The admin weight
+  box accepts 0–100 and never auto-drops.
+- **Unread penalty is a transient ramp, not a flat 0.5×.** One unread drop costs nothing; consecutive
+  unread drops scale acceptance to 0.8×, 0.6×, 0.4× … (floor `config.unacked_penalty_floor`, 0.2). It is
+  derived from the drop rows, resets when any drop is read, and never touches `quota_weight`.
+- Migration drops `config.thumbs_down_drop_threshold` and `config.extra_boost_multiplier`, adds
+  `vote_step`, `extra_boost_step`, `weight_skip_floor`, `unacked_penalty_floor`.
+- Settings page: the two retired fields are replaced by the four new ones.
+
+### Fixed — asking for an extra chapter no longer penalises the source
+- The 🪝-injected drop was created unacknowledged, so on the next cycle the read-gate saw an unread
+  drop and halved the source's acceptance — "I asked for more and got skipped". It is now born
+  acknowledged (asking for a chapter is engagement), which also resets the unread streak.
+
 ### Fixed — a lone cooling-down source could freeze its channel forever
 - `run_release_cycle` skipped a channel with no active sources *before* ticking 👎 cooldowns, and a
   cooling-down source isn't "active" — so a channel whose only source got a 👎 never counted its

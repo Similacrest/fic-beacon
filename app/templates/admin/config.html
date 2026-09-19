@@ -21,20 +21,33 @@
     <small style="color:#666">e.g. <code>0 7,19 * * *</code> = 07:00 &amp; 19:00 daily, <code>0 8 * * *</code> = 08:00 daily</small>
   </div>
   <div class="form-group">
-    <label for="thumbs_down_drop_threshold">👎 threshold to drop a book</label>
-    <input type="number" name="thumbs_down_drop_threshold" id="thumbs_down_drop_threshold"
-           value="{{ cfg.thumbs_down_drop_threshold }}" min="1">
+    <label for="vote_step">👍/👎 vote step</label>
+    <input type="number" name="vote_step" id="vote_step"
+           value="{{ cfg.vote_step }}" min="0.01" max="5" step="0.01">
+    <small style="color:#666">Each 👍 adds this to a source's weight and each 👎 subtracts it (weights sit around 0–3; hard cap 100). A 👎 that takes a source to <code>0</code> drops it.</small>
   </div>
   <div class="form-group">
-    <label for="extra_boost_multiplier">🪝 Extra boost (weight ×)</label>
-    <input type="number" name="extra_boost_multiplier" id="extra_boost_multiplier"
-           value="{{ cfg.extra_boost_multiplier }}" min="1" max="5" step="0.05">
-    <small style="color:#666">How much a 🪝 extra click multiplies a source's priority. <code>1.5</code> = gentle, <code>1.0</code> = no boost (just the extra chapter).</small>
+    <label for="extra_boost_step">🪝 Extra boost step</label>
+    <input type="number" name="extra_boost_step" id="extra_boost_step"
+           value="{{ cfg.extra_boost_step }}" min="0" max="10" step="0.05">
+    <small style="color:#666">Added to a source's weight when you request an extra chapter. <code>0</code> = just the extra chapter, no boost.</small>
+  </div>
+  <div class="form-group">
+    <label for="weight_skip_floor">Fade-out floor (weight)</label>
+    <input type="number" name="weight_skip_floor" id="weight_skip_floor"
+           value="{{ cfg.weight_skip_floor }}" min="0" max="10" step="0.05">
+    <small style="color:#666">Below this weight a source fades gradually (its chance is scaled by weight ÷ floor) instead of being skipped. <code>0</code> disables the fade.</small>
+  </div>
+  <div class="form-group">
+    <label for="unacked_penalty_floor">Unread back-off floor</label>
+    <input type="number" name="unacked_penalty_floor" id="unacked_penalty_floor"
+           value="{{ cfg.unacked_penalty_floor }}" min="0.05" max="1" step="0.05">
+    <small style="color:#666">One unread drop costs nothing; two in a row slow a source to 0.8×, then 0.6×, 0.4× … never below this fraction. Reading any drop resets it; weight is never touched.</small>
   </div>
   <div class="form-group">
     <label for="tracked_default_weight">📡 Tracked default weight</label>
     <input type="number" name="tracked_default_weight" id="tracked_default_weight"
-           value="{{ cfg.tracked_default_weight }}" min="0.1" max="10" step="0.1">
+           value="{{ cfg.tracked_default_weight }}" min="0.1" max="100" step="0.1">
     <small style="color:#666">Starting priority for a newly-imported ongoing serial, vs <code>1.0</code> for backlog. <code>2.0</code> = ongoing fiction outranks the archive.</small>
   </div>
   <div class="form-group">
