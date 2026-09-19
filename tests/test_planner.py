@@ -1138,3 +1138,116 @@ class TestExtraCap:
         book.paused = True
         d1 = self._drop(in_memory_db, book, 1)
         assert self._extra(in_memory_db, d1, epub_path) is None
+
+
+class TestFreshPass:
+    """A chapter that arrived by an upstream update is released in the next batch (budget
+    permitting) instead of being left to the stochastic roll."""
+
+    def _tracked(self, db, calibre_id, cursor=3, fresh_from=3, weight=1.0, fetched_at=None):
+        b = _make_book(db, calibre_id=calibre_id, title=f"T{calibre_id}", quota_weight=weight)
+        b.tracked = True
+        b.cursor_chapter_index = cursor
+        b.fresh_from_index = fresh_from
+        b.last_fetch_at = fetched_at
+        db.flush()
+        return b
+
+    def _plan(self, books, epub_path, budget=600, penalties=None):
+        from app.planner.planner import _plan_drops
+        adapter = _mock_adapter(1, epub_path)  # 5 × 500-word chapters
+        return _plan_drops(books, adapter, budget=budget, base_budget=budget,
+                           penalties=penalties)
+
+    def test_fresh_chapter_ignores_the_stochastic_roll(self, in_memory_db, epub_path):
+        """Even with acceptance forced to 0 (worst unread penalty) the fresh chapter still ships."""
+        b = self._tracked(in_memory_db, 1)
+        for seed in range(25):
+            random.seed(seed)
+            plans = self._plan([b], epub_path, penalties={b.id: 0.0})
+            assert sum(len(p.chapters) for p in plans) == 1
+
+    def test_non_fresh_source_is_still_stochastic(self, in_memory_db, epub_path):
+        b = self._tracked(in_memory_db, 1, fresh_from=None)
+        assert self._plan([b], epub_path, penalties={b.id: 0.0}) == []
+
+    def test_reader_still_behind_is_not_fresh(self, in_memory_db, epub_path):
+        """Cursor before the first new chapter → older chapters go first via the normal pass."""
+        b = self._tracked(in_memory_db, 1, cursor=1, fresh_from=3)
+        assert self._plan([b], epub_path, penalties={b.id: 0.0}) == []
+
+    def test_one_unit_per_fresh_source_per_cycle(self, in_memory_db, epub_path):
+        """A multi-chapter dump can't eat the batch: 3 fresh chapters → 1 released this cycle."""
+        b = self._tracked(in_memory_db, 1, cursor=2, fresh_from=2)   # chapters 2,3,4 all fresh
+        plans = self._plan([b], epub_path, budget=5000, penalties={b.id: 0.0})
+        assert sum(len(p.chapters) for p in plans) == 1
+
+    def test_budget_limits_fresh_and_oldest_arrival_wins(self, in_memory_db, epub_path):
+        from datetime import datetime, timezone
+        early = self._tracked(in_memory_db, 1, fetched_at=datetime(2026, 7, 1, tzinfo=timezone.utc))
+        late = self._tracked(in_memory_db, 2, fetched_at=datetime(2026, 7, 2, tzinfo=timezone.utc))
+        plans = self._plan([late, early], epub_path, budget=600,
+                           penalties={early.id: 0.0, late.id: 0.0})
+        assert [p.book.id for p in plans] == [early.id]          # only one 500-word unit fits
+        assert late.fresh_from_index == 3                         # ...and the other stays fresh
+
+    def test_weight_zero_source_never_posts_even_when_fresh(self, in_memory_db, epub_path):
+        b = self._tracked(in_memory_db, 1, weight=0.0)
+        assert self._plan([b], epub_path) == []
+
+    def test_cycle_releases_fresh_chapter_and_clears_flag_when_caught_up(self, in_memory_db, epub_path):
+        b = self._tracked(in_memory_db, 1, cursor=4, fresh_from=4)   # one chapter left
+        in_memory_db.commit()
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
+        assert [d.book_id for d in drops] == [b.id]
+        in_memory_db.refresh(b)
+        assert b.cursor_chapter_index == 5 and b.fresh_from_index is None
+
+
+class TestFreshMarking:
+    """fetch.client.apply_result flags chapters that arrive by an *update*."""
+
+    def _book(self, db, total):
+        b = _make_book(db, calibre_id=1)
+        b.tracked = True
+        b.total_chapters = total
+        b.cursor_chapter_index = total or 0
+        db.flush()
+        return b
+
+    def _raw(self, count, **kw):
+        return {"url": "u", "calibre_id": 1, "chapter_count": count, "error": None, "stub": None, **kw}
+
+    def test_update_that_adds_chapters_marks_fresh_from_old_total(self, in_memory_db):
+        from app.fetch.client import apply_result
+        b = self._book(in_memory_db, total=10)
+        apply_result(b, self._raw(12))
+        assert b.fresh_from_index == 10
+
+    def test_first_download_is_not_fresh(self, in_memory_db):
+        from app.fetch.client import apply_result
+        b = self._book(in_memory_db, total=None)   # never downloaded / import backfill
+        apply_result(b, self._raw(200))
+        assert b.fresh_from_index is None
+
+    def test_no_new_chapters_is_not_fresh(self, in_memory_db):
+        from app.fetch.client import apply_result
+        b = self._book(in_memory_db, total=10)
+        apply_result(b, self._raw(10))
+        assert b.fresh_from_index is None
+
+    def test_earliest_unreleased_fresh_index_is_kept(self, in_memory_db):
+        from app.fetch.client import apply_result
+        b = self._book(in_memory_db, total=10)
+        apply_result(b, self._raw(12))       # fresh from 10
+        apply_result(b, self._raw(13))       # a second update before the first is released
+        assert b.fresh_from_index == 10
+
+    def test_stub_clears_the_flag(self, in_memory_db):
+        from app.fetch.client import apply_result
+        b = self._book(in_memory_db, total=10)
+        b.fresh_from_index = 8
+        apply_result(b, self._raw(7, stub={"old": 10, "new": 7}))
+        assert b.fresh_from_index is None

@@ -12,8 +12,11 @@ Budget model (per-channel, slot-diverse, weight-throttled, never pre-slice):
   across the slot feeds (diversity) with no wasted budget, while quota_weight governs a source's
   share *within* its slot (down-voting shrinks its slice relative to its slot-mates).
 
-  There is *no* guaranteed first chapter: over budget even a source's first unit can defer, and a
-  low-share source may get nothing some cycles. A unit larger than the whole base budget is posted
+  Chapters that just arrived by an upstream update are the exception: a *fresh pass* releases
+  one per fresh tracked source per cycle deterministically (no roll, no unread penalty) while budget
+  lasts, so a new chapter is never left to a dice roll. Otherwise there is *no* guaranteed first
+  chapter: over budget even a source's first unit can defer, and a low-share source may get nothing
+  some cycles. A unit larger than the whole base budget is posted
   whole (once per source per cycle, by a prior accumulation pass) since it could never fit. Units
   are never split. After the pass, budget_credit += base_budget − used (clamped to ±base_budget,
   or up to the largest pending oversized unit).
@@ -260,6 +263,17 @@ def _unread_penalties(session: Session, books: list[Book], floor: float) -> dict
     return out
 
 
+def _is_fresh(book: Book) -> bool:
+    """A tracked story with chapters that arrived by an upstream update and that the reader has
+    reached (cursor at/after the first new chapter). A reader still behind on older chapters keeps
+    reading them in order via the normal pass."""
+    return (
+        book.tracked
+        and book.fresh_from_index is not None
+        and book.cursor_chapter_index >= book.fresh_from_index
+    )
+
+
 def _weight_fade(book: Book, floor: float) -> float:
     """Below `floor` a source fades in proportion to its weight (0 → never posts); else 1.0."""
     if floor <= 0 or book.quota_weight >= floor:
@@ -366,11 +380,14 @@ def _plan_drops(
     """Select whole units (chapters) for one channel — slot-diverse and weight-throttled.
 
     `budget` is this cycle's effective allowance (base budget + accumulated credit);
-    `base_budget` is the per-cycle base (defaults to `budget`). Two passes:
+    `base_budget` is the per-cycle base (defaults to `budget`). Three passes:
 
     1. **Accumulation pass** — an *oversized* unit (larger than `base_budget`) can never fit in
        a single cycle, so it waits until `budget` (base + saved-up credit) can afford it, then
        posts whole (at most one per source per cycle). Its long-run rate tracks the base budget.
+    1.5 **Fresh pass** — tracked sources with chapters that arrived by an upstream update (see
+       `_is_fresh`) release their next whole unit deterministically, one per source per cycle,
+       oldest arrival first, while budget lasts (no roll, no unread penalty, no weight fade).
     2. **Slot round-robin** — rotate through the channel's occupied slots; on each slot's turn a
        **weight-proportional** random source pinned to that slot drops its next normal-sized unit
        if a stochastic budget roll passes. A slot with no eligible source passes its turn, so an
@@ -427,6 +444,26 @@ def _plan_drops(
             continue
         unit = remaining[0]
         if unit.word_count > base_budget and budget - used >= unit.word_count:
+            selected[book.id].append(unit)
+            remaining.pop(0)
+            used += unit.word_count
+
+    # Pass 1.5 — fresh tracked chapters: a chapter the site just published is the most valuable thing
+    # in the batch, so it is released deterministically (no stochastic roll, no unread penalty, no
+    # weight fade) rather than left to a dice roll. One unit per fresh source per cycle, round-robin
+    # — a 10-chapter dump must not eat the whole batch — oldest arrival first, while budget lasts;
+    # a unit that doesn't fit the remaining budget stays fresh for the next cycle. Oversized units
+    # are pass 1's (accumulation); a weight-0 source never posts.
+    fresh = [
+        b for b in sorted(valid, key=lambda b: (b.last_fetch_at is None, b.last_fetch_at, b.id))
+        if _is_fresh(b) and not selected[b.id] and b.quota_weight > 0
+    ]
+    for book in fresh:
+        remaining = book_remaining[book.id]
+        if not remaining:
+            continue
+        unit = remaining[0]
+        if unit.word_count <= base_budget and used + unit.word_count <= budget:
             selected[book.id].append(unit)
             remaining.pop(0)
             used += unit.word_count
@@ -585,7 +622,8 @@ def _advance_cursor(
         if book.tracked:
             # Tracked stories never "complete" — they self-gate at the end of the current
             # EPUB and resume when the next fetch adds chapters (mtime-cached chapterizer
-            # picks them up automatically). Keep the slot pinned.
+            # picks them up automatically). Keep the slot pinned. Caught up ⇒ nothing fresh.
+            book.fresh_from_index = None
             return
         book.status = BookStatus.completed
         book.slot_index = None  # free the slot for the next queued book

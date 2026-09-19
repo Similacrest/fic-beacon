@@ -199,8 +199,24 @@ fic-beacon/
   slot-mates. A slot whose sources are all caught-up (or capped) **passes its turn, spilling its
   budget to slots that still have content** — no wasted budget, but when only one slot has content
   it still fills up.
-- **Pure stochastic:** no guaranteed first chapter — over budget, even a source's first unit can
-  defer; a low-share source may get nothing some cycles. **Never split a unit.**
+- **Fresh chapters jump the roll (`_plan_drops` pass 1.5).** A chapter that arrives by an upstream
+  update must be released in the **next available batch unless there is no budget for it**. When a
+  fetch lands with more chapters than the EPUB had at the last broadcast, `apply_result` sets
+  `book.fresh_from_index` (= that old `total_chapters`; **never** on a story's first download or an
+  import backfill — `total_chapters` was `None` — so a freshly added 200-chapter serial doesn't claim
+  priority on all of it; cleared on a stub and when the cursor catches up). A tracked story whose
+  cursor has reached that index is *fresh*, and the fresh pass releases its next whole unit
+  **deterministically — no stochastic roll, no unread penalty, no weight fade** — while budget
+  lasts. Guard rails: **one unit per fresh source per cycle** (round-robin, oldest arrival first by
+  `last_fetch_at`, so a 10-chapter dump can't eat the batch; leftovers stay fresh and go first next
+  cycle), a unit that doesn't fit the remaining budget stays fresh (never split; oversized units keep
+  their accumulation pass), and a weight-0 source never posts. A reader still *behind* on older
+  chapters isn't fresh — those release in order through the normal pass. The fetcher's chapter count
+  is a rough spine count, so the "more chapters" test can over-trigger; that's harmless because
+  `fresh_from_index` is always a valid lower bound (a stale flag with no chapter behind it matches
+  nothing).
+- **Otherwise pure stochastic:** no guaranteed first chapter — over budget, even a non-fresh source's
+  first unit can defer; a low-share source may get nothing some cycles. **Never split a unit.**
 - **Oversized units accumulate, they don't force-post.** A unit larger than the channel's *base*
   per-cycle budget can't fit in one cycle, so it is **not** dropped every cycle. Instead an
   accumulation pass (runs before the stochastic pass) posts it whole only once `B` (base +
@@ -403,7 +419,8 @@ broadcast or an admin request.
   marks the books `fetching…` and persists the job→book map in `app_state` (so a restart resumes).
   A transient `fetch_poll_{id}` interval job polls until `done`, reflecting each book's live `phase`
   on the dashboard, then `apply_result(book, raw)` folds calibre_id / chapter_count / stub into the
-  row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them.
+  row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them —
+  and there they take the deterministic *fresh pass* (see Drop Planner), not the stochastic roll.
 - **XenForo threadmark ordering is a fetcher-config concern.** SB/SV/QQ threads group threadmarks by
   *category* (Story/Threadmarks, Sidestory, Apocrypha, Omake, Media, Informational, Staff Post) in a
   fixed, non-chronological order, so a new Story chapter inserts *mid-EPUB* and shifts the trailing
@@ -419,7 +436,7 @@ broadcast or an admin request.
 ## Data model (summary)
 
 `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
-`budget_credit`, `queue_order`, `feed_item_limit`) · `book` (`calibre_id`, `tracked`, `feed_url?`,
+`budget_credit`, `queue_order`, `feed_item_limit`) · `book` (`calibre_id`, `tracked`, `fresh_from_index?`, `story_status?`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
 `slot_index`, `queue_position`,

@@ -155,6 +155,14 @@ class Book(Base):
     # forever; this is where we remember ongoing-vs-completed for it. A done value stops the poller
     # re-fetching (the story stays tracked so it keeps its slot and finishes delivering chapters).
     story_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Physical index of the first chapter that arrived by an upstream update since the last
+    # broadcast (= the EPUB's chapter count before the fetch landed), or None. A tracked story whose
+    # cursor has reached it has *fresh* chapters: the planner's fresh pass releases one per cycle
+    # ahead of the stochastic round-robin, so a new upstream chapter isn't left to a dice roll. Set by
+    # fetch.client.apply_result (never on a story's first download or an import backfill, which are
+    # not "new"); cleared once the cursor catches up to the end of the EPUB. Always a valid lower
+    # bound — a stale value with no chapter behind it simply matches nothing.
+    fresh_from_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Stable slot number within the channel (1..parallel_slots), set when active.
     slot_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Paused sources broadcast nothing: they're excluded from candidate selection and slot

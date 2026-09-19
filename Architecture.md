@@ -191,6 +191,9 @@ C4Component
    sticky). Then gather each active source's **next unit** — every backlog book's next chapter plus
    every tracked story with a chapter past its cursor (tracked are uncapped). **Paused** sources and
    ones with a live 👎-down **cooldown** are excluded from candidates.
+3a. Run the **fresh pass** first: any tracked story whose chapters just arrived by an upstream update
+   (`book.fresh_from_index`, set by `apply_result`; never on a first download) releases its next whole
+   unit deterministically — one per source per cycle, oldest arrival first — while budget lasts.
 3. Run the **slot round-robin pass** (`B = budget + budget_credit`): rotate through the channel's
    occupied slots; on each slot's turn a weight-proportional random source in that slot drops its
    next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (halved while the source's most-recent

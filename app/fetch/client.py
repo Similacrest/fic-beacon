@@ -128,11 +128,23 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
         _adopt_canonical_url(book, result.story_url)
     if result.story_status:
         book.story_status = result.story_status
+    old_total = book.total_chapters  # the EPUB's chapter count as of the last broadcast
     if result.chapter_count is not None:
+        # Chapters that arrive by an *update* are fresh (they jump the stochastic roll). Not the
+        # first download / import backfill (old_total is None) — a newly added 200-chapter serial
+        # must not claim priority on all of it. The fetcher's count is a rough spine count, so this
+        # comparison can over-trigger; that is harmless because old_total is a valid lower bound
+        # (a flag with no chapter at/after it matches nothing) — see Book.fresh_from_index.
+        if old_total is not None and result.chapter_count > old_total:
+            book.fresh_from_index = (
+                old_total if book.fresh_from_index is None
+                else min(book.fresh_from_index, old_total)
+            )
         book.total_chapters = result.chapter_count
 
     if result.stub and result.stub.old > result.stub.new:
         _apply_stub(book, result.stub)
+        book.fresh_from_index = None  # indices were remapped; the flag no longer points anywhere
     else:
         book.last_fetch_status = "ok"
 

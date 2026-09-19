@@ -6,8 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — new upstream chapters are released in the next batch (migration `f2a3b4c5d6e7`)
+- A chapter that arrives by an upstream update now ships in the **next available batch unless there is no
+  budget for it**, instead of being left to the stochastic roll. `apply_result` flags
+  `book.fresh_from_index` when a fetch lands more chapters than the EPUB had at the last broadcast (never
+  on a story's first download or an import backfill), and a new **fresh pass** in the planner releases
+  each fresh tracked story's next whole unit deterministically — no roll, no unread penalty, no weight fade.
+- Guard rails: **one unit per fresh source per cycle** (a 10-chapter dump can't eat the batch; leftovers stay
+  fresh and go first next cycle), oldest arrival first, a unit that doesn't fit the remaining budget waits
+  (never split), oversized units keep their accumulation pass, and a weight-0 source never posts. A reader
+  still behind on older chapters keeps reading them in order.
+
 ### Fixed — adding a tracked story no longer fails with "fanficfare produced no epub" (migration `e1f2a3b4c5d6`)
-- **Root cause of the spurious error:** the fetcher matched each downloaded EPUB to a submitted URL by
+- **Likely root cause of the spurious error:** the fetcher matched each downloaded EPUB to a submitted URL by
   exact string, but FanFicFare canonicalises URLs (FFN `/s/123` → `/s/123/1/Title`, dropped `www.`,
   XenForo `/page-N`), so in a bulk add a *successful* download was reported as "no epub" and the EPUB
   silently discarded. Matching is now by story identity (host + numeric id).
