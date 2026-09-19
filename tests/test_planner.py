@@ -919,3 +919,23 @@ class TestReadGating:
         acked = count(set())
         unacked = count({book.id})
         assert unacked < acked
+
+
+class TestCooldownStall:
+    """Regression: a lone cooling-down source must not freeze its channel."""
+
+    def test_sole_source_sits_out_one_broadcast_then_returns(self, in_memory_db, epub_path):
+        book = _make_book(in_memory_db, calibre_id=1)
+        book.cooldown_remaining = 2  # as set by a 👎
+        in_memory_db.commit()
+
+        with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
+            MockAdapter.return_value = _mock_adapter(1, epub_path)
+            first = run_release_cycle(in_memory_db, Path("/fake"))
+            in_memory_db.commit()
+            assert first == []                      # sat out this broadcast
+            in_memory_db.refresh(book)
+            assert book.cooldown_remaining == 1     # ...and the counter is still moving
+
+            second = run_release_cycle(in_memory_db, Path("/fake"))
+        assert len(second) >= 1                     # eligible again — not frozen

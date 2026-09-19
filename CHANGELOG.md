@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — a lone cooling-down source could freeze its channel forever
+- `run_release_cycle` skipped a channel with no active sources *before* ticking 👎 cooldowns, and a
+  cooling-down source isn't "active" — so a channel whose only source got a 👎 never counted its
+  cooldown down. The tick now runs at the start of the channel's turn, before the early exit.
+- Because the tick moved ahead of selection, the 👎 cooldown (`2`) now means the source sits out
+  **one** broadcast, not two (the reader's requested gentler back-off).
+
 ### Fixed — new stories no longer pile onto slot 1
 - A tracked story added from the Tracked Stories tab (single or bulk) or imported from the Library
   had no slot until the next release cycle, so it was invisible on the dashboard and every add landed

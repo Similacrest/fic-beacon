@@ -123,6 +123,13 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         _assign_slots(session, channel.parallel_slots, channel.id)
         session.flush()
 
+        # Tick the 👎 cooldown *before* selecting, and before the empty-channel early exit: a
+        # channel whose only source is cooling down has no active books, so ticking after the
+        # `continue` would freeze it forever. A 👎 sets cooldown=2, so it is 1 when selection
+        # runs — the source sits out exactly one broadcast and is eligible again the next.
+        _tick_cooldowns(session, channel.id)
+        session.flush()
+
         active_books = _active_books_in(session, channel.id)
         if not active_books:
             continue
@@ -169,10 +176,6 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         positive_cap = max(int(base_budget), stats.get("max_pending_unit", 0))
         leftover = available - used
         channel.budget_credit = max(-base_budget, min(positive_cap, leftover))
-
-        # Tick down the 👎-down cooldown for cooled-off sources (after selection, so a fresh
-        # cooldown=2 sits out this broadcast and the next).
-        _tick_cooldowns(session, channel.id)
 
         # Re-fill slots freed by EPUBs that just completed this broadcast.
         _assign_slots(session, channel.parallel_slots, channel.id)
@@ -228,8 +231,8 @@ def _unacknowledged_books(session: Session, books: list[Book]) -> set[int]:
 def _tick_cooldowns(session: Session, channel_id: int) -> None:
     """Decrement the 👎-down cooldown once per broadcast for this channel's active sources.
 
-    Runs after selection so a source set to cooldown=2 sits out the next *two* broadcasts
-    before it becomes a candidate again.
+    Runs at the *start* of a channel's turn (before selection) so a source set to cooldown=2 by a
+    👎 is at 1 when selection runs — it sits out exactly one broadcast, then is eligible again.
     """
     (
         session.query(Book)
