@@ -106,14 +106,16 @@ def add_bulk(
     """Add many tracked stories at once — one story URL per line."""
     from app import scheduler
     target_id = channel_id or ensure_default_channel(db).id
-    added = sum(
-        1 for line in urls.splitlines()
-        if line.strip() and _add_tracked_story(db, line, "", target_id)
-    )
+    lines = [ln for ln in urls.splitlines() if ln.strip()]
+    added = sum(1 for line in lines if _add_tracked_story(db, line, "", target_id))
     assign_channel_slots(db, target_id)
     db.commit()
     scheduler.trigger_fetch_pending()
-    return RedirectResponse(url=f"/admin/ongoing/?added={added}", status_code=303)
+    skipped = len(lines) - added  # duplicates of an already-tracked story
+    return RedirectResponse(
+        url=f"/admin/ongoing/?added={added}" + (f"&skipped={skipped}" if skipped else ""),
+        status_code=303,
+    )
 
 
 @router.post("/{source_id}/toggle")

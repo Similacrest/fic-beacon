@@ -212,9 +212,6 @@ def test_multi_url_failure_is_attributed_per_url(fake_tools):
     good = "https://www.royalroad.com/fiction/111"
     bad = "https://www.royalroad.com/fiction/222"
 
-    def script_for(call_args):  # decided by which URL each run was given
-        return None
-
     # batch: only `good` produced; then `bad` is re-run alone and fails with its own message.
     fake_tools["script"] = [
         ([("g.epub", "https://www.royalroad.com/fiction/111/g", "Completed")], "batch output"),

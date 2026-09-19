@@ -198,11 +198,11 @@ C4Component
    unit deterministically — one per source per cycle, oldest arrival first — while budget lasts.
 3. Run the **slot round-robin pass** (`B = channel share of the schedule's budget + budget_credit`, the share being `budget × weight / Σ weight` over channels with content): rotate through the channel's
    occupied slots; on each slot's turn a weight-proportional random source in that slot drops its
-   next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (halved while the source's most-recent
-   drop is unacknowledged — soft read-gating). An idle slot passes its turn, spilling its budget to
+   next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (scaled down by the weight fade below
+   `weight_skip_floor` and by the transient unread-streak ramp — soft read-gating). An idle slot passes its turn, spilling its budget to
    slots with content — so drops spread across the slot feeds (diversity) and weight throttles a
    source's share *within* its slot. Excluded units roll over whole; never split. Then
-   `budget_credit += budget − used`. (Cooldowns are ticked at the *start* of the channel's turn.)
+   `budget_credit += share − used`. (Cooldowns are ticked at the *start* of the channel's turn.)
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance cursors;
    complete+free **backlog** books that ran out (next queued book rebalances in). A **tracked** book
    that runs out is *not* completed — it self-gates until the next fetch adds chapters. Sources whose

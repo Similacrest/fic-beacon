@@ -411,3 +411,12 @@ class TestAddStoryFeedback:
             add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
         book = in_memory_db.query(Book).filter(Book.source_url == "https://s/story").one()
         assert book.slot_index is not None
+
+    def test_bulk_add_reports_skipped_duplicates(self, in_memory_db):
+        from app.routers.ongoing import add_bulk
+        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
+        with patch("app.scheduler.trigger_fetch_pending"):
+            add_bulk(urls="https://s/a\nhttps://s/b", channel_id=cid, db=in_memory_db)
+            resp = add_bulk(urls="https://s/a\nhttps://s/c\n\nhttps://s/b", channel_id=cid,
+                            db=in_memory_db)
+        assert resp.headers["location"].endswith("?added=1&skipped=2")

@@ -21,6 +21,7 @@
 {% if added %}
 <p style="background:#d4edda; color:#155724; padding:.6em 1em; border-radius:4px">
   Added {{ added }} story(ies). Their first download runs in the background — refresh to see status.
+  {% set skipped = request.query_params.get('skipped') %}{% if skipped %}{{ skipped }} already tracked — skipped.{% endif %}
 </p>
 {% endif %}
 

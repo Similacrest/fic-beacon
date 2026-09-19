@@ -228,7 +228,9 @@ def _story_key(url: str | None) -> str:
     slash, XenForo `/threads/slug.123/page-2` → `/threads/slug.123/`), so an exact-string compare
     misses a perfectly good download. We key on `host` + the story's numeric id where there is one
     (XenForo's id is the number after the last dot of the thread slug; elsewhere the first long run
-    of digits in the path), falling back to the normalised path.
+    of digits in the path), falling back to the normalised path. The query string is ignored, so
+    query-keyed archives (`viewstory.php?sid=N`) would collide in one batch — none of the supported
+    sites (FFN, AO3, SB/SV/QQ, RoyalRoad, Wattpad) key on it.
     """
     if not url:
         return ""
@@ -438,13 +440,17 @@ def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
             if by_url[u]["phase"] not in ("done", "error"):
                 _no_epub(by_url[u], single, transient=bool(_TRANSIENT_RE.search(single)))
         return
-    _no_epub(by_url[pending[0]], output, transient=bool(_TRANSIENT_RE.search(output)))
+    _no_epub(by_url[pending[0]], output, transient=bool(_TRANSIENT_RE.search(output)),
+             attempts=RETRY_ATTEMPTS)
 
 
-def _no_epub(entry: dict, output: str, transient: bool) -> None:
+def _no_epub(entry: dict, output: str, transient: bool, attempts: int | None = None) -> None:
     """Record why a new story produced no EPUB, using what FanFicFare actually said."""
     reason = _tail(output) or "no output"
-    prefix = f"failed after {RETRY_ATTEMPTS} attempts" if transient else "fanficfare produced no epub"
+    if not transient:
+        prefix = "fanficfare produced no epub"
+    else:
+        prefix = f"failed after {attempts} attempts" if attempts else "transient error"
     entry["error"] = f"{prefix}: {reason}"[:400]
     entry["phase"] = "error"
 
