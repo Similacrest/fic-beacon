@@ -8,7 +8,6 @@ make_fff_epub() returns one structured like FanFicFare output (EPUB2 ncx, dc:sou
 """
 from __future__ import annotations
 
-import io
 import tempfile
 import zipfile
 from pathlib import Path

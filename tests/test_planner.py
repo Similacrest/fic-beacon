@@ -24,9 +24,7 @@ from app.planner.planner import (
     _plan_drops,
     _assign_slots,
     schedule_budget,
-    split_budget,
 )
-from app.epub.chapterizer import Chapter
 from tests.make_epub import make_epub
 
 
@@ -205,7 +203,7 @@ class TestGlobalRoundRobin:
 
 class TestDropCycle:
     def test_creates_drop_rows(self, in_memory_db, epub_path):
-        book = _make_book(in_memory_db, calibre_id=1)
+        _make_book(in_memory_db, calibre_id=1)
         in_memory_db.commit()
 
         with patch("app.planner.planner.CalibreAdapter") as MockAdapter:
@@ -415,8 +413,7 @@ class TestFeedback:
 
 class TestChannels:
     def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
-        from app.models import Channel, Config
-        cfg = in_memory_db.get(Config, 1)
+        from app.models import Channel
         ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, weight=1)
         in_memory_db.add(ch)
         in_memory_db.flush()
@@ -481,7 +478,7 @@ class TestAssignSlots:
         db.flush()
         return book
 
-    def _make_channel(self, db, parallel_slots: int = 3) -> "Channel":
+    def _make_channel(self, db, parallel_slots: int = 3):
         from app.models import Channel
         ch = Channel(name=f"Ch{parallel_slots}", slug=f"ch{id(parallel_slots)}",
                      parallel_slots=parallel_slots, weight=1)
@@ -844,7 +841,8 @@ class TestPause:
 
 
 class TestCooldown:
-    """#4 — a 👎 down backs a source off for ≥2 broadcasts (cooldown_remaining)."""
+    """A 👎 sets cooldown_remaining=2, ticked at the start of each channel turn, so the source sits
+    out exactly one broadcast."""
 
     def _drop_for(self, db, book, token="dtok", slug="dslug"):
         d = Drop(book_id=book.id, feedback_token=token, reader_slug=slug,
@@ -857,7 +855,7 @@ class TestCooldown:
         d = self._drop_for(in_memory_db, a)
         apply_feedback(in_memory_db, d, FeedbackAction.down, epub_path.parent)
         assert a.cooldown_remaining == 2
-        assert a.status == BookStatus.active   # not dropped (below threshold)
+        assert a.status == BookStatus.active   # weight still above 0 → not auto-dropped
 
     def test_cooled_source_excluded_from_candidates(self, in_memory_db):
         from app.planner.planner import _active_books_in

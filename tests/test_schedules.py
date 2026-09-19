@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from app.models import Book, BookStatus, BudgetMode, Channel, Config, Schedule
+from app.models import BudgetMode, Channel, Config, Schedule
 from app.planner.planner import resolve_schedule, run_release_cycle, schedule_budget, split_budget
 from tests.make_epub import make_epub
 from tests.test_planner import _make_book, _mock_adapter, _set_release_budget

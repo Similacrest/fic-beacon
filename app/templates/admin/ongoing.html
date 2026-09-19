@@ -36,13 +36,13 @@
     <span style="color:#888; font-size:.85em">With selected:</span>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-fetch"
             hx-post="/admin/ongoing/batch-fetch" hx-include="[name='book_ids']"
-            style="font-size:.85em; padding:.2em .6em" title="Fetch new chapters now">⤓ Fetch</button>
+            style="font-size:.85em; padding:.2em .6em" title="Fetch selected now" aria-label="Fetch selected now">⤓</button>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-pause"
             hx-post="/admin/ongoing/batch-pause" hx-include="[name='book_ids']"
-            style="font-size:.85em; padding:.2em .6em">⏸ Pause</button>
+            style="font-size:.85em; padding:.2em .6em" title="Pause selected" aria-label="Pause selected">⏸</button>
     <button class="btn" type="submit" formaction="/admin/ongoing/batch-resume"
             hx-post="/admin/ongoing/batch-resume" hx-include="[name='book_ids']"
-            style="font-size:.85em; padding:.2em .6em">▶ Resume</button>
+            style="font-size:.85em; padding:.2em .6em" title="Resume selected" aria-label="Resume selected">▶</button>
     <button class="btn btn-danger" type="submit" formaction="/admin/ongoing/batch-delete"
             hx-post="/admin/ongoing/batch-delete" hx-include="[name='book_ids']"
             hx-confirm="Delete selected tracked stories?"
@@ -81,8 +81,9 @@
     <td>
       <form method="post" action="/admin/ongoing/{{ s.id }}/toggle"
             hx-post="/admin/ongoing/{{ s.id }}/toggle">
-        <button style="font-size:.8em; padding:.15em .5em" title="Pause/resume">
-          {{ "⏸ paused" if s.paused else "▶ active" }}
+        <button style="font-size:.8em; padding:.15em .5em"
+                title="{{ 'Paused — click to resume' if s.paused else 'Active — click to pause' }}">
+          {{ "⏸" if s.paused else "▶" }}
         </button>
       </form>
     </td>

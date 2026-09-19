@@ -68,7 +68,7 @@
   <div class="feed-url" style="margin-bottom:.6em">{{ cfg.feed_secret }}</div>
   <form method="post" action="/admin/config/regenerate-secret"
         onsubmit="return confirm('Regenerate the feed secret?\n\nEVERY feed URL changes — all reader subscriptions (every channel) break until you re-add the new URLs from the Channels page. Per-drop feedback links keep working.')">
-    <button class="btn btn-danger" type="submit">🔁 Regenerate feed secret</button>
+    <button class="btn btn-danger" type="submit" title="Regenerate feed secret" aria-label="Regenerate feed secret">🔁</button>
   </form>
 </div>
 

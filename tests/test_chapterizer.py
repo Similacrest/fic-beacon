@@ -169,7 +169,7 @@ class TestImageRewrite:
 
 def _epub_with_notes(chapter_body: str, notes_body: str | None = None) -> Path:
     """Build a 2-file EPUB: a chapter plus an optional separate endnotes file."""
-    import io, tempfile, zipfile
+    import tempfile, zipfile
     files = {
         "mimetype": "application/epub+zip",
         "META-INF/container.xml":

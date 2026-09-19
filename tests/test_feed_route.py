@@ -90,7 +90,6 @@ def test_route_and_websub_bodies_are_byte_identical(client):
 
     Both go through build_channel_slot_feed now; this locks that shared path so they can't drift
     again (a past bug: the publisher used a different item cap than the route)."""
-    from app.config import settings
     from app.websub.publisher import _channel_slot_feed
     tc, db = client
     ch = _seed_drops(db, "fantasy", "1", n=4)

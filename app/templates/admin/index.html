@@ -74,7 +74,7 @@
       hx-post="/admin/books/{{ book.id }}/track" style="display:inline"
       title="{{ 'Stop auto-updating — treat as finite backlog' if book.tracked else 'Auto-update from source — treat as ongoing serial' }}">
   <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
-  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '📡 on' if book.tracked else '📡 off' }}</button>
+  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '📡' if book.tracked else '📴' }}</button>
 </form>
 {% endmacro %}
 
@@ -83,7 +83,7 @@
 <form method="post" action="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}"
       hx-post="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}" style="display:inline"
       title="{{ 'Resume broadcasting this source' if book.paused else 'Pause — stop broadcasting; a backlog book frees its slot' }}">
-  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '▶ resume' if book.paused else '⏸ pause' }}</button>
+  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '▶' if book.paused else '⏸' }}</button>
 </form>
 {% endmacro %}
 
@@ -112,17 +112,17 @@
       <span class="muted" style="font-size:.85em">— running in the background; safe to close or refresh this tab.</span>
     </span>
   </div>
-  <button class="btn btn-primary" disabled aria-busy="true">▶ Release cycle running…</button>
-  <button class="btn" disabled aria-busy="true">🔄 Check feeds now</button>
+  <button class="btn btn-primary" disabled aria-busy="true" title="Release cycle running…">▶</button>
+  <button class="btn" disabled aria-busy="true" title="Check feeds now">🔄</button>
   {% else %}
   <form method="post" action="/admin/release-now" hx-post="/admin/release-now">
     <select name="schedule_id" title="Whose budget this release uses" style="width:auto">
       {% for row in schedule_rows %}<option value="{{ row.schedule.id }}">{{ row.schedule.name }} ({{ '{:,}'.format(row.schedule.budget|round|int) }}{{ ' min' if row.schedule.budget_mode.value == 'minutes' else 'w' }}){{ '' if row.schedule.enabled else ' — disabled' }}</option>{% endfor %}
     </select>
-    <button class="btn btn-primary" title="Run a release cycle now under the selected schedule's budget — polls feeds, then broadcasts pending chapters. Runs in the background.">▶</button>
+    <button class="btn btn-primary" title="Run a release cycle now under the selected schedule's budget — polls feeds, then broadcasts pending chapters. Runs in the background." aria-label="Run release now">▶</button>
   </form>
   <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now">
-    <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
+    <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters" aria-label="Check feeds now">🔄</button>
   </form>
   {% endif %}
 </div>

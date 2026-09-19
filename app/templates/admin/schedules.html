@@ -85,7 +85,7 @@
 <h2>New schedule</h2>
 <form method="post" action="/admin/schedules">
   {{ fields(none) }}
-  <div style="margin-top:.6em"><button class="btn btn-primary" type="submit" title="Create schedule">➕ Add schedule</button></div>
+  <div style="margin-top:.6em"><button class="btn btn-primary" type="submit" title="Add schedule" aria-label="Add schedule">➕</button></div>
   <small style="color:#666; display:block; margin-top:.4em">
     Cron examples: <code>0 7 * * 1-5</code> weekdays 07:00 · <code>0 19 * * 1-5</code> weekdays 19:00 ·
     <code>0 10 * * 6,0</code> weekends 10:00. Budget is in words or minutes (minutes use the global reading speed).
