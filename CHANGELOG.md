@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — new stories no longer pile onto slot 1
+- A tracked story added from the Tracked Stories tab (single or bulk) or imported from the Library
+  had no slot until the next release cycle, so it was invisible on the dashboard and every add landed
+  together. It is now placed immediately (`planner.assign_channel_slots`).
+- Slot balancing now sums each slot's pinned **`quota_weight`** instead of counting works, so a slot
+  holding a heavyweight serial is no longer treated as equal to one holding a dormant story.
+  Backlog imports are still left `queued` for the release cycle to promote.
+
 ### Changed — feedback buttons are emoji-only
 - The per-drop action row (🪝 · 👍 · 👎 · ⏸ · ❌ · ✓) no longer carries text labels in feed items or on
   `/read/{slug}`; each link keeps its old wording as `title=` + `aria-label=` so it stays discoverable

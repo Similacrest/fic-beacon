@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config
 from app.ongoing.feed_url import infer_feed_url
-from app.planner.planner import pause_book, resume_book
+from app.planner.planner import assign_channel_slots, pause_book, resume_book
 from app.version import __version__
 
 router = APIRouter(prefix="/admin/ongoing")
@@ -88,6 +88,7 @@ def add_story(
     from app import scheduler
     target_id = channel_id or ensure_default_channel(db).id
     _add_tracked_story(db, source_url, title, target_id)
+    assign_channel_slots(db, target_id)
     db.commit()
     scheduler.trigger_fetch_pending()
     return RedirectResponse(url="/admin/ongoing/", status_code=303)
@@ -106,6 +107,7 @@ def add_bulk(
         1 for line in urls.splitlines()
         if line.strip() and _add_tracked_story(db, line, "", target_id)
     )
+    assign_channel_slots(db, target_id)
     db.commit()
     scheduler.trigger_fetch_pending()
     return RedirectResponse(url=f"/admin/ongoing/?added={added}", status_code=303)

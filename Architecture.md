@@ -187,7 +187,7 @@ C4Component
    run is refused while one is in flight); the POST returns at once, so the tab is safe to close.
 2. For each channel, **assign slots** (`_assign_slots`): promote queued backlog books into free
    slots up to `parallel_slots` (≤ N active, one per slot; sticky), and pin every active tracked
-   story to a balanced slot (fewest pinned works, tie-break fewest chapters ever dropped there;
+   story to a balanced slot (lowest summed quota_weight of pinned works, tie-break fewest chapters ever dropped there; placed at add/import time;
    sticky). Then gather each active source's **next unit** — every backlog book's next chapter plus
    every tracked story with a chapter past its cursor (tracked are uncapped). **Paused** sources and
    ones with a live 👎-down **cooldown** are excluded from candidates.

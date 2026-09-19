@@ -302,6 +302,7 @@ def add_from_library(
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
     existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
+    touched_channels: set[int] = set()
     for cid in calibre_ids:
         if cid in existing_ids:
             continue
@@ -314,6 +315,7 @@ def add_from_library(
             genres = effective_genres(cbook.genres, cbook.genre_tags, cbook.source_url)
             target_id = pick_channel_id(genres, channels, default_channel_id)
         max_pos += 1
+        touched_channels.add(target_id)
         if classify_status(cbook.source_status) == "updating":
             count = _epub_chapter_count(adapter, cbook) if cbook.read else 0
             db.add(Book(
@@ -341,6 +343,10 @@ def add_from_library(
                 queue_position=max_pos,
                 channel_id=target_id,
             ))
+    # Place the imports in slots now (balanced) rather than lumping them until the next cycle.
+    from app.planner.planner import assign_channel_slots
+    for cid in touched_channels:
+        assign_channel_slots(db, cid)
     db.commit()
     return RedirectResponse(url="/admin/library", status_code=303)
 

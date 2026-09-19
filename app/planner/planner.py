@@ -525,7 +525,7 @@ def _assign_slots(
       are active (one per slot); any extra active ones are demoted back to `queued`, and
       queued ones are promoted into slots with no active backlog book.
     - **Tracked (auto-updating) books** are uncapped and never queued. Each is load-balanced
-      onto a slot — the slot with the fewest pinned works, tie-broken by the fewest chapters
+      onto a slot — the slot with the lowest summed quota_weight, tie-broken by the fewest chapters
       ever dropped there — so several tracked stories may share a slot alongside the slot's
       backlog book.
 
@@ -585,7 +585,17 @@ def _assign_slots(
             book.slot_index = _lowest_free_slot(epub_slots, parallel_slots)
             epub_slots.add(book.slot_index)
 
-    # ── Tracked books: uncapped, load-balanced across all slots (sticky) ───────
+    _place_tracked(session, parallel_slots, channel_id)
+
+
+def _place_tracked(session: Session, parallel_slots: int, channel_id: int) -> None:
+    """Tracked books: uncapped, load-balanced across all slots (sticky).
+
+    Only (re)places sources lacking a valid slot; never promotes or demotes backlog books.
+    """
+    def _valid(idx: int | None) -> bool:
+        return idx is not None and 1 <= idx <= parallel_slots
+
     ongoings = (
         session.query(Book)
         .filter(
@@ -596,12 +606,19 @@ def _assign_slots(
         )
         .all()
     )
-    work_count: dict[int, int] = {s: 0 for s in range(1, parallel_slots + 1)}
-    for slot in epub_slots:
-        work_count[slot] += 1
+    # Load per slot = summed quota_weight of the works pinned there (not a raw count), so a slot
+    # carrying a heavyweight serial isn't treated as equal to one holding a dormant story.
+    # (Pending-chapter counts make a poor proxy: a caught-up tracked story has 0 pending.)
+    work_load: dict[int, float] = {s: 0.0 for s in range(1, parallel_slots + 1)}
+    for epub in session.query(Book).filter(
+        Book.channel_id == channel_id, Book.tracked.is_(False),
+        Book.status == BookStatus.active, Book.paused.is_(False),
+    ):
+        if _valid(epub.slot_index):
+            work_load[epub.slot_index] += max(epub.quota_weight, 0.0)
     for ongoing in ongoings:
         if _valid(ongoing.slot_index):
-            work_count[ongoing.slot_index] += 1
+            work_load[ongoing.slot_index] += max(ongoing.quota_weight, 0.0)
     # Chapters ever dropped into each slot (string feed_key), used as the tie-breaker.
     chapter_freq = dict(
         session.query(Drop.feed_key, func.count(Drop.id))
@@ -613,14 +630,14 @@ def _assign_slots(
     def _balanced_slot() -> int:
         return min(
             range(1, parallel_slots + 1),
-            key=lambda s: (work_count[s], int(chapter_freq.get(str(s), 0)), s),
+            key=lambda s: (work_load[s], int(chapter_freq.get(str(s), 0)), s),
         )
 
     for ongoing in ongoings:
         if not _valid(ongoing.slot_index):
             slot = _balanced_slot()
             ongoing.slot_index = slot
-            work_count[slot] += 1
+            work_load[slot] += max(ongoing.quota_weight, 0.0)
 
 
 def apply_feedback(
@@ -728,6 +745,21 @@ def resume_book(session: Session, book: Book) -> None:
     channel = session.get(Channel, book.channel_id)
     if channel is not None:
         _assign_slots(session, channel.parallel_slots, book.channel_id)
+
+
+def assign_channel_slots(session: Session, channel_id: int) -> None:
+    """Place a channel's *tracked* stories in slots right now (used at add/import time).
+
+    Backlog promotion is left to the release cycle (imports of done/blank-status books must stay
+    `queued`).
+
+    Without this a freshly added source has no slot until the next release cycle, so it is
+    invisible on the dashboard's slot cards and every bulk add is placed in one lump.
+    """
+    channel = session.get(Channel, channel_id)
+    if channel is not None:
+        session.flush()
+        _place_tracked(session, channel.parallel_slots, channel_id)
 
 
 def _refill_book_channel(session: Session, book: Book) -> None:

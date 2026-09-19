@@ -18,6 +18,7 @@ import pytest
 
 from app.models import Book, BookStatus, BudgetMode, Drop, FeedbackAction
 from app.planner.planner import (
+    assign_channel_slots,
     run_release_cycle,
     apply_feedback,
     _plan_drops,
@@ -459,6 +460,33 @@ class TestAssignSlots:
         for o in ongoings:
             assert o.slot_index in (1, 2), f"{o.title} got slot {o.slot_index}"
             assert o.status == BookStatus.active  # ongoings never demoted to queued
+
+    def test_heavy_serial_slot_is_avoided(self, in_memory_db):
+        """Balance is by summed quota_weight, not by how many works a slot holds."""
+        ch = self._make_channel(in_memory_db, parallel_slots=2)
+        heavy = self._make_ongoing(in_memory_db, "Heavy", ch.id, slot_index=1)
+        heavy.quota_weight = 5.0
+        light = self._make_ongoing(in_memory_db, "Light", ch.id, slot_index=2)
+        light.quota_weight = 0.5
+        newcomers = [self._make_ongoing(in_memory_db, f"New{i}", ch.id) for i in range(3)]
+        in_memory_db.flush()
+
+        assign_channel_slots(in_memory_db, ch.id)
+
+        # Slot 2 (load 0.5) absorbs the newcomers until it outweighs slot 1 (load 5.0).
+        assert all(b.slot_index == 2 for b in newcomers)
+
+    def test_assign_channel_slots_leaves_backlog_queued(self, in_memory_db):
+        ch = self._make_channel(in_memory_db, parallel_slots=2)
+        queued = Book(calibre_id=999, title="Q", author="A", status=BookStatus.queued,
+                      queue_position=1, channel_id=ch.id)
+        in_memory_db.add(queued)
+        self._make_ongoing(in_memory_db, "S", ch.id)
+        in_memory_db.flush()
+
+        assign_channel_slots(in_memory_db, ch.id)
+
+        assert queued.status == BookStatus.queued and queued.slot_index is None
 
     def test_ongoings_load_balanced_across_slots(self, in_memory_db):
         ch = self._make_channel(in_memory_db, parallel_slots=3)
