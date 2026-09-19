@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — feedback buttons are emoji-only
+- The per-drop action row (🪝 · 👍 · 👎 · ⏸ · ❌ · ✓) no longer carries text labels in feed items or on
+  `/read/{slug}`; each link keeps its old wording as `title=` + `aria-label=` so it stays discoverable
+  on hover and accessible. Behaviour of every link is unchanged.
+
 ## [0.11.0] — 2026-07-08
 
 ### Changed — "drop cycle" renamed to **release cycle** (disambiguation)

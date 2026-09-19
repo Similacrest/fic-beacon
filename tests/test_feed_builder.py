@@ -210,3 +210,13 @@ class TestFeedbackLinks:
         drop.feedback_token = "tok"
         html = _feedback_html(drop, _extra_available(drop))
         assert "/fb/tok?action=read" in html
+
+    def test_links_are_emoji_only_with_tooltips(self):
+        import re
+        drop = _make_drop()
+        html = _feedback_html(drop, _extra_available(drop))
+        anchors = re.findall(r'<a [^>]*>(.*?)</a>', html)
+        assert anchors == ["🪝", "👍", "👎", "⏸", "❌", "✓"]
+        # The old wording survives as accessible/hover text.
+        assert 'title="More like this" aria-label="More like this"' in html
+        assert 'title="Drop this source" aria-label="Drop this source"' in html

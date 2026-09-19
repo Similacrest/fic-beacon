@@ -5,8 +5,7 @@ Each item:
   - <link>/<id>: stable permalink (source URL if available, else /read/{slug})
   - Full chapter HTML in <content> (Atom) and <description> (RSS)
   - Tokenized feedback hyperlinks appended to content, in order:
-      [🪝 Extra chapter now] [👍 More like this] [👎 Less like this] [⏸ Pause this source]
-      [❌ Drop this source] [✓ Mark read]
+      🪝 · 👍 · 👎 · ⏸ · ❌ · ✓   (emoji only; the old wording lives in title=/aria-label=)
     up/down/pause/read are instant bare-GET links (/fb/{token}); extra/drop route through the
     confirmation page (/fb/confirm/{token}). 🪝 extra is shown only when a next unit
     is available. ✓ read is a neutral acknowledgement (soft read-gating). See
@@ -164,13 +163,25 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
 
     links = []
     if extra_available:
-        links.append(f'<a href="{confirm}?action=extra">🪝 Extra chapter now</a>')
-    links.append(f'<a href="{instant}?action=up">👍 More like this</a>')
-    links.append(f'<a href="{instant}?action=down">👎 Less like this</a>')
-    links.append(f'<a href="{instant}?action=pause">⏸ Pause this source</a>')
-    links.append(f'<a href="{confirm}?action=drop">❌ Drop this source</a>')
+        links.append(
+            f'<a href="{confirm}?action=extra" title="Extra chapter now" aria-label="Extra chapter now">🪝</a>'
+        )
+    links.append(
+        f'<a href="{instant}?action=up" title="More like this" aria-label="More like this">👍</a>'
+    )
+    links.append(
+        f'<a href="{instant}?action=down" title="Less like this" aria-label="Less like this">👎</a>'
+    )
+    links.append(
+        f'<a href="{instant}?action=pause" title="Pause this source" aria-label="Pause this source">⏸</a>'
+    )
+    links.append(
+        f'<a href="{confirm}?action=drop" title="Drop this source" aria-label="Drop this source">❌</a>'
+    )
     # Neutral read-acknowledgement (soft read-gating). Instant bare GET; no weight change.
-    links.append(f'<a href="{instant}?action=read">✓ Mark read</a>')
+    links.append(
+        f'<a href="{instant}?action=read" title="Mark read" aria-label="Mark read">✓</a>'
+    )
 
     return (
         '\n<hr/>\n'

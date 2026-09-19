@@ -262,6 +262,8 @@ unwrapped (links dropped, authored number kept); note images use the image route
 
 ### Feedback contract (plain hyperlinks, any reader)
 Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
+Links render as **bare emoji** (no text label); the wording lives in each link's `title=`/`aria-label=`
+(hover tooltip + screen readers). Same markup in the feed and on `/read/{slug}` (`feedback_block`).
 - `up` → `thumbs_up++`, `quota_weight ×= 1.25`. **Instant bare GET** `GET /fb/{token}?action=up`.
 - `down` → `thumbs_down++`, `quota_weight ×= 0.8`, **and** `cooldown_remaining = max(2, …)` so the
   source sits out the next ≥2 broadcasts (the planner excludes candidates with
