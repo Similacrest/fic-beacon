@@ -23,7 +23,8 @@ from app.planner.planner import (
     apply_feedback,
     _plan_drops,
     _assign_slots,
-    _channel_budget,
+    schedule_budget,
+    split_budget,
 )
 from app.epub.chapterizer import Chapter
 from tests.make_epub import make_epub
@@ -47,6 +48,13 @@ def _make_book(db, calibre_id: int, title: str = "Test Book", status=BookStatus.
     db.add(book)
     db.flush()
     return book
+
+
+def _set_release_budget(db, words: float) -> None:
+    """Set the seeded default schedule's whole-release budget (in words)."""
+    from app.models import Schedule
+    db.query(Schedule).first().budget = words
+    db.flush()
 
 
 @pytest.fixture
@@ -184,15 +192,15 @@ class TestGlobalRoundRobin:
                 assert not s.held_out
 
     def test_minutes_budget_mode(self, in_memory_db):
-        # A channel in minutes mode multiplies its budget by the global wpm.
-        from app.models import Channel, Config
+        # A schedule in minutes mode multiplies its budget by the global wpm.
+        from app.models import Config, Schedule
         cfg = in_memory_db.get(Config, 1)
         cfg.wpm = 300
-        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget_mode = BudgetMode.minutes
-        channel.budget = 10
+        schedule = in_memory_db.query(Schedule).first()
+        schedule.budget_mode = BudgetMode.minutes
+        schedule.budget = 10
         in_memory_db.flush()
-        assert _channel_budget(channel, cfg) == 3000  # 10 min × 300 wpm
+        assert schedule_budget(schedule, cfg) == 3000  # 10 min × 300 wpm
 
 
 class TestDropCycle:
@@ -238,9 +246,7 @@ class TestDropCycle:
         # 3 queued books, no active ones — exactly the fresh-deploy scenario.
         # Budget fits ~one ~500w chapter so a promoted book drops one and stays active
         # (rather than exhausting the short 5-chapter mock epub in one cycle).
-        from app.models import Channel
-        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget = 600
+        _set_release_budget(in_memory_db, 600)
         for i in range(1, 4):
             _make_book(
                 in_memory_db, calibre_id=i, title=f"Book {i}",
@@ -260,9 +266,7 @@ class TestDropCycle:
     def test_promotes_queued_book_when_slot_freed(self, in_memory_db, epub_path):
         # 1 active book that's about to exhaust + 1 queued.
         # Small budget so the promoted book takes one chapter and stays active.
-        from app.models import Channel
-        channel = in_memory_db.query(Channel).order_by(Channel.id).first()
-        channel.budget = 100
+        _set_release_budget(in_memory_db, 100)
         book1 = _make_book(in_memory_db, calibre_id=1, status=BookStatus.active)
         book1.cursor_chapter_index = 4  # last chapter
         book2 = _make_book(in_memory_db, calibre_id=2, status=BookStatus.queued, queue_position=2)
@@ -413,9 +417,10 @@ class TestChannels:
     def test_per_channel_slots_and_feed_key_stamping(self, in_memory_db, epub_path):
         from app.models import Channel, Config
         cfg = in_memory_db.get(Config, 1)
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, budget=1500)
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=2, weight=1)
         in_memory_db.add(ch)
         in_memory_db.flush()
+        _set_release_budget(in_memory_db, 1500)  # small enough that no book exhausts its EPUB
         for i in (1, 2, 3):
             b = _make_book(
                 in_memory_db, calibre_id=i, title=f"B{i}",
@@ -479,7 +484,7 @@ class TestAssignSlots:
     def _make_channel(self, db, parallel_slots: int = 3) -> "Channel":
         from app.models import Channel
         ch = Channel(name=f"Ch{parallel_slots}", slug=f"ch{id(parallel_slots)}",
-                     parallel_slots=parallel_slots, budget=5000)
+                     parallel_slots=parallel_slots, weight=1)
         db.add(ch)
         db.flush()
         return ch
@@ -719,7 +724,7 @@ class TestSetSlot:
     def test_backlog_move_to_occupied_slot_swaps(self, in_memory_db):
         from app.models import Channel
         from app.routers.admin import set_slot
-        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        ch = Channel(name="C", slug="c", parallel_slots=2, weight=1)
         in_memory_db.add(ch); in_memory_db.flush()
         a = _make_book(in_memory_db, calibre_id=1, title="A", channel_id=ch.id)
         b = _make_book(in_memory_db, calibre_id=2, title="B", channel_id=ch.id)
@@ -734,7 +739,7 @@ class TestSetSlot:
     def test_tracked_move_does_not_swap(self, in_memory_db):
         from app.models import Channel, Book, BookStatus
         from app.routers.admin import set_slot
-        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        ch = Channel(name="C", slug="c", parallel_slots=2, weight=1)
         in_memory_db.add(ch); in_memory_db.flush()
         backlog = _make_book(in_memory_db, calibre_id=1, title="EP", channel_id=ch.id)
         backlog.slot_index = 1
@@ -750,7 +755,7 @@ class TestSetSlot:
     def test_out_of_range_slot_ignored(self, in_memory_db):
         from app.models import Channel
         from app.routers.admin import set_slot
-        ch = Channel(name="C", slug="c", parallel_slots=2, budget=100)
+        ch = Channel(name="C", slug="c", parallel_slots=2, weight=1)
         in_memory_db.add(ch); in_memory_db.flush()
         a = _make_book(in_memory_db, calibre_id=1, title="A", channel_id=ch.id)
         a.slot_index = 1
@@ -766,7 +771,7 @@ class TestPause:
 
     def _channel(self, db, parallel_slots: int = 2):
         from app.models import Channel
-        ch = Channel(name="P", slug=f"p{id(db)}", parallel_slots=parallel_slots, budget=5000)
+        ch = Channel(name="P", slug=f"p{id(db)}", parallel_slots=parallel_slots, weight=1)
         db.add(ch); db.flush()
         return ch
 
@@ -1097,7 +1102,7 @@ class TestExtraCap:
     def test_allowance_is_per_channel(self, in_memory_db, epub_path):
         from app.models import Channel
         from app.planner.planner import extra_limit_reached
-        other = Channel(name="Other", slug="other", parallel_slots=1, budget=1000)
+        other = Channel(name="Other", slug="other", parallel_slots=1, weight=1)
         in_memory_db.add(other); in_memory_db.flush()
         a = _make_book(in_memory_db, calibre_id=1, title="A")
         b = _make_book(in_memory_db, calibre_id=2, title="B", channel_id=other.id)

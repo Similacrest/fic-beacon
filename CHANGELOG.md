@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — release schedules with their own budgets (migration `a3b4c5d6e7f8`)
+- New **Schedules** page: any number of `{cron, budget, words|minutes, enabled}` rows — e.g. 5000 words
+  on weekday mornings, 10000 on weekday evenings, 20000 at weekends. Each enabled row is its own cron
+  job; the firing schedule's budget is the whole release's allowance. Crons are validated on save
+  (the old bare `try/except: pass` around the reschedule is gone).
+- **Channel `budget` → `weight`.** A release's budget is split across the channels **that have content**
+  in proportion to their weight, so an idle channel's share goes to the others instead of being lost.
+  Carried `budget_credit` is re-clamped to each release's scale so a big release's leftover can't inflate
+  the next small one.
+- The dashboard's **▶ Run** button now has a schedule dropdown, and System status lists every schedule's
+  next fire. The last schedule can't be deleted; a disabled one can still be run by hand.
+- Migration: the old `config.cadence_cron` becomes a `Default` schedule whose budget is the sum of the old
+  channel budgets (minutes converted with `config.wpm`); each channel's weight is its old budget relative to
+  the smallest. `config.cadence_cron`, `channel.budget` and `channel.budget_mode` are removed.
+- Fixed: `trigger_feed_check` returned `None` instead of `True` when it queued a run.
+
 ### Added — new upstream chapters are released in the next batch (migration `f2a3b4c5d6e7`)
 - A chapter that arrives by an upstream update now ships in the **next available batch unless there is no
   budget for it**, instead of being left to the stochastic roll. `apply_result` flags

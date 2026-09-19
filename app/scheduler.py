@@ -1,10 +1,11 @@
 """APScheduler wiring.
 
 Runs in-process with the FastAPI app (single worker only — see docker-compose.yml).
-The cron schedule is read from Config at startup and can be updated via the admin UI.
+Release schedules live in the `schedule` table (cron + whole-release budget) and are edited in
+the admin UI; every enabled row is its own cron job, `release_cycle:{id}`.
 
 Recurring jobs:
-  - release_cycle: fires on cadence_cron. Polls tracked feeds first (submitting async fetches
+  - release_cycle:{id}: fires on that schedule's cron. Polls tracked feeds first (submitting async fetches
     for any with new chapters), then materialises chapter drops from the *current* EPUB
     state. It does NOT wait for fetches — a 15-minute FanFicFare run can't block the
     broadcast, so freshly fetched chapters land in the next cycle.
@@ -277,7 +278,7 @@ def _execute(op: str, fn) -> None:
         _cycle_lock.release()
 
 
-def _run_release_cycle() -> None:
+def _run_release_cycle(schedule_id: int | None = None) -> None:
     from app.ongoing.poller import fetch_pending, poll_all_feeds
     from app.planner.planner import run_release_cycle
     from app.websub.publisher import publish_updates
@@ -290,7 +291,7 @@ def _run_release_cycle() -> None:
         # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
         # any submit land next cycle.
         fetch_pending(session)
-        drops = run_release_cycle(session, settings.calibre_library_path)
+        drops = run_release_cycle(session, settings.calibre_library_path, schedule_id)
         session.commit()
         publish_updates(session, drops)
     logger.info("Release cycle complete — %d drop(s) created.", len(drops))
@@ -305,13 +306,15 @@ def _run_feed_check() -> None:
     logger.info("Manual feed check complete.")
 
 
-def _scheduled_release_cycle() -> None:
+def _scheduled_release_cycle(schedule_id: int | None = None) -> None:
     """Cron entry point — the guarded release cycle (shares the manual-trigger lock)."""
-    _execute("release", _run_release_cycle)
+    _execute("release", lambda: _run_release_cycle(schedule_id))
 
 
-def trigger_release_now() -> bool:
+def trigger_release_now(schedule_id: int | None = None) -> bool:
     """Kick a manual release cycle off the request path. False if one is already running.
+
+    `schedule_id` picks whose budget the release uses (default: the first enabled schedule).
 
     Safe to call from a request handler: returns immediately; the cycle runs in the scheduler
     thread, so closing/refreshing the tab does not interrupt it.
@@ -321,11 +324,11 @@ def trigger_release_now() -> bool:
         return False
     _active_op = {"op": "release", "started": _now()}  # optimistic — banner shows at once
     if not _scheduler.running:  # tests / scheduler down: run inline so the work still happens
-        _execute("release", _run_release_cycle)
+        _execute("release", lambda: _run_release_cycle(schedule_id))
         return True
     _scheduler.add_job(
-        _scheduled_release_cycle, trigger="date", run_date=_now() + timedelta(seconds=1),
-        id="manual_release", replace_existing=True,
+        _scheduled_release_cycle, args=[schedule_id], trigger="date",
+        run_date=_now() + timedelta(seconds=1), id="manual_release", replace_existing=True,
     )
     return True
 
@@ -343,6 +346,7 @@ def trigger_feed_check() -> bool:
         lambda: _execute("feedcheck", _run_feed_check), trigger="date",
         run_date=_now() + timedelta(seconds=1), id="manual_feedcheck", replace_existing=True,
     )
+    return True
     return True
 
 
@@ -379,18 +383,48 @@ def trigger_fetch_pending() -> None:
     )
 
 
-def start(cadence_cron: str) -> None:
-    """Start the scheduler with the drop-cycle cron and the daily feedless sweep."""
+_RELEASE_JOB_PREFIX = "release_cycle:"
+
+
+def _release_jobs() -> list:
+    return [j for j in _scheduler.get_jobs() if j.id.startswith(_RELEASE_JOB_PREFIX)]
+
+
+def reload_schedules() -> None:
+    """(Re)register one cron job per enabled schedule, dropping any that no longer exist.
+
+    Called at startup and after every schedule create/edit/delete. Crons are validated by the
+    admin form before they are saved, so an unparseable one here is logged and skipped rather
+    than taking the others down with it.
+    """
+    from app.models import Schedule
+    tz = _timezone()
+    with db_session() as session:
+        wanted = {
+            f"{_RELEASE_JOB_PREFIX}{s.id}": (s.id, s.cron)
+            for s in session.query(Schedule).filter(Schedule.enabled.is_(True)).all()
+        }
+    for job in _release_jobs():
+        if job.id not in wanted:
+            _scheduler.remove_job(job.id)
+    for job_id, (schedule_id, cron) in wanted.items():
+        try:
+            trigger = CronTrigger.from_crontab(cron, timezone=tz)
+        except ValueError:
+            logger.exception("Schedule %s has an invalid cron %r — not scheduled", schedule_id, cron)
+            continue
+        _scheduler.add_job(
+            _scheduled_release_cycle, args=[schedule_id], trigger=trigger, id=job_id,
+            replace_existing=True, misfire_grace_time=300,
+        )
+
+
+def start() -> None:
+    """Start the scheduler with one job per enabled release schedule and the daily feedless sweep."""
     tz = _timezone()
     if tz is not None:
         _scheduler.configure(timezone=tz)
-    _scheduler.add_job(
-        _scheduled_release_cycle,
-        trigger=CronTrigger.from_crontab(cadence_cron, timezone=tz),
-        id="release_cycle",
-        replace_existing=True,
-        misfire_grace_time=300,
-    )
+    reload_schedules()
     _scheduler.add_job(
         _run_feedless_sweep,
         trigger=CronTrigger.from_crontab("0 4 * * *", timezone=tz),  # 04:00 daily
@@ -403,26 +437,31 @@ def start(cadence_cron: str) -> None:
     _resume_pending_polls()
 
 
-def update_cadence(cadence_cron: str) -> None:
-    """Reschedule the release cycle with a new cron expression (called after config save)."""
-    _scheduler.reschedule_job(
-        "release_cycle",
-        trigger=CronTrigger.from_crontab(cadence_cron, timezone=_timezone()),
-    )
+def validate_cron(cron: str) -> str | None:
+    """None if `cron` is a valid 5-field crontab expression, else a human-readable reason."""
+    try:
+        CronTrigger.from_crontab(cron, timezone=_timezone())
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
-def next_run_times() -> dict[str, object]:
-    """Next scheduled fire time per job (None if not scheduled), for the dashboard."""
-    out: dict[str, object] = {}
-    for job_id in ("release_cycle", "feedless_sweep"):
-        job = _scheduler.get_job(job_id) if _scheduler.running else None
-        out[job_id] = job.next_run_time if job else None
-    return out
+def next_release_times() -> dict[int, object]:
+    """Next fire time per enabled schedule id (only schedules currently registered)."""
+    if not _scheduler.running:
+        return {}
+    return {int(j.id[len(_RELEASE_JOB_PREFIX):]): j.next_run_time for j in _release_jobs()}
 
 
 def next_release_time():
-    """When the next release cycle fires (tz-aware), or None — for the 🪝 refusal page."""
-    job = _scheduler.get_job("release_cycle") if _scheduler.running else None
+    """When the next release fires across all schedules (tz-aware), or None."""
+    times = [t for t in next_release_times().values() if t is not None]
+    return min(times) if times else None
+
+
+def next_sweep_time():
+    """When the daily feedless sweep next fires, or None."""
+    job = _scheduler.get_job("feedless_sweep") if _scheduler.running else None
     return job.next_run_time if job else None
 
 

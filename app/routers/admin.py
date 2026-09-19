@@ -20,7 +20,7 @@ from app.config import settings
 from app.epub.chapterizer import chapterize
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import (
-    Book, BookStatus, BudgetMode, Channel, Config, Drop,
+    Book, BookStatus, BudgetMode, Channel, Config, Drop, Schedule,
     WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
@@ -50,13 +50,14 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     slot_view = _build_slot_view(db, channels, active, queued)
 
     # ── System status: cron last/next runs + WebSub subscribers ───────────────
-    next_runs = scheduler.next_run_times()
+    schedules = db.query(Schedule).order_by(Schedule.sort_order, Schedule.id).all()
+    next_times = scheduler.next_release_times()
     status = {
         "last_drop": get_run(db, LAST_RELEASE_RUN),
         "last_poll": get_run(db, LAST_POLL_RUN),
-        "next_drop": next_runs.get("release_cycle"),
-        "next_sweep": next_runs.get("feedless_sweep"),
+        "next_sweep": scheduler.next_sweep_time(),
     }
+    schedule_rows = [{"schedule": sc, "next": next_times.get(sc.id)} for sc in schedules]
     # Manual release cycle / feed check currently running (drives the progress banner and
     # disables the trigger buttons). None when idle.
     cycle = scheduler.cycle_status()
@@ -82,6 +83,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "last_skips": last_skips,
         "fetch_progress": fetch_progress,
         "cycle": cycle,
+        "schedule_rows": schedule_rows,
     })
 
 
@@ -410,7 +412,6 @@ def channels_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
         ]
     return templates.TemplateResponse(request, "admin/channels.html", {
         "channels": channels, "feeds": feeds,
-        "wpm": cfg.wpm if cfg else 250,
     })
 
 
@@ -419,8 +420,7 @@ def create_channel(
     name: str = Form(...),
     genre_match: str = Form(""),
     parallel_slots: int = Form(2),
-    budget_mode: str = Form("words"),
-    budget: float = Form(5000),
+    weight: float = Form(1.0),
     feed_item_limit: int = Form(settings.feed_item_limit),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
@@ -429,14 +429,12 @@ def create_channel(
         return RedirectResponse(url="/admin/channels", status_code=303)
     slug = _unique_slug(db, name)
     max_order = db.query(func.max(Channel.queue_order)).scalar() or 0
-    mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
     db.add(Channel(
         name=name,
         slug=slug,
         genre_match=genre_match.strip() or None,
         parallel_slots=max(1, parallel_slots),
-        budget_mode=mode,
-        budget=max(0.01, budget),
+        weight=max(0.01, weight),
         feed_item_limit=max(1, feed_item_limit),
         queue_order=max_order + 1,
     ))
@@ -451,8 +449,7 @@ def edit_channel(
     slug: str = Form(""),
     genre_match: str = Form(""),
     parallel_slots: int = Form(1),
-    budget_mode: str = Form("words"),
-    budget: float = Form(5000),
+    weight: float = Form(1.0),
     feed_item_limit: int = Form(50),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
@@ -469,8 +466,7 @@ def edit_channel(
             channel.slug = _unique_slug(db, slug, exclude_id=channel.id)
         channel.genre_match = genre_match.strip() or None
         channel.parallel_slots = max(1, parallel_slots)
-        channel.budget_mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
-        channel.budget = max(0.01, budget)
+        channel.weight = max(0.01, weight)
         channel.feed_item_limit = max(1, feed_item_limit)
         db.commit()
     return RedirectResponse(url="/admin/channels", status_code=303)
@@ -707,7 +703,6 @@ def config_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse
 @router.post("/config")
 def save_config(
     wpm: int = Form(...),
-    cadence_cron: str = Form(...),
     vote_step: float = Form(...),
     extra_boost_step: float = Form(...),
     weight_skip_floor: float = Form(...),
@@ -721,7 +716,6 @@ def save_config(
     if cfg is None:
         return RedirectResponse(url="/admin/config", status_code=303)
     cfg.wpm = wpm
-    cfg.cadence_cron = cadence_cron
     cfg.vote_step = max(0.01, vote_step)
     cfg.extra_boost_step = max(0.0, extra_boost_step)
     cfg.weight_skip_floor = max(0.0, weight_skip_floor)
@@ -730,11 +724,6 @@ def save_config(
     cfg.tracked_default_weight = max(0.1, tracked_default_weight)
     cfg.websub_max_push_bytes = max(0, websub_max_push_bytes)
     db.commit()
-    from app import scheduler
-    try:
-        scheduler.update_cadence(cadence_cron)
-    except Exception:
-        pass
     return RedirectResponse(url="/admin/", status_code=303)
 
 
@@ -754,6 +743,84 @@ def regenerate_feed_secret(db: Session = Depends(get_db)) -> RedirectResponse:
     return RedirectResponse(url="/admin/channels", status_code=303)
 
 
+# ── Release schedules ─────────────────────────────────────────────────────────
+
+def _schedule_fields(name: str, cron: str, budget: float, budget_mode: str) -> tuple[dict | None, str | None]:
+    """Validate a schedule form → (fields, None) or (None, error message)."""
+    from app import scheduler
+    name, cron = name.strip(), " ".join(cron.split())
+    if not name:
+        return None, "Give the schedule a name."
+    reason = scheduler.validate_cron(cron)
+    if reason:
+        return None, f"Invalid cron “{cron}”: {reason}"
+    mode = BudgetMode(budget_mode) if budget_mode in ("words", "minutes") else BudgetMode.words
+    return {"name": name, "cron": cron, "budget": max(0.01, budget), "budget_mode": mode}, None
+
+
+@router.get("/schedules", response_class=HTMLResponse)
+def schedules_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    from app import scheduler
+    cfg = db.get(Config, 1)
+    return templates.TemplateResponse(request, "admin/schedules.html", {
+        "schedules": db.query(Schedule).order_by(Schedule.sort_order, Schedule.id).all(),
+        "next_times": scheduler.next_release_times(),
+        "wpm": cfg.wpm if cfg else 250,
+        "channels": db.query(Channel).order_by(Channel.queue_order, Channel.name).all(),
+    })
+
+
+@router.post("/schedules")
+def create_schedule(
+    name: str = Form(...), cron: str = Form(...), budget: float = Form(5000),
+    budget_mode: str = Form("words"), db: Session = Depends(get_db),
+) -> RedirectResponse:
+    from urllib.parse import quote
+    from app import scheduler
+    fields, error = _schedule_fields(name, cron, budget, budget_mode)
+    if error:
+        return RedirectResponse(url=f"/admin/schedules?error={quote(error)}", status_code=303)
+    max_order = db.query(func.max(Schedule.sort_order)).scalar() or 0
+    db.add(Schedule(sort_order=max_order + 1, **fields))
+    db.commit()
+    scheduler.reload_schedules()
+    return RedirectResponse(url="/admin/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/edit")
+def edit_schedule(
+    schedule_id: int, name: str = Form(...), cron: str = Form(...), budget: float = Form(5000),
+    budget_mode: str = Form("words"), enabled: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    from urllib.parse import quote
+    from app import scheduler
+    schedule = db.get(Schedule, schedule_id)
+    if schedule is None:
+        return RedirectResponse(url="/admin/schedules", status_code=303)
+    fields, error = _schedule_fields(name, cron, budget, budget_mode)
+    if error:
+        return RedirectResponse(url=f"/admin/schedules?error={quote(error)}", status_code=303)
+    for key, value in fields.items():
+        setattr(schedule, key, value)
+    schedule.enabled = enabled is not None  # an unchecked checkbox posts nothing
+    db.commit()
+    scheduler.reload_schedules()
+    return RedirectResponse(url="/admin/schedules", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/delete")
+def delete_schedule(schedule_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Delete a schedule. The last one is kept — a release needs a schedule to know its budget."""
+    from app import scheduler
+    schedule = db.get(Schedule, schedule_id)
+    if schedule is not None and db.query(Schedule).count() > 1:
+        db.delete(schedule)
+        db.commit()
+        scheduler.reload_schedules()
+    return RedirectResponse(url="/admin/schedules", status_code=303)
+
+
 # ── Manual release / feed-check triggers ──────────────────────────────────────
 # Both run OFF the request path: the scheduler runs the work in its own thread and the
 # request returns at once, so the admin can safely close/refresh the tab. An in-process
@@ -761,9 +828,12 @@ def regenerate_feed_secret(db: Session = Depends(get_db)) -> RedirectResponse:
 # dashboard also disables the buttons and shows a progress banner while busy.
 
 @router.post("/release-now")
-def release_now(db: Session = Depends(get_db)) -> RedirectResponse:
+def release_now(
+    schedule_id: int | None = Form(None), db: Session = Depends(get_db)
+) -> RedirectResponse:
+    """Run a release now under the chosen schedule's budget (default: the first enabled one)."""
     from app import scheduler
-    scheduler.trigger_release_now()  # no-op if a cycle is already running
+    scheduler.trigger_release_now(schedule_id)  # no-op if a cycle is already running
     return RedirectResponse(url="/admin/", status_code=303)
 
 

@@ -6,19 +6,13 @@
 
 <form method="post" action="/admin/config" style="max-width:480px">
   <p style="color:#888; font-size:.9em">
-    These are global. <strong>Budget, parallel slots, and budget mode are set per channel</strong>
-    on the <a href="/admin/channels">Channels</a> page.
+    These are global. <strong>Release times and budgets are set per <a href="/admin/schedules">schedule</a></strong>;
+    parallel slots and each channel's budget weight are on the <a href="/admin/channels">Channels</a> page.
   </p>
   <div class="form-group">
     <label for="wpm">Reading speed (WPM)</label>
     <input type="number" name="wpm" id="wpm" value="{{ cfg.wpm }}" min="50" max="1000">
     <small style="color:#666">Used for minutes-mode channel budgets and reading-time estimates.</small>
-  </div>
-  <div class="form-group">
-    <label for="cadence_cron">Drop schedule (cron)</label>
-    <input type="text" name="cadence_cron" id="cadence_cron"
-           value="{{ cfg.cadence_cron }}">
-    <small style="color:#666">e.g. <code>0 7,19 * * *</code> = 07:00 &amp; 19:00 daily, <code>0 8 * * *</code> = 08:00 daily</small>
   </div>
   <div class="form-group">
     <label for="vote_step">👍/👎 vote step</label>

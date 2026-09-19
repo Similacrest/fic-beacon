@@ -116,7 +116,10 @@
   <button class="btn" disabled aria-busy="true">🔄 Check feeds now</button>
   {% else %}
   <form method="post" action="/admin/release-now" hx-post="/admin/release-now">
-    <button class="btn btn-primary" title="Run a release cycle now — polls feeds, then broadcasts pending chapters. Runs in the background.">▶ Run release cycle now</button>
+    <select name="schedule_id" title="Whose budget this release uses" style="width:auto">
+      {% for row in schedule_rows %}<option value="{{ row.schedule.id }}">{{ row.schedule.name }} ({{ '{:,}'.format(row.schedule.budget|round|int) }}{{ ' min' if row.schedule.budget_mode.value == 'minutes' else 'w' }}){{ '' if row.schedule.enabled else ' — disabled' }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-primary" title="Run a release cycle now under the selected schedule's budget — polls feeds, then broadcasts pending chapters. Runs in the background.">▶</button>
   </form>
   <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now">
     <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters">🔄 Check feeds now</button>
@@ -245,7 +248,9 @@
   <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
   <div class="kv" style="margin:.5em 0 1em">
     <span class="muted">Last release cycle</span><span>{{ fmt_dt(status.last_drop) }}</span>
-    <span class="muted">Next release cycle</span><span>{{ fmt_dt(status.next_drop) }}</span>
+    {% for row in schedule_rows %}
+    <span class="muted">Next: {{ row.schedule.name }}</span><span>{% if row.schedule.enabled %}{{ fmt_dt(row.next) }}{% else %}<span class="muted">disabled</span>{% endif %}</span>
+    {% endfor %}
     <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
     <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
   </div>

@@ -87,8 +87,9 @@ def absolute_chapter_number(book: "Book", physical_index: int) -> int:
 class Channel(Base):
     """A TV-style channel grouping sources by a Calibre genre prefix.
 
-    Each channel has its own reading budget and parallel slots; the drop cadence is
-    global (Config.cadence_cron). One feed per slot is served from the channel.
+    Each channel has a relative `weight` (its share of every release's global budget — the
+    budget itself belongs to the firing Schedule) and its own parallel slots. One feed per slot
+    is served from the channel.
     """
     __tablename__ = "channel"
 
@@ -99,12 +100,9 @@ class Channel(Base):
     # hierarchy) used to auto-route books into this channel on import.
     genre_match: Mapped[str | None] = mapped_column(String, nullable=True)
     parallel_slots: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
-    # Single budget value; budget_mode selects the unit (words or reading-time minutes).
-    # Float so toggling words↔minutes (× / ÷ wpm) in the UI is reversible without rounding loss.
-    budget: Mapped[float] = mapped_column(Float, nullable=False, default=5000.0)
-    budget_mode: Mapped[BudgetMode] = mapped_column(
-        Enum(BudgetMode), nullable=False, default=BudgetMode.words
-    )
+    # Relative share of each release's global budget (Schedule.budget), split proportionally over
+    # the channels that have something to drop that release. Weight 2 gets twice the words of 1.
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     # Signed carry-over so the stochastic per-cycle mean tracks the budget.
     budget_credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     queue_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -264,8 +262,8 @@ class Config(Base):
     """Single-row settings table (id is always 1) — true globals only.
 
     Budget, parallel slots, and budget-mode are per-channel (see Channel); this row
-    holds only settings that are inherently global: reading speed, the drop cadence,
-    the vote/fade tuning, and the feed secret.
+    holds only settings that are inherently global: reading speed, the vote/fade tuning,
+    and the feed secret. Release timing and budgets live on `Schedule` rows.
     """
     __tablename__ = "config"
 
@@ -273,7 +271,6 @@ class Config(Base):
     # Global reading speed: converts a channel's minutes-mode budget to words; also drives
     # reading-time estimates in the UI.
     wpm: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
-    cadence_cron: Mapped[str] = mapped_column(String, nullable=False, default="0 7,19 * * *")
     feed_secret: Mapped[str] = mapped_column(String, nullable=False, default="")
     # Additive vote steps on quota_weight (natural scale ~0–3, hard cap 100.0). 👍 adds and 👎
     # subtracts `vote_step`; 🪝 extra adds `extra_boost_step`. A 👎 that takes the weight to 0 drops
@@ -299,6 +296,28 @@ class Config(Base):
     # trimmed to the newest drops that fit this budget (always ≥1 item, never splitting a chapter);
     # the polled feed at /feed/… is unaffected. Admin-tunable. 0 disables trimming (push full feed).
     websub_max_push_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=100_000)
+
+
+class Schedule(Base):
+    """One release schedule: *when* a release cycle fires and *how much* it may release.
+
+    Several can coexist (e.g. 5000 words on weekday mornings, 20000 at weekends). Each enabled row
+    is its own cron job; the firing schedule's `budget` is the total for that release and is split
+    across channels by `Channel.weight` (only channels with content share it).
+    """
+    __tablename__ = "schedule"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    cron: Mapped[str] = mapped_column(String, nullable=False, default="0 7,19 * * *")
+    # Whole-release budget; budget_mode selects the unit (words or reading-time minutes).
+    # Float so toggling words↔minutes (× / ÷ wpm) in the UI is reversible without rounding loss.
+    budget: Mapped[float] = mapped_column(Float, nullable=False, default=5000.0)
+    budget_mode: Mapped[BudgetMode] = mapped_column(
+        Enum(BudgetMode), nullable=False, default=BudgetMode.words
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class WebSubSubscription(Base):

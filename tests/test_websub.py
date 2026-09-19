@@ -210,7 +210,7 @@ class _FakeClient:
 
 class TestPublisher:
     def _setup_drop(self, db):
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, budget=100)
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, weight=1)
         db.add(ch)
         db.flush()
         book = Book(calibre_id=1, title="B", author="A", status=BookStatus.active,
@@ -323,7 +323,7 @@ class TestTrimToBudget:
         from app.models import Config
         _FakeClient.posts = []
         _FakeClient.bodies = []
-        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, budget=100,
+        ch = Channel(name="Fantasy", slug="fantasy", parallel_slots=1, weight=1,
                      feed_item_limit=50)
         in_memory_db.add(ch)
         cfg = in_memory_db.get(Config, 1) or Config(id=1)

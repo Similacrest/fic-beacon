@@ -12,7 +12,8 @@ EPUB: the backlog is imported; ongoing serials are downloaded into Calibre by **
 that signals "new chapters exist". Fic-Beacon re-serializes all of it into synthetic *ongoing*
 RSS/Atom feeds so the backlog arrives with the same drip-fed hook as ongoing fiction — and so
 ongoing serials stop getting implicit priority over the backlog. A web admin page groups sources
-into **channels** (TV-style), sets a per-cycle reading budget per channel, and each drop embeds
+into **channels** (TV-style), sets a reading budget per release **schedule** (split across channels
+by weight), and each drop embeds
 feedback links to steer the rotation.
 
 ## Non-negotiable constraints
@@ -34,7 +35,7 @@ feedback links to steer the rotation.
 ## Stack
 
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
-- **APScheduler** (in-process: release cycle on `cadence_cron`, which polls feeds first; a daily
+- **APScheduler** (in-process: one release-cycle job per enabled **schedule**, each polling feeds first; a daily
   feedless sweep). There is **no hourly poll** — feeds are checked pre-drop. The admin
   **"Run release cycle now" / "Check feeds now"** buttons run **off the request path** (a one-shot
   scheduler job), so the POST returns immediately and the tab is safe to close/refresh — the work
@@ -65,7 +66,7 @@ fic-beacon/
     routers/           # feed, feedback, reader, admin, ongoing, websub
     calibre/           # Calibre Adapter (metadata.db RO, identifiers, tags, EPUB paths)
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
-    planner/           # Drop Planner (per-channel slot round-robin budget; unit abstraction)
+    planner/           # Drop Planner (per-release budget split by channel weight; slot round-robin)
     ongoing/           # RSS update-detection poller + feed-URL inference (no content)
     fetch/             # async HTTP client to the fetcher (submit_fetch / poll_fetch / apply_result)
     feed/              # Feed Builder (feedgen)
@@ -94,8 +95,26 @@ fic-beacon/
   (without dropping) and channels renamed from the admin UI. The **slug is editable** (kept stable
   on a plain rename); changing it rewrites that channel's `/feed/{slug}/{key}` URLs, so readers
   must re-subscribe.
-- A channel has its own **budget** and **parallel_slots**; the **cadence is global** (one cron),
-  as is reading speed (`config.wpm`) and the 👎 drop threshold.
+- A channel has its own **weight** (its relative share of a release's budget) and **parallel_slots**.
+  Timing and budget belong to **schedules** (below); reading speed (`config.wpm`) and the vote/fade
+  tuning are global.
+
+### Schedules (when a release fires, and how much it may release)
+A `schedule` row is `{name, cron, budget, budget_mode (words|minutes), enabled, sort_order}`; every
+enabled row is its own APScheduler cron job (`release_cycle:{id}`, in `BEACON_TZ`), so e.g. 5000 words
+on weekday mornings, 10000 on weekday evenings and 20000 at weekends are three rows. The firing
+schedule's `budget` is the **whole release's** allowance. `run_release_cycle` runs in three phases: (1)
+per channel assign slots, tick cooldowns and load each active source's next units; (2) **split the
+budget across the channels that have content, proportionally to `channel.weight`** (`split_budget` — a
+channel with nothing to drop is left out of the denominator, so its share goes to the others instead of
+being lost); (3) plan + materialise per channel under its share. Carried `budget_credit` is
+**re-clamped at the start of each release to that release's scale** (else a 20k weekend release's
+leftover would turn the next 5k release into 25k). The dashboard's **▶ Run** button takes a schedule
+dropdown (a manual run must say whose budget to use; a disabled schedule can still be run by hand). The
+last schedule can't be deleted, and a cron is validated on save (`scheduler.validate_cron`). The
+migration turned the old `cadence_cron` into a `Default` schedule whose budget is the sum of the old
+channel budgets (converted to words), and each channel's old budget into a weight relative to the
+smallest — so the first release after upgrading is the same size and split as before.
 - **One feed per slot:** `GET /feed/{channel_slug}/{feed_key}` where `feed_key` is `"1".."N"`.
   There is **no all-channels union feed** — subscribe to each channel/slot feed. Each slot feed
   serves at most **`channel.feed_item_limit`** items (newest first, per-channel, default 50, seeded
@@ -186,8 +205,9 @@ fic-beacon/
 - Runs per channel each broadcast. **First, assign slots** (`_assign_slots`): promote queued backlog
   books into free slots up to `parallel_slots`, and pin every active tracked story to a balanced
   slot. *Then* select content — the selection is **slot-diverse** (below).
-- Effective budget `B = channel.budget + channel.budget_credit` (signed carry-over so the long-run
-  mean tracks the budget).
+- Effective budget `B = channel_share + budget_credit`, where `channel_share` is the channel's slice of
+  the firing schedule's budget (see Schedules) and `budget_credit` is a signed carry-over so the
+  long-run mean tracks the share.
 - Candidates = the next unit of **every active source in the channel**: each active backlog book's
   next chapter (≤ N) **plus** every tracked story with a chapter past its cursor (uncapped).
 - **Slot round-robin (`_plan_drops` pass 2).** Rotate through the channel's **occupied slots**; on
@@ -223,7 +243,7 @@ fic-beacon/
   saved-up credit) can afford it — a 9k chapter on a 3k budget posts once every ~3 cycles, so its
   long-run rate still tracks the budget. It's posted whole (never split), at most one oversized
   unit per source per cycle.
-- After the pass: `budget_credit += channel.budget − used`. Negative is clamped to one base
+- After the pass: `budget_credit += channel_share − used`. Negative is clamped to one base
   budget; **positive is clamped to the largest pending unit** (so an oversized chapter can be
   saved up for) or to one base budget when nothing oversized is pending (so idle channels don't
   run away). Sources whose units rolled over are written to a per-broadcast **skip log**
@@ -248,7 +268,8 @@ fic-beacon/
 - **Weight fade.** Below `config.weight_skip_floor` (default 1.0) a source's acceptance is scaled by
   `weight / floor` (`planner._weight_fade`), so a low-rated source trickles ever more slowly rather than
   being skipped outright; weight `0` never posts. The weight is capped at **100.0** (`WEIGHT_CAP`).
-- Budget can be words or reading-time minutes (per-channel `budget_mode`; `config.wpm` is global).
+- A schedule's budget can be words or reading-time minutes (per-schedule `budget_mode`; `config.wpm`
+  is global).
 
 ### Permalinks (source-aware, per-chapter) — EPUB
 FanFicFare writes a **per-chapter** canonical URL into each chapter's `<head>`:
@@ -435,8 +456,9 @@ broadcast or an admin request.
 
 ## Data model (summary)
 
-`channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `budget_*`, `budget_mode`,
-`budget_credit`, `queue_order`, `feed_item_limit`) · `book` (`calibre_id`, `tracked`, `fresh_from_index?`, `story_status?`, `feed_url?`,
+`channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `weight`,
+`budget_credit`, `queue_order`, `feed_item_limit`) · `schedule` (`name`, `cron`, `budget`,
+`budget_mode`, `enabled`, `sort_order`) · `book` (`calibre_id`, `tracked`, `fresh_from_index?`, `story_status?`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
 queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **NOT NULL**,
 `slot_index`, `queue_position`,
@@ -444,7 +466,7 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 (piecewise stub offsets, JSON), `cursor_floor`, thumbs) · `drop`
 (`feedback_token`, `reader_slug`, `channel_id`, `feed_key`, `chapter_start/end`, `word_count`,
 `source_url?`, `acknowledged_at?`) · `feedback_event` · `websub_subscription` (`topic_url`, `callback_url`,
-`secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`, `cadence_cron`,
+`secret?`, `lease_expires_at`, `verified`) · `config` (single-row globals: `wpm`,
 `vote_step`, `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`,
 `unacked_penalty_floor`, `tracked_default_weight`, `websub_max_push_bytes`, `feed_secret`) ·
 `app_state` (key/value runtime store, e.g.

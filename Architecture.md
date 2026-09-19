@@ -42,13 +42,13 @@ SQLite, Jinja + HTMX.
 |---|---|
 | Calibre access | The app reads the library folder directly (mounted **read-only**); parses `metadata.db` (incl. **tags**) + EPUBs in place. **Writes happen only in the separate fetcher container.** No Calibre process needed by the app. |
 | Fetcher | A separate, isolated container runs **FanFicFare + `calibredb`** (library RW). `POST /fetch {urls}` → `202 {job_id}`; it downloads/updates the EPUBs into Calibre in a background single-worker pool and exposes `GET /fetch/{job_id}` → per-URL `{calibre_id, chapter_count, stub?, story_url, story_status}`. The app submits batches and polls (FanFicFare can take ~15 min); it coexists with an external calibre-web on the same library. |
-| Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has its own budget + parallel slots; the **cadence is global** (one cron). A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed from the admin UI; the slug is editable (changing it rewrites that channel's feed URLs). |
+| Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has a **weight** (its share of every release's budget) + parallel slots; release timing and budgets live on **schedules**. A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed from the admin UI; the slug is editable (changing it rewrites that channel's feed URLs). |
 | Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`. A slot is a feed *bucket* — it carries the one backlog book streaming in that slot **plus** the tracked stories pinned to it, interleaved. No all-channels union feed — subscribe per channel/slot. |
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
 | Sources | One unified model: every source is a Calibre EPUB (`book.calibre_id`). A `tracked` flag (no `kind`) marks the ones that auto-update; `feed_url?` is an optional RSS trigger and `source_url` doubles as the FanFicFare fetch URL. All are weighted, votable, droppable, and live in a channel. |
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
 | Stubs | Site removed chapters → the fetcher archives the old EPUB, overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
-| Budgeting | **Per-channel slot round-robin.** The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
+| Budgeting | **Per-release budget, split across channels by weight, then a per-channel slot round-robin.** A schedule's budget is the whole release's allowance, divided among the channels that have content in proportion to `weight`. The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
 | Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
@@ -142,7 +142,7 @@ C4Component
   Rel(fb, db, "Write feedback; update quota/status")
   Rel(websub, db, "Subscriptions")
   Rel(websub, reader_app, "Push Atom")
-  Rel(scheduler, planner, "Release cycle on cadence")
+  Rel(scheduler, planner, "Release cycle per schedule")
   Rel(scheduler, poller, "Poll pre-drop")
   Rel(adapter, calibre, "Read metadata.db + EPUBs", "RO")
 ```
@@ -150,8 +150,10 @@ C4Component
 ## 5. Data Model
 
 - **`channel`** — `id`, `name`, `slug`, `genre_match` (#genre_manual prefix), `parallel_slots`,
-  `budget` + `budget_mode` (`words|minutes`), `budget_credit` (signed carry-over), `queue_order`,
+  `weight` (relative share of a release's budget), `budget_credit` (signed carry-over), `queue_order`,
   `feed_item_limit` (max items served per slot feed).
+- **`schedule`** — `id`, `name`, `cron`, `budget` + `budget_mode` (`words|minutes`), `enabled`,
+  `sort_order`. One APScheduler job per enabled row.
 - **`book`** (a *source*) — `calibre_id?`, `tracked` (bool; auto-updating), `feed_url?` (RSS
   trigger), `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `title`, `author`,
   `source_url?` (whole-work URL = FanFicFare fetch URL), `total_chapters?`, `status`
@@ -170,9 +172,9 @@ C4Component
   (`up|down|extra|drop|pause|read`), `created_at`.
 - **`websub_subscription`** — `id`, `topic_url`, `callback_url`, `secret?`, `lease_expires_at`,
   `verified`, `created_at`.
-- **`config`** — single-row globals only: `wpm`, `cadence_cron`, `vote_step`,
-  `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budget, slots, and budget-mode
-  live per-channel, not here.)
+- **`config`** — single-row globals only: `wpm`, `vote_step`,
+  `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budgets and cron live on
+  `schedule` rows, slots and weight per channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
   `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
   adds it on existing volumes without a migration.
@@ -180,7 +182,7 @@ C4Component
 ## 6. Core Flows
 
 ### 6.1 Broadcast cycle (scheduled, per channel)
-1. Scheduler fires on `cadence_cron` (in `BEACON_TZ`) and **polls every trigger feed first**
+1. Scheduler fires a **schedule's cron** (in `BEACON_TZ`; each enabled schedule is its own job) and **polls every trigger feed first**
    (§6.2): any tracked story whose newest GUID changed is fetched into Calibre *now*, so the
    broadcast reads the freshest EPUB state. The manual "Run release cycle" trigger does the same,
    but runs off the request path (a one-shot scheduler job, guarded by an in-process lock so a new
@@ -194,7 +196,7 @@ C4Component
 3a. Run the **fresh pass** first: any tracked story whose chapters just arrived by an upstream update
    (`book.fresh_from_index`, set by `apply_result`; never on a first download) releases its next whole
    unit deterministically — one per source per cycle, oldest arrival first — while budget lasts.
-3. Run the **slot round-robin pass** (`B = budget + budget_credit`): rotate through the channel's
+3. Run the **slot round-robin pass** (`B = channel share of the schedule's budget + budget_credit`, the share being `budget × weight / Σ weight` over channels with content): rotate through the channel's
    occupied slots; on each slot's turn a weight-proportional random source in that slot drops its
    next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (halved while the source's most-recent
    drop is unacknowledged — soft read-gating). An idle slot passes its turn, spilling its budget to

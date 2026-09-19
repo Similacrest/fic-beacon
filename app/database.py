@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Book, Channel, Config, Drop, FeedbackEvent
+from app.models import Book, BudgetMode, Channel, Config, Drop, FeedbackEvent, Schedule
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ def init_db() -> None:
     with SessionLocal() as session:
         _ensure_config(session)
         ensure_default_channel(session)
+        ensure_default_schedule(session)
         session.commit()
 
 
@@ -104,10 +105,26 @@ def _ensure_config(session: Session) -> None:
             Config(
                 id=1,
                 wpm=settings.default_wpm,
-                cadence_cron=settings.default_cadence_cron,
                 feed_secret=settings.feed_secret or secrets.token_urlsafe(32),
             )
         )
+
+
+def ensure_default_schedule(session: Session) -> Schedule:
+    """Return the first schedule, creating a 'Default' one if none exist (fresh install).
+
+    A release cycle needs a schedule to know when to fire and how much to release, so there must
+    always be at least one (the admin UI refuses to delete the last).
+    """
+    schedule = session.query(Schedule).order_by(Schedule.sort_order, Schedule.id).first()
+    if schedule is None:
+        schedule = Schedule(
+            name="Default", cron=settings.default_cadence_cron,
+            budget=settings.default_release_budget, budget_mode=BudgetMode.words,
+        )
+        session.add(schedule)
+        session.flush()
+    return schedule
 
 
 def ensure_default_channel(session: Session) -> Channel:

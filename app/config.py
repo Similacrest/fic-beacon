@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Global defaults seeded into the config table on first run (overridable in-app).
     default_wpm: int = 250
     default_cadence_cron: str = "0 7,19 * * *"  # 07:00 and 19:00 daily
+    default_release_budget: float = 5000.0  # words per release for the seeded "Default" schedule
 
     # Misc
     feed_item_limit: int = 50

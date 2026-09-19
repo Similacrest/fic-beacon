@@ -1,9 +1,10 @@
 """Budget / Drop Planner.
 
-Budget model (per-channel, slot-diverse, weight-throttled, never pre-slice):
-  Every source belongs to a channel, and each channel runs independently each cycle
-  with effective budget B = base_budget + budget_credit (signed carry-over so the
-  long-run mean tracks the base budget).
+Budget model (per-release, per-channel share, slot-diverse, weight-throttled, never pre-slice):
+  A release runs under a Schedule whose budget is the whole release's allowance. It is split
+  across the channels that have content in proportion to Channel.weight; each channel then runs
+  with effective budget B = its share + budget_credit (signed carry-over, re-clamped to this
+  release's scale, so the long-run mean tracks the share).
 
   Selection is a **slot round-robin**: rotate through the channel's occupied feed slots and,
   on each slot's turn, let one *weight-proportional* random source pinned to that slot drop its
@@ -38,7 +39,7 @@ from app.config import settings
 from app.epub.chapterizer import Chapter, chapterize, materialize_image_urls
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
-    FeedbackEvent, utcnow,
+    FeedbackEvent, Schedule, utcnow,
 )
 from app.state import EXTRA_USED_PREFIX, delete_value, get_value, list_with_prefix, set_value
 
@@ -109,13 +110,59 @@ def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
     ]
 
 
-def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
-    """Execute one scheduled release cycle across every channel.
+def resolve_schedule(session: Session, schedule: Schedule | int | None) -> Schedule:
+    """The schedule a release runs under: the one given (row or id), else the first enabled one
+    (a manual run with no choice), else the first of any. There is always at least one."""
+    if isinstance(schedule, Schedule):
+        return schedule
+    if isinstance(schedule, int):
+        found = session.get(Schedule, schedule)
+        if found is not None:
+            return found
+    ordered = session.query(Schedule).order_by(Schedule.sort_order, Schedule.id)
+    found = ordered.filter(Schedule.enabled.is_(True)).first() or ordered.first()
+    if found is None:
+        raise RuntimeError("No release schedule configured — call init_db() first")
+    return found
 
-    Every source belongs to a channel; each channel drops independently using its own
-    budget and slots. Cadence is global — every channel drops this cycle.
+
+def schedule_budget(schedule: Schedule, cfg: Config) -> float:
+    """The schedule's whole-release budget in words (minutes-mode × the global reading speed)."""
+    if schedule.budget_mode == BudgetMode.minutes:
+        return schedule.budget * cfg.wpm
+    return schedule.budget
+
+
+def split_budget(total: float, weights: dict[int, float]) -> dict[int, float]:
+    """Split `total` across channels in proportion to `weights` (channel id → weight).
+
+    Callers pass only channels that have something to drop, so an idle channel's share goes to the
+    ones that do rather than being lost. A non-positive weight sum falls back to an even split.
+    """
+    if not weights:
+        return {}
+    weight_sum = sum(max(w, 0.0) for w in weights.values())
+    if weight_sum <= 0:
+        return {cid: total / len(weights) for cid in weights}
+    return {cid: total * max(w, 0.0) / weight_sum for cid, w in weights.items()}
+
+
+def run_release_cycle(
+    session: Session, library_path: Path, schedule: Schedule | int | None = None,
+) -> list[Drop]:
+    """Execute one release cycle under `schedule` (see `resolve_schedule`).
+
+    The schedule's budget is the *whole release's* allowance; it is split across channels by
+    `Channel.weight`, over only the channels that have content to drop. That needs every channel's
+    candidates known before any is planned, so the cycle runs in three phases:
+
+    1. per channel: assign slots, tick cooldowns, pick the active sources and load their next units;
+    2. split the schedule's budget across the channels that have content;
+    3. per channel: plan and materialise under that channel's share.
     """
     cfg = _get_config(session)
+    sched = resolve_schedule(session, schedule)
+    total_budget = schedule_budget(sched, cfg)
     adapter = CalibreAdapter(library_path)
     drops: list[Drop] = []
     skip_log: list[dict] = []
@@ -128,9 +175,10 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         .order_by(Channel.queue_order, Channel.id)
         .all()
     )
-    for channel in channels:
-        base_budget = _channel_budget(channel, cfg)
 
+    # ── Phase 1: slots, cooldowns, candidates ────────────────────────────────────
+    loaded: dict[int, tuple[list[Book], dict[int, list[Unit]], list[Book]]] = {}
+    for channel in channels:
         # Assign slots first: promote queued EPUBs and pin ongoings (fresh imports start
         # 'queued'), so every active source's drops land in the right slot's feed.
         _assign_slots(session, channel.parallel_slots, channel.id)
@@ -146,22 +194,44 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
         active_books = _active_books_in(session, channel.id)
         if not active_books:
             continue
+        valid, book_remaining = _load_remaining(active_books, adapter)
+        if valid:  # a channel with nothing to drop takes no share of the budget
+            loaded[channel.id] = (valid, book_remaining, active_books)
+
+    # ── Phase 2: split the release budget over the channels with content ─────────
+    shares = split_budget(
+        total_budget, {ch.id: ch.weight for ch in channels if ch.id in loaded}
+    )
+
+    # ── Phase 3: plan + materialise per channel ──────────────────────────────────
+    for channel in channels:
+        if channel.id not in loaded:
+            continue
+        valid, book_remaining, active_books = loaded[channel.id]
+        base_budget = shares[channel.id]
+        max_pending = max(book_remaining[b.id][0].word_count for b in valid)
+        # The credit carried from earlier releases was earned under *their* budgets. With
+        # schedules of different sizes a 20k weekend release could otherwise leave 20k of credit
+        # that turns the next 5k release into 25k — so re-clamp it to this release's scale first
+        # (positive credit may still reach the largest pending unit, to save up for an oversized
+        # chapter; negative is capped at one base so an overshoot doesn't suppress many releases).
+        positive_cap = max(int(base_budget), max_pending)
+        credit = max(-base_budget, min(positive_cap, channel.budget_credit))
 
         # Soft read-gating: sources with a streak of unread drops get a ramped-down stochastic
         # acceptance this cycle (they still trickle). One unread drop is normal — no penalty.
         penalties = _unread_penalties(session, active_books, cfg.unacked_penalty_floor)
 
-        # Token-bucket budget: this cycle's allowance is the base budget plus any
-        # signed carry-over from prior cycles, so the long-run mean tracks the base.
-        available = base_budget + channel.budget_credit
+        # Token-bucket budget: this cycle's allowance is the base budget plus the (re-clamped)
+        # carry-over, so the long-run mean tracks the base.
+        available = base_budget + credit
         effective = max(0, int(available))
 
         skips: list[SkippedSource] = []
-        stats: dict = {}
         plans = _plan_drops(
             active_books, adapter, effective, base_budget=int(base_budget),
-            skips_out=skips, stats_out=stats, penalties=penalties,
-            weight_skip_floor=cfg.weight_skip_floor,
+            skips_out=skips, penalties=penalties,
+            weight_skip_floor=cfg.weight_skip_floor, loaded=(valid, book_remaining),
         )
         used = 0
         for plan in plans:
@@ -182,14 +252,8 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
                 "held_out": skip.held_out,
             })
 
-        # Carry the leftover (can be negative after an oversized post). Positive credit may
-        # accumulate up to the largest pending unit so an oversized chapter can be saved up
-        # for across cycles; with nothing oversized pending it caps at the base budget (so an
-        # idle channel doesn't runaway). Negative is clamped to one base so a big overshoot
-        # doesn't suppress drops for many cycles.
-        positive_cap = max(int(base_budget), stats.get("max_pending_unit", 0))
-        leftover = available - used
-        channel.budget_credit = max(-base_budget, min(positive_cap, leftover))
+        # Carry the leftover (can be negative after an oversized post), bounded as above.
+        channel.budget_credit = max(-base_budget, min(positive_cap, available - used))
 
         # Re-fill slots freed by EPUBs that just completed this broadcast.
         _assign_slots(session, channel.parallel_slots, channel.id)
@@ -201,12 +265,6 @@ def run_release_cycle(session: Session, library_path: Path) -> list[Drop]:
     set_value(session, LAST_SKIPS, json.dumps(skip_log))
     session.flush()
     return drops
-
-
-def _channel_budget(channel: Channel, cfg: Config) -> float:
-    if channel.budget_mode == BudgetMode.minutes:
-        return channel.budget * cfg.wpm
-    return channel.budget
 
 
 def _active_books_in(session: Session, channel_id: int) -> list[Book]:
@@ -373,9 +431,9 @@ def _plan_drops(
     budget: int,
     base_budget: int | None = None,
     skips_out: list["SkippedSource"] | None = None,
-    stats_out: dict | None = None,
     penalties: dict[int, float] | None = None,
     weight_skip_floor: float = 1.0,
+    loaded: tuple[list[Book], dict[int, list[Unit]]] | None = None,
 ) -> list[PlannedDrop]:
     """Select whole units (chapters) for one channel — slot-diverse and weight-throttled.
 
@@ -400,37 +458,16 @@ def _plan_drops(
     streak ramp — an *absolute* back-off, so even a lone unread source trickles slower) and by the
     weight fade (`weight / weight_skip_floor` when its weight is below the floor).
 
-    `stats_out`, if given, receives `max_pending_unit` (the largest next-unit size) so the caller
-    can size the credit cap to save up for an oversized chapter.
+    `loaded`, if given, is the `(valid, book_remaining)` pair the caller already got from
+    `_load_remaining` (the release cycle loads every channel's units first to split the budget).
     """
     if base_budget is None:
         base_budget = budget
     penalties = penalties or {}
 
-    # Pre-load remaining units for every source (weight order gives the pass-1 accumulation a
-    # stable, higher-weight-first claim on saved-up credit).
-    ordered = sorted(active_books, key=lambda b: -b.quota_weight)
-    book_remaining: dict[int, list[Unit]] = {}
-    valid: list[Book] = []
-    for book in ordered:
-        units = _remaining_units(book, adapter)
-        if units is None:
-            continue  # unresolvable source — already warned
-        if units:
-            book_remaining[book.id] = list(units)
-            valid.append(book)
-        else:
-            logger.info("Active source '%s' has no pending units this cycle", book.title)
-
+    valid, book_remaining = loaded if loaded is not None else _load_remaining(active_books, adapter)
     if not valid:
-        if stats_out is not None:
-            stats_out["max_pending_unit"] = 0
         return []
-
-    # Largest next-unit in the channel — the caller uses this to cap accumulated credit so an
-    # oversized chapter can be saved up for (but idle channels don't runaway). See run_release_cycle.
-    if stats_out is not None:
-        stats_out["max_pending_unit"] = max(book_remaining[b.id][0].word_count for b in valid)
 
     selected: dict[int, list[Unit]] = {b.id: [] for b in valid}
     used = 0
@@ -515,6 +552,26 @@ def _plan_drops(
         for book in valid
         if (chs := selected[book.id])
     ]
+
+
+def _load_remaining(
+    active_books: list[Book], adapter: CalibreAdapter
+) -> tuple[list[Book], dict[int, list[Unit]]]:
+    """Each source's pending units, in weight order (higher weight first — that gives the pass-1
+    accumulation a stable claim on saved-up credit). Returns `(sources with something pending,
+    {book id: units})`; unresolvable / caught-up sources are left out."""
+    book_remaining: dict[int, list[Unit]] = {}
+    valid: list[Book] = []
+    for book in sorted(active_books, key=lambda b: -b.quota_weight):
+        units = _remaining_units(book, adapter)
+        if units is None:
+            continue  # unresolvable source — already warned
+        if units:
+            book_remaining[book.id] = list(units)
+            valid.append(book)
+        else:
+            logger.info("Active source '%s' has no pending units this cycle", book.title)
+    return valid, book_remaining
 
 
 def _weighted_choice(books: list[Book]) -> Book:

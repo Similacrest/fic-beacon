@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Schedules — Fic Beacon{% endblock %}
+{% block content %}
+
+<h1>Schedules</h1>
+<p style="color:#888">
+  Each schedule is a release time (cron) plus how much it may release in total — e.g. 5,000 words on
+  weekday mornings, 10,000 on weekday evenings, 20,000 at the weekend. A release's budget is split
+  across the <a href="/admin/channels">channels</a> that have something to drop, in proportion to
+  their weight. Times use the server's timezone.
+</p>
+
+{% set error = request.query_params.get('error') %}
+{% if error %}
+<p style="background:#f8d7da; color:#721c24; padding:.6em 1em; border-radius:4px">{{ error }}</p>
+{% endif %}
+
+{% macro fields(sc) %}
+  <div style="display:flex; flex-wrap:wrap; gap:.6em .8em; align-items:flex-end">
+    <div style="flex:2; min-width:150px">
+      <label style="font-size:.8em; display:block">Name</label>
+      <input type="text" name="name" value="{{ sc.name if sc else '' }}" placeholder="Weekday morning" required style="width:100%">
+    </div>
+    <div style="flex:2; min-width:150px">
+      <label style="font-size:.8em; display:block">Cron</label>
+      <input type="text" name="cron" value="{{ sc.cron if sc else '0 7 * * 1-5' }}" required style="width:100%"
+             title="5-field crontab: minute hour day-of-month month day-of-week">
+    </div>
+    <div style="min-width:90px">
+      <label style="font-size:.8em; display:block">Budget mode</label>
+      <select name="budget_mode" class="budget-mode" style="width:auto">
+        <option value="words"{% if sc and sc.budget_mode.value == 'minutes' %}{% else %} selected{% endif %}>Words</option>
+        <option value="minutes"{% if sc and sc.budget_mode.value == 'minutes' %} selected{% endif %}>Minutes</option>
+      </select>
+    </div>
+    <div style="min-width:100px">
+      <label style="font-size:.8em; display:block">Budget per release</label>
+      <input type="number" name="budget" value="{{ '%g'|format(sc.budget) if sc else 5000 }}" min="0.01" step="any" class="budget-input" style="width:100px">
+    </div>
+    {% if sc %}
+    <div>
+      <label style="font-size:.8em; display:block">Enabled</label>
+      <input type="checkbox" name="enabled" value="1"{% if sc.enabled %} checked{% endif %}>
+    </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% for sc in schedules %}
+<div class="slot-card" style="{{ 'opacity:.6' if not sc.enabled }}">
+  <form method="post" action="/admin/schedules/{{ sc.id }}/edit">
+    {{ fields(sc) }}
+    <div style="margin-top:.6em">
+      <button class="btn btn-primary" type="submit" title="Save schedule">💾</button>
+      <span class="muted" style="margin-left:.8em; font-size:.85em">
+        {% if not sc.enabled %}disabled — never fires
+        {% elif next_times.get(sc.id) %}next: {{ next_times[sc.id].strftime('%a %Y-%m-%d %H:%M') }}
+        {% else %}not scheduled{% endif %}
+      </span>
+    </div>
+  </form>
+  <form method="post" action="/admin/schedules/{{ sc.id }}/delete" style="margin-top:.4em"
+        onsubmit="return confirm('Delete schedule “{{ sc.name }}”?')">
+    <button class="btn btn-danger" type="submit" title="Delete schedule"
+            {% if schedules|length <= 1 %}disabled{% endif %}>🗑</button>
+  </form>
+  {% if channels and sc.enabled %}
+  <details style="margin-top:.5em; font-size:.85em">
+    <summary>Split across channels (if every channel has content)</summary>
+    {% set total_w = channels|sum(attribute='weight') %}
+    {% set words = sc.budget * wpm if sc.budget_mode.value == 'minutes' else sc.budget %}
+    <table>
+      <tbody>
+      {% for ch in channels %}
+      <tr><td>{{ ch.name }}</td><td>weight {{ '%g'|format(ch.weight) }}</td>
+          <td>≈ {{ '{:,}'.format((words * ch.weight / total_w)|round|int) }} words</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+</div>
+{% endfor %}
+
+<h2>New schedule</h2>
+<form method="post" action="/admin/schedules">
+  {{ fields(none) }}
+  <div style="margin-top:.6em"><button class="btn btn-primary" type="submit" title="Create schedule">➕ Add schedule</button></div>
+  <small style="color:#666; display:block; margin-top:.4em">
+    Cron examples: <code>0 7 * * 1-5</code> weekdays 07:00 · <code>0 19 * * 1-5</code> weekdays 19:00 ·
+    <code>0 10 * * 6,0</code> weekends 10:00. Budget is in words or minutes (minutes use the global reading speed).
+  </small>
+</form>
+
+<script>
+// Re-express the budget when the mode toggles (words ↔ minutes via the global reading speed) so the
+// number stays meaningful. Cosmetic on the client — the server stores what's submitted.
+(function () {
+  const wpm = {{ wpm }};
+  document.querySelectorAll('select.budget-mode').forEach(function (sel) {
+    sel.dataset.prev = sel.value;
+    sel.addEventListener('change', function () {
+      const input = sel.closest('form').querySelector('input.budget-input');
+      const val = input ? parseFloat(input.value) : NaN;
+      if (input && !isNaN(val) && sel.value !== sel.dataset.prev) {
+        const next = sel.value === 'minutes' ? val / wpm : val * wpm;
+        input.value = parseFloat(next.toFixed(6));  // trims float noise; ×/÷ wpm stays reversible
+      }
+      sel.dataset.prev = sel.value;
+    });
+  });
+})();
+</script>
+
+{% endblock %}

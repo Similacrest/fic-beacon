@@ -27,8 +27,9 @@ reader with plain feedback links.
 - **Channels** group sources by a Calibre **genre prefix** — the `#genre_manual` custom column
   (e.g. `Fantasy`, `Non-fiction.Self-improvement`). On import each book is auto-routed to the
   matching channel; if `#genre_manual` is blank, a genre is derived by grepping the raw `#genre`
-  column into one of Fanfiction / Sci-Fi / Fantasy / Classical / Non-fiction. Each channel has its
-  own reading budget and parallel **slots**; one global cron sets the cadence. Every source belongs
+  column into one of Fanfiction / Sci-Fi / Fantasy / Classical / Non-fiction. Each channel has a
+  **weight** (its share of each release's budget) and parallel **slots**; **schedules** set when releases
+  fire and how much each may release (e.g. 5000 words weekday mornings, 20000 at weekends). Every source belongs
   to a channel — a **"General"** channel is created automatically and catches anything unmatched,
   and you can move books between channels or rename a channel anytime (the slug — and thus the
   feed URL — is editable too, but changing it means re-subscribing in your reader).
@@ -43,7 +44,7 @@ reader with plain feedback links.
   them into Calibre; if the URL has an RSS feed it's used only to *notice* updates fast (checked
   pre-drop), otherwise a daily sweep refreshes it. From there they're ordinary EPUBs. Stories the
   source site marks done (`#status` Completed / Abandoned / Published) are skipped on fetch.
-- **Stochastic budget** packs whole chapters up to a per-channel word (or reading-minute) budget;
+- **Stochastic budget** packs whole chapters up to each release's word (or reading-minute) budget, split across channels by weight;
   the further over budget, the more likely a unit rolls to the next cycle. Votes bias the draw; the
   long-run mean tracks your budget. Chapters are never split.
 - **WebSub** push gives realtime updates on InoReader's free plan; readers without it just poll.

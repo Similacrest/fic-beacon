@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database import ensure_default_channel
+from app.database import ensure_default_channel, ensure_default_schedule
 from app.models import Base, Config
 
 
@@ -29,11 +29,11 @@ def in_memory_db():
     session.add(Config(
         id=1,
         wpm=250,
-        cadence_cron="0 8 * * *",
         feed_secret="test-secret",
     ))
     session.flush()
     ensure_default_channel(session)
+    ensure_default_schedule(session)
     session.commit()
     yield session
     session.close()

@@ -30,10 +30,7 @@ def _configure_logging() -> None:
 async def lifespan(_app: FastAPI):
     _configure_logging()
     init_db()
-    with db_session() as session:
-        cfg = session.get(Config, 1)
-        cadence = cfg.cadence_cron if cfg else settings.default_cadence_cron
-    scheduler.start(cadence)
+    scheduler.start()
     yield
     scheduler.shutdown()
 
