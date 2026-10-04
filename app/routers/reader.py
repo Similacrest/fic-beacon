@@ -4,11 +4,16 @@ Served at /read/{slug} — used as the guid and fallback link in the feed,
 especially for books without a source URL or when a reader clips long content.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from html import escape
+
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.config import settings
 from app.models import Drop, utcnow
+from app.sanitize import CSP_HEADERS, sanitize_html
+from app.security import current_feed_secret, sign_image_urls
 
 router = APIRouter()
 
@@ -31,7 +36,14 @@ def reader_page(slug: str, db: Session = Depends(get_db)) -> HTMLResponse:
     # The same plain-GET feedback row the feed items carry, so votes/pause work from /read/ too.
     from app.feed.builder import feedback_block
     return HTMLResponse(
-        _reader_html(title, book.author, drop.word_count, drop.content_html, feedback_block(drop))
+        _reader_html(
+            title, book.author, drop.word_count,
+            sign_image_urls(
+                sanitize_html(drop.content_html), current_feed_secret(db), settings.base_url
+            ),
+            feedback_block(drop),
+        ),
+        headers=CSP_HEADERS,
     )
 
 
@@ -41,7 +53,7 @@ def _reader_html(title: str, author: str, word_count: int, content: str, feedbac
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
+  <title>{escape(title)}</title>
   <style>
     body {{
       font-family: Georgia, serif;
@@ -58,8 +70,8 @@ def _reader_html(title: str, author: str, word_count: int, content: str, feedbac
   </style>
 </head>
 <body>
-  <h1>{title}</h1>
-  <p class="meta">{author} &middot; {word_count:,} words</p>
+  <h1>{escape(title)}</h1>
+  <p class="meta">{escape(author)} &middot; {word_count:,} words</p>
   {content}
   {feedback}
 </body>

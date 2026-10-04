@@ -9,6 +9,7 @@ Supported sites:
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 _ROYALROAD_RE = re.compile(
     r"https?://(?:www\.)?royalroad\.com/fiction/(\d+)", re.IGNORECASE
@@ -17,6 +18,15 @@ _XENFORO_RE = re.compile(
     r"(https?://forums\.(?:spacebattles|sufficientvelocity)\.com/threads/[^/?#]+)",
     re.IGNORECASE,
 )
+
+
+def is_fetchable_url(url: str | None) -> bool:
+    """True for a plain http(s) URL with a host. Story URLs reach FanFicFare's argv, so anything
+    else (notably a value starting with `-`, which would parse as an option) is refused."""
+    if not url or url != url.strip() or any(c.isspace() or ord(c) < 32 for c in url):
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
 def infer_feed_url(source_url: str | None) -> str | None:

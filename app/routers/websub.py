@@ -18,9 +18,10 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import db_session
 from app.models import WebSubSubscription, utcnow
+from app.security import current_feed_secret
+from app.websub import safety
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/websub")
@@ -30,10 +31,6 @@ _DEFAULT_LEASE = 10 * 24 * 3600  # 10 days when the subscriber doesn't specify o
 # verification endpoint only after it receives our 202, so the very first callback can
 # race ahead of that. Retry a few times before giving up.
 _VERIFY_DELAYS = (0.0, 2.0, 5.0)
-
-
-def _is_own_topic(topic: str) -> bool:
-    return bool(topic) and topic.startswith(f"{settings.base_url}/feed")
 
 
 def _get_sub(db: Session, topic: str, callback: str) -> WebSubSubscription | None:
@@ -74,14 +71,27 @@ async def _verify_intent(
     # like Inoreader key their pending verification on params already in the callback URL
     # (e.g. ?feed_id=…&hub_id=…); clobbering those makes the callback unable to match the
     # request and it answers a bare empty 200 (verification silently fails).
-    target = httpx.URL(callback).copy_merge_params(params)
-    logger.debug("WebSub verify → GET %s", target)
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(target)
+        target = safety.parse_callback(callback).copy_merge_params(params)
+        ips = await safety.apublic_addresses(target)
+    except safety.UnsafeCallback as exc:
+        return False, f"unsafe callback: {exc}"
+    pinned, headers, extensions = safety.pin(target, ips[0])
+    logger.debug("WebSub verify → GET %s (via %s)", target, ips[0])
+    try:
+        # No redirects (a 3xx could bounce us to an internal address) and a capped body.
+        async with httpx.AsyncClient(timeout=safety.TIMEOUT, follow_redirects=False) as client:
+            async with client.stream("GET", pinned, headers=headers, extensions=extensions) as resp:
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= safety.MAX_VERIFY_BYTES:
+                        break
     except httpx.HTTPError as exc:
         return False, f"request error: {exc!r}"
-    body = resp.text
+    body = b"".join(chunks).decode("utf-8", "replace")
     echo = challenge in body
     detail = f"status={resp.status_code} len={len(body)} echo={echo} body[:300]={body[:300]!r}"
     logger.debug("WebSub verify ← %s %s", callback, detail)
@@ -136,9 +146,22 @@ async def hub(request: Request, background: BackgroundTasks) -> Response:
     if mode not in ("subscribe", "unsubscribe") or not topic or not callback:
         logger.debug("WebSub hub → 400 (mode/topic/callback invalid)")
         raise HTTPException(status_code=400, detail="invalid hub request")
-    if not _is_own_topic(topic):
+    with db_session() as db:
+        feed_secret = current_feed_secret(db)
+    topic_state = safety.topic_status(topic, feed_secret)
+    if topic_state == "foreign":
         logger.debug("WebSub hub → 404 (foreign topic %r)", topic)
         raise HTTPException(status_code=404, detail="unknown topic")
+    if topic_state == "bad-token":
+        # The topic must be the tokened feed URL — otherwise the hub would hand out feed
+        # content to anyone who can guess a channel slug.
+        logger.warning("WebSub hub → 403 (topic without a valid feed token) from callback %r", callback)
+        raise HTTPException(status_code=403, detail="invalid topic token")
+    try:
+        await asyncio.to_thread(safety.validate_callback, callback)
+    except safety.UnsafeCallback as exc:
+        logger.warning("WebSub hub → 400 (unsafe callback %r: %s)", callback, exc)
+        raise HTTPException(status_code=400, detail="unacceptable callback") from exc
 
     lease = int(lease_raw or 0) or _DEFAULT_LEASE
 

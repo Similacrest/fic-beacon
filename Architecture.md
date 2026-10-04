@@ -93,7 +93,7 @@ C4Container
 
   Container_Boundary(b, "Fic-Beacon deployment") {
     Container(app, "Web/API app (beacon)", "FastAPI, Jinja+HTMX", "Admin UI, per-slot feeds, feedback, reader pages, WebSub hub")
-    Container(sched, "Scheduler / engine", "APScheduler", "Release cycle on cadence (polls triggers first); daily feedless sweep; WebSub push")
+    Container(sched, "Scheduler / engine", "APScheduler", "Release cycles fire on each schedule's cron (polls triggers first); daily feedless sweep; WebSub push")
     ContainerDb(db, "App database", "SQLite + SQLAlchemy", "Channels, sources, cursors, drops, tokens, subscriptions, config")
     Container(fetcher, "Fetcher", "FanFicFare + calibredb", "POST /fetch {urls}→202 job_id; async batch download/update into Calibre; archive-on-stub")
   }
@@ -176,8 +176,7 @@ C4Component
   `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budgets and cron live on
   `schedule` rows, slots and weight per channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
-  `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table so `create_all`
-  adds it on existing volumes without a migration.
+  `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table (schema is Alembic-owned; see `app/database.py:run_migrations`).
 
 ## 6. Core Flows
 

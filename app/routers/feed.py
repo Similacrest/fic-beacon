@@ -1,18 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 from app.feed.builder import build_channel_slot_feed
-from app.models import Channel, Config
+from app.models import Channel
+from app.security import current_feed_secret, secrets_equal
 
 router = APIRouter()
 
 
 def _check_feed_secret(session: Session, token: str) -> None:
-    cfg = session.get(Config, 1)
-    expected = cfg.feed_secret if cfg else settings.feed_secret
-    if not expected or token != expected:
+    if not secrets_equal(token, current_feed_secret(session)):
         raise HTTPException(status_code=403, detail="Invalid feed token")
 
 

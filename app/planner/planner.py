@@ -96,6 +96,8 @@ class SkippedSource:
 
 def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
     """Remaining units for a source. None = source unresolvable (warned); [] = none now."""
+    if book.calibre_id is None:
+        return []  # tracked story whose first download hasn't landed yet — nothing to drop
     calibre_book = adapter.get_book(book.calibre_id)
     if calibre_book is None:
         logger.warning(

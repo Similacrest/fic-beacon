@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, contains_eager
 
 from app.calibre.adapter import CalibreAdapter
 from app.calibre.genre import effective_genres, pick_channel_id
@@ -127,6 +127,7 @@ def _build_slot_view(db, channels, active, queued):
         recent = (
             db.query(Drop)
             .join(Drop.book)
+            .options(contains_eager(Drop.book))
             .filter(Drop.channel_id == ch.id)
             .order_by(Drop.published_at.desc())
             .limit(40)
@@ -299,6 +300,8 @@ def add_from_library(
     """
     adapter = CalibreAdapter(settings.calibre_library_path)
     default_channel_id = ensure_default_channel(db).id
+    if channel_id and db.get(Channel, channel_id) is None:
+        channel_id = None  # stale/forged id → fall back to genre routing instead of a 500
     cfg = db.get(Config, 1)
     tracked_weight = cfg.tracked_default_weight if cfg else 2.0
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
@@ -681,13 +684,21 @@ def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
 def requeue_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
     book = db.get(Book, book_id)
     if book:
-        book.status = BookStatus.queued
+        # Tracked stories are never queued: they stay active and get re-pinned to a slot.
+        book.status = BookStatus.active if book.tracked else BookStatus.queued
         book.slot_index = None
-        book.cursor_chapter_index = 0
+        # Restart from the beginning of the *current* body — but never below cursor_floor (a stub
+        # rewrote the body; chapters under the floor no longer exist).
+        book.cursor_chapter_index = book.cursor_floor
+        book.fresh_from_index = None
+        book.paused = False
         book.thumbs_down = 0
         book.thumbs_up = 0
         book.quota_weight = 1.0
         book.cooldown_remaining = 0
+        if book.tracked:
+            from app.planner.planner import assign_channel_slots
+            assign_channel_slots(db, book.channel_id)
         db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 

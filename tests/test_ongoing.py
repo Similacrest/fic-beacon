@@ -55,7 +55,7 @@ class TestNewestGuid:
 class TestPollTriggers:
     def test_first_sight_seeds_without_fetch(self, in_memory_db):
         src = _tracked(in_memory_db, last_seen_guid=None)
-        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+        with patch("app.ongoing.poller._fetch_feed", return_value=_feed("c5")), \
              patch("app.scheduler.submit_and_track") as mock_submit:
             queued = poll_all_feeds(in_memory_db)
         assert queued == 0
@@ -64,7 +64,7 @@ class TestPollTriggers:
 
     def test_new_guid_queues_fetch(self, in_memory_db):
         src = _tracked(in_memory_db, last_seen_guid="c4")
-        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+        with patch("app.ongoing.poller._fetch_feed", return_value=_feed("c5")), \
              patch("app.scheduler.submit_and_track") as mock_submit:
             queued = poll_all_feeds(in_memory_db)
         assert queued == 1
@@ -74,7 +74,7 @@ class TestPollTriggers:
 
     def test_unchanged_guid_no_fetch(self, in_memory_db):
         _tracked(in_memory_db, last_seen_guid="c5")
-        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("c5")), \
+        with patch("app.ongoing.poller._fetch_feed", return_value=_feed("c5")), \
              patch("app.scheduler.submit_and_track") as mock_submit:
             queued = poll_all_feeds(in_memory_db)
         assert queued == 0
@@ -85,7 +85,7 @@ class TestPollTriggers:
                      last_seen_guid="old", calibre_id=next(_next_calibre_id))
         b = _tracked(in_memory_db, feed_url="https://b/feed", source_url="https://b/s",
                      last_seen_guid="old", calibre_id=next(_next_calibre_id))
-        with patch("app.ongoing.poller.feedparser.parse", return_value=_feed("new")), \
+        with patch("app.ongoing.poller._fetch_feed", return_value=_feed("new")), \
              patch("app.scheduler.submit_and_track") as mock_submit:
             queued = poll_all_feeds(in_memory_db)
         assert queued == 2

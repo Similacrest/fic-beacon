@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Channel, Drop, absolute_chapter_number
+from app.security import sign_image_urls
 
 
 def slot_feed_meta(channel: Channel, feed_key: str, secret: str) -> tuple[str, str, str]:
@@ -59,7 +60,9 @@ def build_channel_slot_feed(
     """
     self_url, title, description = slot_feed_meta(channel, feed_key, secret)
     drops = slot_feed_drops(session, channel, feed_key)
-    atom, rss = build_feed(drops, self_url=self_url, title=title, description=description)
+    atom, rss = build_feed(
+        drops, self_url=self_url, title=title, description=description, secret=secret
+    )
     return self_url, atom, rss
 
 
@@ -68,11 +71,13 @@ def build_feed(
     self_url: str | None = None,
     title: str | None = None,
     description: str | None = None,
+    secret: str | None = None,
 ) -> tuple[bytes, bytes]:
     """Return (atom_xml, rss_xml) bytes for the given drops (newest first).
 
     self_url is the feed's canonical URL (per-slot for channel feeds); it doubles as
     the WebSub topic. A hub link is advertised so WebSub readers can get realtime push.
+    `secret` (the feed secret) signs the in-EPUB image URLs (see app/security.py).
     """
     self_url = self_url or f"{settings.base_url}/feed"
     fg = FeedGenerator()
@@ -86,7 +91,7 @@ def build_feed(
     fg.description(description or "Your Calibre backlog, drip-fed as a serial.")
 
     for drop in drops:
-        _add_entry(fg, drop)
+        _add_entry(fg, drop, secret)
 
     # Pin the feed-level <updated> to data (newest drop), not wall-clock render time —
     # otherwise every render differs and a WebSub push never byte-matches a GET of the
@@ -98,7 +103,7 @@ def build_feed(
     return fg.atom_str(pretty=True), fg.rss_str(pretty=True)
 
 
-def _add_entry(fg: FeedGenerator, drop: Drop) -> None:
+def _add_entry(fg: FeedGenerator, drop: Drop, secret: str | None = None) -> None:
     book = drop.book
     chapter_label = drop.chapter_titles or f"Chapter {absolute_chapter_number(book, drop.chapter_start)}"
     if ";" in chapter_label:
@@ -109,7 +114,7 @@ def _add_entry(fg: FeedGenerator, drop: Drop) -> None:
     title = f"{book.title} — {chapter_label}"
     permalink = _permalink(drop)
 
-    content = drop.content_html + feedback_block(drop)
+    content = sign_image_urls(drop.content_html, secret or "", settings.base_url) + feedback_block(drop)
 
     fe = fg.add_entry(order="append")
     # GUID must be unique AND stable per drop, independent of the link target.

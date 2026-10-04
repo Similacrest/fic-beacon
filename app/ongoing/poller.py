@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 import feedparser
+import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -55,6 +56,28 @@ def _drop_done(sources: list[Book]) -> list[Book]:
     return [s for s in live if not is_done(statuses.get(s.calibre_id))]
 
 
+_FEED_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+_FEED_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _fetch_feed(url: str):
+    """Fetch + parse a trigger feed with a hard timeout and size cap.
+
+    `feedparser.parse(url)` fetches via urllib with *no* timeout: one hung feed host would block
+    the whole poll — which runs inside the release cycle holding the cycle lock.
+    """
+    with httpx.Client(timeout=_FEED_TIMEOUT, follow_redirects=True,
+                      headers={"User-Agent": "Fic-Beacon/feed-trigger"}) as client:
+        with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            body = b""
+            for chunk in resp.iter_bytes():
+                body += chunk
+                if len(body) > _FEED_MAX_BYTES:
+                    break
+    return feedparser.parse(body)
+
+
 def _newest_guid(parsed) -> str | None:
     """The GUID of a feed's newest entry (feeds are conventionally newest-first)."""
     for entry in parsed.entries:
@@ -81,7 +104,7 @@ def poll_all_feeds(session: Session) -> int:
     changed: list[Book] = []
     for source in sources:
         try:
-            newest = _newest_guid(feedparser.parse(source.feed_url))
+            newest = _newest_guid(_fetch_feed(source.feed_url))
             if newest is None or newest == source.last_seen_guid:
                 continue
             first_sight = source.last_seen_guid is None

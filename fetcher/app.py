@@ -33,6 +33,7 @@ Site logins live in /config/personal.ini (edit it directly in this container).
 from __future__ import annotations
 
 import logging
+import hmac
 import os
 import posixpath
 import re
@@ -45,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -62,6 +63,27 @@ JOB_TTL_SECONDS = 3600  # keep a finished job's result available for an hour, th
 # socket would block the lone worker thread forever (and every queued job behind it).
 FANFICFARE_TIMEOUT = float(os.environ.get("FETCHER_FANFICFARE_TIMEOUT", "1200"))  # 20 min
 CALIBREDB_TIMEOUT = float(os.environ.get("FETCHER_CALIBREDB_TIMEOUT", "600"))  # 10 min
+
+FETCHER_TOKEN = os.environ.get("FETCHER_TOKEN", "")
+
+
+def _require_token(x_fetcher_token: str | None = Header(None)) -> None:
+    """Shared-secret gate (when FETCHER_TOKEN is set): the fetcher writes the Calibre library and
+    makes outbound requests for any URL it is given, so it must not be callable by every
+    container on the network. /health stays open for container healthchecks."""
+    if FETCHER_TOKEN and not hmac.compare_digest(
+        (x_fetcher_token or "").encode(), FETCHER_TOKEN.encode()
+    ):
+        raise HTTPException(status_code=401, detail="bad fetcher token")
+
+
+def _is_http_url(url: str) -> bool:
+    """Plain http(s) URL only — a value starting with `-` would be parsed as a FanFicFare option."""
+    if not url or any(c.isspace() or ord(c) < 32 for c in url):
+        return False
+    p = urlparse(url)
+    return p.scheme in ("http", "https") and bool(p.hostname)
+
 
 app = FastAPI(title="fic-beacon-fetcher")
 
@@ -291,9 +313,12 @@ def health() -> dict:
     return {"ok": True, "library": LIBRARY}
 
 
-@app.post("/fetch", status_code=202)
+@app.post("/fetch", status_code=202, dependencies=[Depends(_require_token)])
 def fetch(req: FetchRequest) -> dict:
     urls = [u.strip() for u in req.urls if u and u.strip()]
+    bad = [u for u in urls if not _is_http_url(u)]
+    if bad:
+        raise HTTPException(status_code=422, detail=f"not an http(s) URL: {bad[0][:80]!r}")
     job_id = uuid.uuid4().hex
     _prune_jobs()
     _jobs[job_id] = {
@@ -307,7 +332,7 @@ def fetch(req: FetchRequest) -> dict:
     return {"job_id": job_id}
 
 
-@app.get("/fetch/{job_id}")
+@app.get("/fetch/{job_id}", dependencies=[Depends(_require_token)])
 def job_status(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
@@ -461,7 +486,7 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
     if calibre_id is None:  # vanished between split and now → treat as new
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            res = _fanficfare(url, cwd=str(work))
+            res = _fanficfare("--", url, cwd=str(work))
             epub = _only_epub(work)
             if epub is None:
                 combined = (res.stdout or "") + (res.stderr or "")
@@ -483,7 +508,7 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
         if epub is None:
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
-        upd = _fanficfare("-u", str(epub.name), cwd=str(work))
+        upd = _fanficfare("-u", f"./{epub.name}", cwd=str(work))
         combined = (upd.stdout or "") + (upd.stderr or "")
 
         stub = None
@@ -492,11 +517,11 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
             old, new = int(m.group(1)), int(m.group(2))
             _calibredb("add", str(epub))  # standalone backup of the longer pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
-            _fanficfare("-u", str(epub.name), "-o", "force_update_epub_always=true", cwd=str(work))
+            _fanficfare("-u", f"./{epub.name}", "-o", "force_update_epub_always=true", cwd=str(work))
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
             stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
-            _fanficfare("-u", str(epub.name), "-o", "force_update_epub_always=true", cwd=str(work))
+            _fanficfare("-u", f"./{epub.name}", "-o", "force_update_epub_always=true", cwd=str(work))
         elif upd.returncode != 0 and _TRANSIENT_RE.search(combined):
             return entry, combined  # retryable
 

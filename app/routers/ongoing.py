@@ -22,13 +22,20 @@ from sqlalchemy.orm import Session
 
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config
-from app.ongoing.feed_url import infer_feed_url
+from app.ongoing.feed_url import infer_feed_url, is_fetchable_url
 from app.planner.planner import assign_channel_slots, pause_book, resume_book
 from app.version import __version__
 
 router = APIRouter(prefix="/admin/ongoing")
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 templates.env.globals["version"] = __version__
+
+
+def _valid_channel_id(db: Session, channel_id: int | None) -> int:
+    """The requested channel if it exists, else the default one (a stale/forged id must not 500)."""
+    if channel_id and db.get(Channel, channel_id) is not None:
+        return channel_id
+    return ensure_default_channel(db).id
 
 
 def _add_tracked_story(
@@ -41,7 +48,7 @@ def _add_tracked_story(
     Book, or None if the URL was blank / already tracked.
     """
     story_url = story_url.strip()
-    if not story_url:
+    if not is_fetchable_url(story_url):
         return None
     if db.query(Book).filter(Book.source_url == story_url).first() is not None:
         return None
@@ -86,10 +93,13 @@ def add_story(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     from app import scheduler
-    target_id = channel_id or ensure_default_channel(db).id
+    target_id = _valid_channel_id(db, channel_id)
     book = _add_tracked_story(db, source_url, title, target_id)
     if book is None:  # blank or already tracked — say so instead of silently doing nothing
-        reason = "blank" if not source_url.strip() else "duplicate"
+        reason = (
+            "blank" if not source_url.strip()
+            else "invalid" if not is_fetchable_url(source_url.strip()) else "duplicate"
+        )
         return RedirectResponse(url=f"/admin/ongoing/?error={reason}", status_code=303)
     assign_channel_slots(db, target_id)
     db.commit()
@@ -105,7 +115,7 @@ def add_bulk(
 ) -> RedirectResponse:
     """Add many tracked stories at once — one story URL per line."""
     from app import scheduler
-    target_id = channel_id or ensure_default_channel(db).id
+    target_id = _valid_channel_id(db, channel_id)
     lines = [ln for ln in urls.splitlines() if ln.strip()]
     added = sum(1 for line in lines if _add_tracked_story(db, line, "", target_id))
     assign_channel_slots(db, target_id)

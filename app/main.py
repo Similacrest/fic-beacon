@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import init_db
 from app.routers import admin, feed, feedback, media, ongoing, reader, websub
 from app import scheduler
+from app.security import ProxyTokenMiddleware, log_startup_posture
 
 
 def _configure_logging() -> None:
@@ -28,14 +29,18 @@ def _configure_logging() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _configure_logging()
+    log_startup_posture()
     init_db()
     scheduler.start()
     yield
     scheduler.shutdown()
 
 
-app = FastAPI(title="Fic Beacon", lifespan=lifespan)
+# No auto-generated API docs: /docs, /redoc and /openapi.json would enumerate every admin route
+# to unauthenticated callers.
+app = FastAPI(title="Fic Beacon", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+app.add_middleware(ProxyTokenMiddleware)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(feed.router)

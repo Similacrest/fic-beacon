@@ -6,6 +6,83 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-04
+
+(Also rolls up the 0.12.0 entries that were still listed as unreleased: release schedules and the
+fresh-chapter pass.)
+
+### Security — review follow-ups
+- **XSS on the public pages fixed.** `/read` and `/fb/confirm` now HTML-escape book titles/authors
+  (they come from Calibre and scraped sites); chapter HTML is sanitised (`app/sanitize.py`: script /
+  iframe / object / embed / form tags, `on*` handlers and `javascript:`/`data:` URLs removed) when an
+  EPUB is chapterized and again when `/read` renders older stored drops; those pages also send a
+  restrictive `Content-Security-Policy` (`default-src 'none'`), `nosniff` and `no-referrer`. The
+  confirm page's `javascript:` Cancel link is gone.
+- **CSRF guard on admin POSTs.** A proxy that injects the token for every request would let a cross-site
+  form post through, so non-GET admin requests with a cross-site `Sec-Fetch-Site` or a foreign `Origin`
+  get 403 (browsers always send one; curl/scripts send neither and are unaffected).
+- **Story URLs must be http(s).** Tracked-story add/bulk-add and the fetch submit refuse anything else —
+  a value starting with `-` reached FanFicFare's argv as an option. The fetcher re-validates, puts `--`
+  before positional URLs and `./` before exported EPUB names. New optional shared secret
+  `FETCHER_TOKEN` (fetcher) / `BEACON_FETCHER_TOKEN` (beacon, same value) gates `POST /fetch` and
+  `GET /fetch/{id}` so other containers can't drive the library writer.
+- **`BEACON_ADMIN_OPEN=true`** is the explicit opt-out for trusted-network / no-proxy Docker use (the
+  README quick-start works again); ignored whenever `BEACON_PROXY_TOKEN` is set.
+- `/img` refuses entries over 25 MB.
+
+### Fixed
+- **Memory leak:** the chapterize cache was keyed by `(path, mtime)`, so every fetcher update kept the
+  superseded EPUB's full text in RAM forever. It is now one entry per EPUB, replaced on change, and
+  LRU-bounded (128).
+- **A hung feed could stall every release cycle** (`feedparser.parse(url)` has no timeout and runs under
+  the cycle lock). Trigger feeds are now fetched with `httpx` (20 s timeout, 5 MB cap).
+- **`database is locked` on 👍/👎 clicks during a release cycle**: SQLite busy timeout raised to 30 s.
+- **WebSub pushes no longer run inside the release cycle** (or the 🪝 request): they go out on a worker
+  thread, so slow subscribers can't hold the cycle lock.
+- **Requeue** of a tracked story no longer sends it to the queue (tracked stories are never queued); it
+  also respects `cursor_floor` and clears `fresh_from_index` / `paused`.
+- Stories still awaiting their first download no longer log a "not found in metadata.db" warning every
+  cycle.
+- Two books sharing a source URL both receive the fetch result (the job map is `{url: [book ids]}`;
+  pre-0.13 in-flight jobs are still read).
+- Library import / tracked add with an unknown channel id fall back instead of 500-ing.
+- `chapterizer._normalize_name` stripped any leading dots (`.hidden.xhtml`); dashboard drop list no
+  longer N+1-queries each drop's book; removed a duplicate `return`.
+- Dockerfile: pinned `uv`, added a `HEALTHCHECK` (public `/robots.txt`); compose can run beacon as a
+  non-root user (`BEACON_UID`/`BEACON_GID`, default unchanged).
+- Docs: README (proxy deployment, admin access, dev bind), Architecture (stale "cadence"/`create_all`).
+
+### Security — public-exposure hardening
+- **WebSub hub requires the feed secret.** `hub.topic` must be the tokened feed URL
+  (`…/feed/{slug}/{n}?token=…`, compared in constant time); a token-free or wrong-token topic gets
+  `403` (foreign topics `404`). The publisher only pushes to subscriptions whose stored topic carries
+  the *current* secret. Token-free / stale rows are pruned at startup.
+- **WebSub SSRF closed.** Callbacks must be `https://`, may not embed credentials, and must resolve
+  only to public addresses (loopback, private, link-local, CGNAT `100.64/10`, ULA, v4-mapped and
+  NAT64 forms rejected). The validated IP is what we connect to (no DNS-rebinding window; Host/SNI
+  preserved), redirects are never followed, verification reads at most 64 KiB, push responses are not
+  read, timeouts are capped. Re-validated on every push. Optional `BEACON_WEBSUB_CALLBACK_HOSTS`
+  allowlist (comma-separated, e.g. `incoming.inoreader.com`).
+- **`/img/…` serves images only and only signed URLs.** Non-`image/*` entries (chapter XHTML, OPF…) 404.
+  Image URLs get `?sig=` (HMAC-SHA256 of `calibre_id`+path keyed by the feed secret), added at *render*
+  time in feeds and `/read/` — stored drops stay byte-stable, legacy drops keep working, and rotating the
+  secret re-signs everything. Responses carry `nosniff` and a locked-down CSP (SVG safety).
+- **Deny-by-default proxy-token gate.** Every route needs a valid `X-Beacon-Proxy-Token`
+  (`BEACON_PROXY_TOKEN`, constant-time compare, ASGI middleware in `app/security.py`) except the public
+  paths that mirror `nginx-public.conf`: `/feed/*`, `/read/*`, `/fb/*`, `/img/*`, `/static/*` (plus
+  `/robots.txt`; `/websub/*` only with `BEACON_PUBLIC_WEBSUB=true`). Anything else — `/admin`,
+  `/admin/ongoing`, every mutating POST, `/`, unknown paths — gets **401** without it. There is no
+  KOReader-sync route in this app. **Fail closed:** with no token and a non-loopback
+  `BEACON_BIND_HOST` (default `0.0.0.0`, as in the image) non-public routes return **503** and an ERROR
+  is logged at startup; a loopback bind (`BEACON_BIND_HOST=127.0.0.1`) with no token stays open for local
+  development. `X-Remote-User` is only read when the token verified, and only for audit logging of
+  mutating requests — never as the auth check. **Deploy impact:** set the same `BEACON_PROXY_TOKEN` on
+  the proxy (sent as `X-Beacon-Proxy-Token`) and in beacon's env before upgrading.
+- Stale WebSub subscriptions (changed `BEACON_BASE_URL`, rotated secret) are pruned at startup.
+- FastAPI `/docs`, `/redoc`, `/openapi.json` are disabled.
+- The **DB `config.feed_secret` is authoritative**; `BEACON_FEED_SECRET` only seeds it. A startup warning
+  is logged when the env var is set and differs.
+
 ### Added — release schedules with their own budgets (migration `a3b4c5d6e7f8`)
 - New **Schedules** page: any number of `{cron, budget, words|minutes, enabled}` rows — e.g. 5000 words
   on weekday mornings, 10000 on weekday evenings, 20000 at weekends. Each enabled row is its own cron
@@ -650,7 +727,8 @@ the user's real ongoing serials. Landing incrementally:
   configurable Calibre library path.
 - v2-designed (not built) ongoing-feed balancing scaffolding (later superseded — see Unreleased).
 
-[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Similacrest/fic-beacon/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Similacrest/fic-beacon/compare/v0.11.0...v0.13.0
 [0.5.0]: https://github.com/Similacrest/fic-beacon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Similacrest/fic-beacon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Similacrest/fic-beacon/compare/v0.2.0...v0.3.0

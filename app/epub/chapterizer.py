@@ -9,11 +9,12 @@ Strategy:
  - If the TOC references a spine item multiple times (anchor fragments), we treat
    the first fragment occurrence as the chapter boundary and merge the rest into it.
  - Fallback: if the TOC yields no usable items, fall back to all spine DOCUMENT items.
- - Cache results in-process keyed by (epub_path, mtime) to avoid re-parsing.
+ - Cache results in-process per epub_path, invalidated by mtime (LRU-bounded) to avoid re-parsing.
 """
 from __future__ import annotations
 
 import posixpath
+from collections import OrderedDict
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ import zipfile
 import ebooklib
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from ebooklib import epub
+
+from app.sanitize import sanitize_tree
 
 
 def _html_soup(markup) -> BeautifulSoup:
@@ -44,7 +47,10 @@ class Chapter:
     source_url: str | None = None  # canonical per-chapter URL (FanFicFare <meta name="chapterurl">)
 
 
-_cache: dict[tuple[str, float], list[Chapter]] = {}
+# path → (mtime, chapters). One entry per EPUB (a new mtime *replaces* the old parse — keying by
+# mtime too leaked every superseded version's full text) and LRU-bounded so RAM stays flat.
+_cache: "OrderedDict[str, tuple[float, list[Chapter]]]" = OrderedDict()
+_CACHE_MAX = 128
 
 # Spine items with fewer than this many words are treated as front/back matter
 # (cover image pages, blank pages, maps, etc.) and excluded from the chapter list.
@@ -75,11 +81,16 @@ def chapterize(epub_path: Path) -> list[Chapter]:
     Results are cached per (path, mtime); safe to call on every request.
     """
     mtime = epub_path.stat().st_mtime
-    key = (str(epub_path), mtime)
-    if key in _cache:
-        return _cache[key]
+    key = str(epub_path)
+    hit = _cache.get(key)
+    if hit is not None and hit[0] == mtime:
+        _cache.move_to_end(key)
+        return hit[1]
     result = _parse(epub_path)
-    _cache[key] = result
+    _cache[key] = (mtime, result)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
     return result
 
 
@@ -187,8 +198,10 @@ def _flatten_toc(toc: list | tuple, depth: int = 0) -> list[tuple[str, str]]:
 
 def _normalize_name(href: str) -> str:
     """Normalise a TOC href to match the spine item name."""
-    # Strip leading ./ or /
-    return href.lstrip("./").lstrip("/")
+    # Strip leading "./" segments and slashes (not arbitrary leading dots: ".hidden.xhtml" is a name)
+    while href.startswith("./"):
+        href = href[2:]
+    return href.lstrip("/")
 
 
 def _extract_body(raw: bytes, chapter_name: str = "") -> str:
@@ -203,6 +216,7 @@ def _extract_body(raw: bytes, chapter_name: str = "") -> str:
         # Fall back to html parser if lxml-xml can't find body
         soup = BeautifulSoup(raw, "lxml")
         body = soup.find("body") or soup
+    sanitize_tree(body)
     _rewrite_images(body, chapter_name)
     return str(body)
 

@@ -16,9 +16,29 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     feed_secret: str = secrets.token_urlsafe(32)
 
+    # Reverse-proxy shared secret (see app/security.py:ProxyTokenMiddleware). When set, every
+    # route outside the public prefixes (/feed /read /fb /img /static) needs a matching
+    # `X-Beacon-Proxy-Token` header. When unset, non-public routes are refused unless bind_host is
+    # loopback (local development).
+    proxy_token: str | None = None
+    # Address uvicorn is bound to (the Dockerfile binds 0.0.0.0). Only used for the fail-closed
+    # check above — set BEACON_BIND_HOST=127.0.0.1 when running locally on loopback.
+    bind_host: str = "0.0.0.0"
+    # Explicit opt-out of the fail-closed check: with no proxy token, serve /admin to anyone who can
+    # reach the port (local / trusted-network use only). Ignored when proxy_token is set.
+    admin_open: bool = False
+    # Expose /websub without the proxy token (only if the proxy publishes it).
+    public_websub: bool = False
+
+    # WebSub: optional comma-separated allowlist of callback hosts (e.g. incoming.inoreader.com).
+    # Empty → any host that resolves only to public addresses (https only).
+    websub_callback_hosts: str = ""
+
     # FanFicFare/Calibre fetcher container — Fic-Beacon POSTs story URLs here to have
     # new chapters downloaded into the (read-only-to-us) Calibre library. See fetcher/.
     # Fetches are async: POST /fetch returns a job_id immediately; we poll GET /fetch/{id}.
+    # Shared secret sent to the fetcher as X-Fetcher-Token (must equal FETCHER_TOKEN there).
+    fetcher_token: str | None = None
     fetcher_url: str = "http://fetcher:8080"
     # Per-request HTTP timeout (seconds). Only covers the quick 202 submit / status GET —
     # the actual (slow, up to ~15 min) FanFicFare run happens in the fetcher's background.

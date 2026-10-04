@@ -68,6 +68,11 @@ block from the example: it drops non-story threadmark categories and date-orders
 chapters append at the EPUB end — without it, category-grouped threadmarks make stale chapters leak
 to the feed (Fic-Beacon's cursor is positional/append-only).
 
+**Admin access.** Admin routes are deny-by-default. Put beacon behind a reverse proxy that sends
+`X-Beacon-Proxy-Token: $BEACON_PROXY_TOKEN` (see *Deploying behind a reverse proxy* below), or — on a
+network you trust, never the public internet — set `BEACON_ADMIN_OPEN=true` in `.env` to skip the gate.
+Without either, `/admin` answers `503`.
+
 Then open the admin UI at `http://localhost:8000/admin/`, create channels (or use the auto-created
 **General** one), import books from Calibre into a channel, add tracked stories by URL on the
 **Tracked Stories** page, and copy each per-slot feed URL (with its `?token=`) into your RSS reader.
@@ -82,7 +87,14 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `FETCHER_UID` / `FETCHER_GID` | Run the fetcher as this uid/gid so new library files match your Calibre owner instead of `root:root` (`stat -c '%u:%g' "$CALIBRE_LIBRARY_PATH"`) | `0` / `0` |
 | `BEACON_BASE_URL` | Public base URL used in feed/links | `http://localhost:8000` |
 | `BEACON_PORT` | Host port to expose | `8000` |
-| `BEACON_FEED_SECRET` | Secret token gating the feeds (auto-generated if unset) | random |
+| `BEACON_FEED_SECRET` | Secret token gating the feeds. **Seeds the DB value on first run only — the database copy wins afterwards** (rotate on the Channels page); a warning is logged if they differ | random |
+| `BEACON_PROXY_TOKEN` | Shared secret the reverse proxy sends as `X-Beacon-Proxy-Token`. Required on every route except `/feed` `/read` `/fb` `/img` `/static`; `X-Remote-User` is trusted (audit only) when it matches | unset |
+| `BEACON_BIND_HOST` | Address uvicorn binds to (used only for the fail-closed check). With no token and a non-loopback value, admin is refused; set `127.0.0.1` for local dev | `0.0.0.0` |
+| `BEACON_ADMIN_OPEN` | Explicit opt-out of the gate when no token is set: `/admin` is open to anyone who can reach the port. Trusted networks only | `false` |
+| `BEACON_FETCHER_TOKEN` / `FETCHER_TOKEN` | Shared secret beacon sends (`X-Fetcher-Token`) and the fetcher requires; set both to the same value | unset |
+| `BEACON_UID` / `BEACON_GID` | Optional: run the beacon container as this non-root user (chown the `/data` volume first) | `0` / `0` |
+| `BEACON_PUBLIC_WEBSUB` | Treat `/websub/*` as public (no proxy token) — only if the proxy publishes it | `false` |
+| `BEACON_WEBSUB_CALLBACK_HOSTS` | Optional comma-separated allowlist of WebSub callback hosts (e.g. `incoming.inoreader.com`). Callbacks are always https and public-address only | any |
 | `BEACON_TZ` | Timezone for drop/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |
 | `BEACON_FETCHER_POLL_INTERVAL` | Seconds between polls of a running fetch job | `30` |
@@ -92,6 +104,31 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 
 Generate a feed secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+### Deploying behind a reverse proxy
+
+Public paths (no token needed): `/feed/*`, `/read/*`, `/fb/*`, `/img/*`, `/static/*`, `/robots.txt`
+(and `/websub/*` only with `BEACON_PUBLIC_WEBSUB=true`). Everything else needs the shared token:
+
+```nginx
+# Authenticate the user (SSO, basic auth, …) for /admin, then inject the token:
+location / {
+    auth_request /auth;                               # your auth
+    proxy_set_header X-Beacon-Proxy-Token $beacon_proxy_token;   # == BEACON_PROXY_TOKEN
+    proxy_set_header X-Remote-User        $remote_user;          # audit log only
+    proxy_pass http://beacon:8000;
+}
+# Public feed/reader/feedback/image paths: forward WITHOUT auth, and always overwrite the headers
+# so a client can't inject its own:
+location ~ ^/(feed|read|fb|img|static)/ {
+    proxy_set_header X-Beacon-Proxy-Token "";
+    proxy_set_header X-Remote-User "";
+    proxy_pass http://beacon:8000;
+}
+```
+
+Admin POSTs are also checked for cross-site origin (`Sec-Fetch-Site` / `Origin`); the proxy must
+pass `Host` (or `X-Forwarded-Host`) through unchanged, or set `BEACON_BASE_URL` to the public origin.
 
 ### Maintenance scripts
 
@@ -111,7 +148,7 @@ Uses [uv](https://docs.astral.sh/uv/) for packaging.
 
 ```bash
 uv sync                       # install (incl. dev extras)
-uv run uvicorn app.main:app --reload
+BEACON_BIND_HOST=127.0.0.1 uv run uvicorn app.main:app --reload   # loopback bind ⇒ admin open for dev
 uv run pytest                 # run the test suite
 ```
 

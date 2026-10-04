@@ -29,7 +29,9 @@ def delete_book_cascade(session: Session, book: Book) -> None:
 
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False},
+    # timeout: the release cycle holds a write transaction while chapterizing; web writes (feedback
+    # clicks) must wait for it rather than fail with "database is locked".
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
 
 # Enable WAL mode for SQLite to allow concurrent reads during writes
@@ -95,11 +97,25 @@ def init_db() -> None:
         _ensure_config(session)
         ensure_default_channel(session)
         ensure_default_schedule(session)
+        # Drop WebSub subscriptions that can never match again: a changed BEACON_BASE_URL, a
+        # rotated feed secret, or legacy token-free rows from before the hub required the token.
+        from app.websub.safety import prune_subscriptions
+
+        pruned = prune_subscriptions(session)
+        if pruned:
+            logger.warning("Pruned %d stale/token-free WebSub subscription(s)", pruned)
         session.commit()
 
 
 def _ensure_config(session: Session) -> None:
     cfg = session.get(Config, 1)
+    if cfg is not None and "feed_secret" in settings.model_fields_set:
+        if settings.feed_secret != cfg.feed_secret:
+            logger.warning(
+                "BEACON_FEED_SECRET differs from the feed secret stored in the database; the "
+                "DATABASE value is authoritative (rotate it on the admin Channels page). The "
+                "env var only seeds the secret on first run."
+            )
     if cfg is None:
         session.add(
             Config(

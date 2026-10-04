@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2 libxslt1.1 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN pip install -U uv
+RUN pip install uv==0.12.23
 
 COPY pyproject.toml .
 RUN uv sync --no-dev
@@ -24,6 +24,10 @@ COPY alembic/ ./alembic/
 VOLUME ["/data", "/calibre-library"]
 
 EXPOSE 8000
+
+# /robots.txt is a public path (no proxy token needed), so this works with the gate enabled.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/robots.txt', timeout=4).status == 200 else 1)"
 
 # Single worker: APScheduler must not run in multiple processes
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

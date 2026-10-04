@@ -2,6 +2,7 @@
 import sqlite3
 import tempfile
 import zipfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.database import get_db
 from app.routers import media
+from app.security import image_signature, sign_image_urls
+
+SECRET = "test-secret"
 
 # 1x1 transparent PNG.
 _PNG = (
@@ -52,6 +57,8 @@ def _build_library(root: Path) -> None:
             "</rootfiles></container>",
         )
         zf.writestr("OEBPS/images/pic.png", _PNG)
+        zf.writestr("OEBPS/chapter1.xhtml", "<html><body>secret chapter text</body></html>")
+        zf.writestr("OEBPS/content.opf", "<package/>")
 
 
 @pytest.fixture
@@ -62,25 +69,62 @@ def client(monkeypatch):
         monkeypatch.setattr(settings, "calibre_library_path", root)
         app = FastAPI()
         app.include_router(media.router)
+
+        class _Db:  # stands in for a Session: the route only reads Config.feed_secret
+            def get(self, model, ident):
+                return SimpleNamespace(feed_secret=SECRET)
+
+        app.dependency_overrides[get_db] = lambda: _Db()
         yield TestClient(app)
+
+
+def _get(client, calibre_id, path, sig=None):
+    sig = image_signature(SECRET, calibre_id, path) if sig is None else sig
+    return client.get(f"/img/{calibre_id}/{path}", params={"sig": sig})
 
 
 def test_serves_image_resolved_under_opf_dir(client):
     # Path is OPF-relative ("images/pic.png"); the route re-anchors it to OEBPS/.
-    resp = client.get("/img/7/images/pic.png")
+    resp = _get(client, 7, "images/pic.png")
     assert resp.status_code == 200
     assert resp.content == _PNG
     assert resp.headers["content-type"] == "image/png"
     assert "immutable" in resp.headers["cache-control"]
+    assert resp.headers["x-content-type-options"] == "nosniff"
 
 
 def test_missing_image_404(client):
-    assert client.get("/img/7/images/missing.png").status_code == 404
+    assert _get(client, 7, "images/missing.png").status_code == 404
 
 
 def test_unknown_book_404(client):
-    assert client.get("/img/999/images/pic.png").status_code == 404
+    assert _get(client, 999, "images/pic.png").status_code == 404
 
 
 def test_path_traversal_rejected(client):
     assert client.get("/img/7/../../../etc/passwd").status_code == 404
+
+
+@pytest.mark.parametrize("path", ["chapter1.xhtml", "content.opf"])
+def test_non_image_entries_404_even_with_valid_signature(client, path):
+    assert _get(client, 7, path).status_code == 404
+
+
+def test_unsigned_or_wrongly_signed_url_404(client):
+    assert client.get("/img/7/images/pic.png").status_code == 404
+    assert _get(client, 7, "images/pic.png", sig="0" * 32).status_code == 404
+    # A signature for one path/book can't be replayed on another.
+    assert _get(client, 7, "images/pic.png", sig=image_signature(SECRET, 8, "images/pic.png")).status_code == 404
+    assert _get(client, 7, "images/pic.png", sig=image_signature("other", 7, "images/pic.png")).status_code == 404
+
+
+def test_sign_image_urls_roundtrip(client):
+    base = settings.base_url
+    html = f'<img src="{base}/img/7/images/pic.png"><img srcset="{base}/img/7/images/pic.png 2x">'
+    signed = sign_image_urls(html, SECRET, base)
+    assert signed.count("?sig=") == 2
+    url = signed.split('src="', 1)[1].split('"', 1)[0].replace(base, "")
+    assert client.get(url).status_code == 200
+    # External images are left alone.
+    ext = '<img src="https://cdn.example/x.png">'
+    assert sign_image_urls(ext, SECRET, base) == ext

@@ -53,6 +53,10 @@ class FetchResult:
     story_status: str | None = None
 
 
+def _headers() -> dict[str, str]:
+    return {"X-Fetcher-Token": settings.fetcher_token} if settings.fetcher_token else {}
+
+
 def submit_fetch(urls: list[str]) -> str | None:
     """Submit a batch of story URLs to the fetcher. Returns the job_id, or None on failure."""
     urls = [u for u in urls if u]
@@ -62,6 +66,7 @@ def submit_fetch(urls: list[str]) -> str | None:
         resp = httpx.post(
             f"{settings.fetcher_url.rstrip('/')}/fetch",
             json={"urls": urls},
+            headers=_headers(),
             timeout=settings.fetcher_timeout,
         )
         resp.raise_for_status()
@@ -80,6 +85,7 @@ def poll_fetch(job_id: str) -> dict | None:
     try:
         resp = httpx.get(
             f"{settings.fetcher_url.rstrip('/')}/fetch/{job_id}",
+            headers=_headers(),
             timeout=settings.fetcher_timeout,
         )
         if resp.status_code == 404:

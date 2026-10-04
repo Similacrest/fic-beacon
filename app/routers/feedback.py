@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import Channel, Drop, FeedbackAction
+from app.sanitize import CSP_HEADERS
 from app.planner.planner import apply_feedback, extra_limit_reached
 
 router = APIRouter(prefix="/fb")
@@ -59,7 +60,7 @@ def _get_drop(token: str, db: Session) -> Drop:
 
 @router.get("/done", response_class=HTMLResponse)
 def done() -> HTMLResponse:
-    return HTMLResponse(_DONE_HTML)
+    return HTMLResponse(_DONE_HTML, headers=CSP_HEADERS)
 
 
 @router.get("/confirm/{token}", response_class=HTMLResponse)
@@ -74,7 +75,9 @@ def confirm_get(
     if action == "extra" and extra_limit_reached(db, drop):
         return _extra_limit_response(db, drop)
     label, description = _CONFIRM_LABELS[action]
-    return HTMLResponse(_confirm_page(token, action, label, description, drop.book.title))
+    return HTMLResponse(
+        _confirm_page(token, action, label, description, drop.book.title), headers=CSP_HEADERS
+    )
 
 
 @router.post("/confirm/{token}", response_class=RedirectResponse)
@@ -92,8 +95,8 @@ def confirm_post(
     extra_drop = apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
     db.commit()
     if extra_drop is not None:
-        from app.websub.publisher import publish_updates
-        publish_updates(db, [extra_drop])
+        from app.websub.publisher import publish_in_background
+        publish_in_background([extra_drop])
     return RedirectResponse(url="/fb/done", status_code=303)
 
 
@@ -111,7 +114,7 @@ def instant_get(
     drop = _get_drop(token, db)
     apply_feedback(db, drop, FeedbackAction(action), settings.calibre_library_path)
     db.commit()
-    return HTMLResponse(_DONE_HTML)
+    return HTMLResponse(_DONE_HTML, headers=CSP_HEADERS)
 
 
 def _extra_limit_response(db: Session, drop: Drop) -> HTMLResponse:
@@ -125,7 +128,8 @@ def _extra_limit_response(db: Session, drop: Drop) -> HTMLResponse:
         "<html><body style='font-family:sans-serif;max-width:480px;margin:4em auto;padding:1em'>"
         f"<h2>🪝 No extra chapters left for {name}</h2>"
         f"<p>You've used this channel's extra-chapter allowance until the next release.{when}</p>"
-        "<p>Nothing was changed.</p></body></html>"
+        "<p>Nothing was changed.</p></body></html>",
+        headers=CSP_HEADERS,
     )
 
 
@@ -143,13 +147,12 @@ def _confirm_page(
 </head>
 <body>
   <h2>{label}</h2>
-  <p class="book">for <strong>{book_title}</strong></p>
+  <p class="book">for <strong>{escape(book_title)}</strong></p>
   <p>{description}</p>
   <form method="post" action="/fb/confirm/{token}">
     <input type="hidden" name="action" value="{action}">
     <button type="submit">{label}</button>
-    &nbsp;
-    <a href="javascript:history.back()">Cancel</a>
+    <p class="book">To cancel, just close this tab.</p>
   </form>
 </body>
 </html>"""

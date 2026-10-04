@@ -84,7 +84,8 @@ def submit_and_track(session, books) -> str | None:
     from app.models import utcnow
     from app.state import FETCH_JOB_PREFIX, set_value
 
-    books = [b for b in books if b.source_url]
+    from app.ongoing.feed_url import is_fetchable_url
+    books = [b for b in books if b.source_url and is_fetchable_url(b.source_url)]
     if not books:
         return None
     job_id = submit_fetch([b.source_url for b in books])
@@ -99,10 +100,23 @@ def submit_and_track(session, books) -> str | None:
         b.last_fetch_at = now  # submit time → drives the dashboard "elapsed" display
     set_value(session, FETCH_JOB_PREFIX + job_id, json.dumps({
         "submitted_at": datetime.now(timezone.utc).isoformat(),
-        "url_to_book": {b.source_url: b.id for b in books},
+        "url_to_book": _group_by_url(books),
     }))
     _schedule_poll(job_id)
     return job_id
+
+
+def _group_by_url(books) -> dict[str, list[int]]:
+    """{url: [book ids]} — several books may share a source URL, and each must get the result."""
+    out: dict[str, list[int]] = {}
+    for b in books:
+        out.setdefault(b.source_url, []).append(b.id)
+    return out
+
+
+def _book_ids(value) -> list[int]:
+    """A persisted url_to_book value: a list of ids (current) or a bare id (pre-0.13 rows)."""
+    return list(value) if isinstance(value, list) else [value]
 
 
 def _schedule_poll(job_id: str) -> None:
@@ -163,11 +177,12 @@ def _poll_fetch_job(job_id: str) -> None:
         by_url = {r.get("url"): r for r in results}
 
         if status.get("status") == "running":
-            for url, book_id in url_to_book.items():  # live phase for the dashboard
-                book = session.get(Book, book_id)
+            for url, ids in url_to_book.items():  # live phase for the dashboard
                 phase = (by_url.get(url) or {}).get("phase")
-                if book is not None and phase and phase not in ("done", "error"):
-                    book.last_fetch_status = f"fetching: {phase}"
+                for book_id in _book_ids(ids):
+                    book = session.get(Book, book_id)
+                    if book is not None and phase and phase not in ("done", "error"):
+                        book.last_fetch_status = f"fetching: {phase}"
             if _expired(meta):
                 _abandon(session, url_to_book, "fetch timed out")
                 delete_value(session, FETCH_JOB_PREFIX + job_id)
@@ -178,16 +193,17 @@ def _poll_fetch_job(job_id: str) -> None:
             return
 
         # done (or unknown — job vanished): fold whatever we have, error the rest.
-        for url, book_id in url_to_book.items():
-            book = session.get(Book, book_id)
-            if book is None:
-                continue
+        for url, ids in url_to_book.items():
             raw_result = by_url.get(url)
-            if raw_result is None:
-                book.last_fetch_status = "error: no result from fetcher"
-            else:
-                apply_result(book, raw_result)
-                _sync_title(book)
+            for book_id in _book_ids(ids):
+                book = session.get(Book, book_id)
+                if book is None:
+                    continue
+                if raw_result is None:
+                    book.last_fetch_status = "error: no result from fetcher"
+                else:
+                    apply_result(book, raw_result)
+                    _sync_title(book)
         delete_value(session, FETCH_JOB_PREFIX + job_id)
         session.commit()
     _unschedule_poll(job_id)
@@ -219,10 +235,11 @@ def _expired(meta: dict) -> bool:
 
 def _abandon(session, url_to_book: dict, reason: str) -> None:
     from app.models import Book
-    for book_id in url_to_book.values():
-        book = session.get(Book, book_id)
-        if book is not None:
-            book.last_fetch_status = f"error: {reason}"
+    for ids in url_to_book.values():
+        for book_id in _book_ids(ids):
+            book = session.get(Book, book_id)
+            if book is not None:
+                book.last_fetch_status = f"error: {reason}"
 
 
 def _resume_pending_polls() -> None:
@@ -281,7 +298,7 @@ def _execute(op: str, fn) -> None:
 def _run_release_cycle(schedule_id: int | None = None) -> None:
     from app.ongoing.poller import fetch_pending, poll_all_feeds
     from app.planner.planner import run_release_cycle
-    from app.websub.publisher import publish_updates
+    from app.websub.publisher import publish_in_background
     with db_session() as session:
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
         # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
@@ -293,7 +310,7 @@ def _run_release_cycle(schedule_id: int | None = None) -> None:
         fetch_pending(session)
         drops = run_release_cycle(session, settings.calibre_library_path, schedule_id)
         session.commit()
-        publish_updates(session, drops)
+        publish_in_background(drops)
     logger.info("Release cycle complete — %d drop(s) created.", len(drops))
 
 
@@ -346,7 +363,6 @@ def trigger_feed_check() -> bool:
         lambda: _execute("feedcheck", _run_feed_check), trigger="date",
         run_date=_now() + timedelta(seconds=1), id="manual_feedcheck", replace_existing=True,
     )
-    return True
     return True
 
 

@@ -15,7 +15,7 @@
 {% set error = request.query_params.get('error') %}
 {% if error %}
 <p style="background:#f8d7da; color:#721c24; padding:.6em 1em; border-radius:4px">
-  {% if error == 'duplicate' %}That story is already tracked.{% else %}Enter a story URL to add.{% endif %}
+  {% if error == 'duplicate' %}That story is already tracked.{% elif error == 'invalid' %}That isn't a valid http(s) story URL.{% else %}Enter a story URL to add.{% endif %}
 </p>
 {% endif %}
 {% if added %}

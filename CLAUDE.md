@@ -382,11 +382,18 @@ The advertised `rel=self` / topic is **tokened** (`{base}/feed/{slug}/{key}?toke
 URL is actually fetchable (WebSub wants the topic to resolve; the pushed body is a byte-budgeted
 *subset* of it, merged by GUID — see above), and the feed route gates on `token`. The token is the single global `feed_secret` already embedded in
 the feed URL the reader holds, so advertising it inside the (already token-gated) feed body leaks
-nothing new. The publisher still matches subscriptions registered both with and without the
-`?token=…` (some readers subscribe with their poll URL, others with the bare `rel=self`), so push is
-never silently dropped. `hub._is_own_topic` accepts any `{base}/feed…` topic regardless of query.
+nothing new. The hub **rejects** any topic lacking a valid token (`safety.topic_status`: foreign → 404, missing/wrong
+token → 403) and the publisher only pushes to subscriptions whose stored topic carries the *current* token
+(extra query params are fine; token-free rows are pruned at startup — `safety.prune_subscriptions`).
 The admin dashboard lists current subscribers + last/next cron runs for diagnosing "feed not
 updating".
+
+### Public-exposure security (see CHANGELOG "Security")
+Everything is **deny-by-default** behind `app/security.py:ProxyTokenMiddleware`: only `/feed` `/read` `/fb` `/img` `/static` (+`/robots.txt`; `/websub` iff `BEACON_PUBLIC_WEBSUB`) are reachable without a valid `X-Beacon-Proxy-Token` (`BEACON_PROXY_TOKEN`); the rest 401, or 503 when the token is unset and `BEACON_BIND_HOST` isn't loopback. `X-Remote-User` is audit-only and honoured only with a valid token. New public routes must be added to `_PUBLIC_PREFIXES`. Non-GET admin requests are CSRF-checked (`Sec-Fetch-Site`/`Origin`). `BEACON_ADMIN_OPEN` is the explicit no-proxy opt-out. Chapter HTML is sanitised (`app/sanitize.py`) and `/read`+`/fb` pages carry a CSP and escape every story-derived string — keep it that way. Story URLs must pass `is_fetchable_url` (they reach FanFicFare argv); the fetcher is gated by `FETCHER_TOKEN`. The WebSub hub
+The WebSub hub requires the **tokened** topic and only https callbacks resolving to public IPs, connected by pinned IP with no
+redirects (`app/websub/safety.py`) — never loosen these. `/img` serves only `image/*` entries with a valid
+`?sig=` (HMAC keyed by the feed secret), signed at render time (`sign_image_urls`) not stored. The DB
+`config.feed_secret` is authoritative over `BEACON_FEED_SECRET`.
 
 ### Calibre access
 Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), **tags**, and the custom
