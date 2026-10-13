@@ -114,7 +114,9 @@ def _add_entry(fg: FeedGenerator, drop: Drop, secret: str | None = None) -> None
     title = f"{book.title} — {chapter_label}"
     permalink = _permalink(drop)
 
-    content = sign_image_urls(drop.content_html, secret or "", settings.base_url) + feedback_block(drop)
+    content = sign_image_urls(
+        drop.content_html, secret or "", settings.base_url, settings.image_alias_bases
+    ) + feedback_block(drop)
 
     fe = fg.add_entry(order="append")
     # GUID must be unique AND stable per drop, independent of the link target.
@@ -163,8 +165,10 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
     The 🪝 extra link is shown only when a next unit is available.
     """
     token = drop.feedback_token
-    instant = f"{settings.base_url}/fb/{token}"
-    confirm = f"{settings.base_url}/fb/confirm/{token}"
+    # Feedback links may live on their own origin (BEACON_FEEDBACK_BASE_URL); everything else
+    # about the item (permalink fallback, images, the feed itself) stays on base_url.
+    instant = f"{settings.feedback_base}/fb/{token}"
+    confirm = f"{settings.feedback_base}/fb/confirm/{token}"
 
     links = []
     if extra_available:

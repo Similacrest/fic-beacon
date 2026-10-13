@@ -168,7 +168,13 @@ smallest — so the first release after upgrading is the same size and split as 
 - **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
   into one **async** fetch job (`scheduler.submit_and_track`) that downloads the new chapters into
   Calibre in the background. The triggering broadcast does **not** wait — new chapters land in the
-  *next* one. Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
+  *next* one. **A trigger GUID is marked seen (`last_seen_guid`) only when its fetch lands chapters**
+  (`scheduler._settle_trigger`; the GUID rides in the `fetch_job` mapping): a failed fetch, or one that
+  finds nothing new, leaves it unseen so the next cycle retries — capped at `TRIGGER_MAX_ATTEMPTS` (3)
+  fetches per GUID (`app_state[trigger_retry:{book_id}]`) so a GUID that never yields a chapter (a
+  skipped threadmark category, RSS running ahead of the site) can't refetch forever. A book with a
+  fetch in flight is skipped by the poller. A `304` from a trigger feed means "no change".
+  Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
   **skip** stories whose `#status` is done (Completed / Abandoned / Published) — their EPUBs are
   already complete, so re-fetching is wasted.
 - **Initial-download self-heal:** a story added by URL has no Calibre EPUB yet; its first download is
@@ -195,6 +201,11 @@ smallest — so the first release after upgrading is the same size and split as 
   - **Count-only fallback:** no `chapterurl`s (URL lists absent, or their lengths disagree with
     `old`/`new`) → the legacy linear path: bump `chapter_label_offset` by `old−new` and set cursor
     and `cursor_floor` to `new`. Only degrades non-FanFicFare EPUBs (no per-chapter identity anyway).
+  - **`total_chapters` is always beacon's own chapterizer count of the EPUB it reads** — never the
+    fetcher's `chapter_count`. `apply_result` chapterizes `book.calibre_id`'s EPUB (RO, mtime-cached) and
+    uses that for `total_chapters` *and* the `fresh_from_index` comparison; the fetcher's spine count
+    (front matter included, and of whichever Calibre entry it touched) is only a fallback when the EPUB
+    can't be read here. Mixing the two produced a phantom "N waiting" that never released.
   - **`total_chapters` is kept honest every broadcast**, not only when a source is selected:
     `planner._get_chapters` writes `book.total_chapters = len(chapterize(epub))` for *every* active
     source it inspects. A caught-up source is never selected, so if its EPUB later shrinks (e.g. an
@@ -271,6 +282,15 @@ smallest — so the first release after upgrading is the same size and split as 
 - A schedule's budget can be words or reading-time minutes (per-schedule `budget_mode`; `config.wpm`
   is global).
 
+### EPUBs that chapterize to nothing
+The chapterizer falls back to the spine whenever the TOC yields **no usable chapter** (not only when
+there is no TOC), and resolves a TOC href by unambiguous basename when it misses the spine name. If an
+*active backlog* book still has an EPUB with 0 chapters, `_set_aside_empty_backlog` pauses it (so it
+stops holding its slot and starving the queue), records why in `app_state[book_note:{id}]` (dashboard ⚠
+badge; cleared by resume) and promotes the next queued book in the same cycle. A *missing* EPUB file or
+Calibre entry is a different, possibly transient, problem: warned about, never paused. Tracked stories
+with 0 chapters are just still downloading and are left alone.
+
 ### Permalinks (source-aware, per-chapter) — EPUB
 FanFicFare writes a **per-chapter** canonical URL into each chapter's `<head>`:
 `<meta name="chapterurl" content="...">`. The chapterizer reads it from the **raw zip** (ebooklib
@@ -289,7 +309,11 @@ sentinel (`app/epub/chapterizer.py`); `materialize_image_urls()` swaps it for
 `{base_url}/img/{calibre_id}/{path}` when a drop's `content_html` is materialised, so stored content
 is self-contained and byte-stable (WebSub-safe). `GET /img/{calibre_id}/{path}`
 (`app/routers/media.py`) streams the entry from the EPUB zip RO (re-anchored to the EPUB's OPF dir);
-external (`http(s)`/`data:`/root-absolute) URLs pass through, traversal is rejected.
+external (`http(s)`/`data:`/root-absolute) URLs pass through, traversal is rejected. Drops stored under
+an earlier base URL carry that origin in their baked-in `/img/` URLs; `sign_image_urls` rewrites
+`/img/` URLs on **our own** alias origins (`settings.image_alias_bases` = the feedback origin +
+`BEACON_LEGACY_BASE_URLS`) onto `base_url` and signs them at render time. Other hosts are never
+touched — chapters embed third-party images whose paths can look like `/img/123/x.jpg`.
 
 ### Endnotes/footnotes (inlined per chapter)
 Notes usually live in a back-matter file separate from the chapter that cites them, so a
@@ -349,6 +373,11 @@ Links render as **bare emoji** (no text label); the wording lives in each link's
 - The **🪝 extra link renders only when a next unit exists** (`extra_available`): a chapter past
   the cursor in the current EPUB (same check for backlog and tracked sources).
 - Tokens are per-drop and unguessable; a click binds to exactly one book/drop.
+- **Feedback links may live on their own origin** (`BEACON_FEEDBACK_BASE_URL`, default `base_url`):
+  `settings.feedback_base` is used only by `feed/builder.py:_feedback_html`. Feeds, `/read`, `/img` and
+  the hub stay on `base_url`. The confirm form posts to a *relative* `/fb/confirm/{token}` (CSP
+  `form-action 'self'`), and `/fb` is a public prefix so it isn't origin-checked — the origin that
+  served the page receives the POST.
 
 ### WebSub (realtime push)
 Each feed declares `<link rel="hub" href="{base}/websub/hub">` + a correct `<link rel="self">`.
@@ -420,7 +449,17 @@ of silently ignoring it.
 ### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`) — batched & async
 FanFicFare runs can take **~15 min**, so fetches are batched and asynchronous; they never block a
 broadcast or an admin request.
-- `POST {BEACON_FETCHER_URL}/fetch {"urls":[...]}` → **`202 {job_id}`** immediately. The fetcher
+- `POST {BEACON_FETCHER_URL}/fetch {"urls":[...], "calibre_ids": {url: id}?}` → **`202 {job_id}`**
+  immediately. **`calibre_ids` pins a URL to the Calibre entry beacon already reads** (`book.calibre_id`,
+  sent by `submit_and_track` when every book for that URL agrees): the fetcher updates *exactly* that
+  entry with no URL search, and `apply_result` ignores a result whose `calibre_id` differs from the
+  book's (its count/stub describe another EPUB; it only follows a new id if the old entry was deleted
+  from Calibre). Without a pin (a brand-new story, an older app) the entry is found by **story identity**
+  — `_story_key` (host + numeric story id), never the exact `url:` string: calibredb's `=url:X` is a
+  *contains* match on the value, so the exact string misses a differently-spelled identifier and a short
+  id can hit a longer one; the search is a pre-filter, each hit's identifier is then key-checked, lowest
+  id wins. `app/ongoing/story_key.py` mirrors `fetcher/app.py:_story_key` (tests assert they agree) and
+  also drives duplicate detection and `normalize_story_url` on add. The fetcher
   works in a background `ThreadPoolExecutor(max_workers=1)` (one worker ⇒ `calibredb` writes never
   overlap, preserving the single-writer invariant). **NEW** stories (no matching `url:` identifier)
   download together in one warm `fanficfare -i` pass; **EXISTING** ones update per-story (`-u`,
@@ -430,7 +469,12 @@ broadcast or an admin request.
   used to report a *successful* download as `fanficfare produced no epub` and silently discard it);
   empty results are retried with backoff while the output looks transient; and a genuine failure
   carries **FanFicFare's own output** (tail) in `error`, attributed per URL (a multi-URL batch's
-  failures are re-run alone so each gets its own reason). It borrows two ideas from AutomatedFanfic, trimmed: broad
+  failures are re-run alone so each gets its own reason). `calibredb add` exits 0 but adds nothing for
+  a title+author duplicate, so a NEW download with no reported id refreshes the matching entry
+  (`add_format`) or, if it is a different work sharing title+author, re-adds with `-d`; it never reports
+  "done" without an entry. **The stub archive** is added with `add -d` (the live entry has the same
+  title/author, so a plain add silently kept no archive) and its URL is moved to a **`url-archive:`**
+  identifier, so a `url:` lookup can never resolve to the archive instead of the live book. It borrows two ideas from AutomatedFanfic, trimmed: broad
   **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is
   the stub case) and a **3-try exponential backoff** on transient site/network errors.
   **Every `subprocess.run` has a wall-clock `timeout=`** (`FETCHER_FANFICFARE_TIMEOUT`, default
@@ -481,6 +525,14 @@ queued|active|completed|dropped, `paused`, `cooldown_remaining`, `channel_id` **
 
 The app **version** has a single source of truth — `[project].version` in `pyproject.toml`,
 read at runtime by `app/version.py` (no baked env var). Bump it there on release.
+
+## Logging
+
+`main._configure_logging` sets the `app` logger from `BEACON_LOG_LEVEL`. **Nothing may reconfigure
+logging afterwards**: `init_db()` runs Alembic embedded with `cfg.attributes["configure_logger"] =
+False`, which `alembic/env.py` honours (its `fileConfig` used to reset root to WARNING and disable every
+existing logger, silencing the app and uvicorn after startup). Even the CLI path passes
+`disable_existing_loggers=False`.
 
 ## Timezone
 

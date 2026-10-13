@@ -18,6 +18,7 @@ only via FanFicFare's personal.ini) have no RSS signal and are handled by the da
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import feedparser
 import httpx
@@ -54,6 +55,21 @@ def _drop_done(sources: list[Book]) -> list[Book]:
         logger.exception("Failed to read #status for fetch-skip; fetching all")
         return live
     return [s for s in live if not is_done(statuses.get(s.calibre_id))]
+
+
+def _fetch_in_flight(book: Book) -> bool:
+    """A fetch for this book was submitted recently and hasn't reported back yet.
+
+    Bounded by the job timeout so a status left at `fetching…` by a lost job can't block the book
+    for good (the scheduler's stale-job sweep clears those too)."""
+    if not (book.last_fetch_status or "").startswith("fetching"):
+        return False
+    at = book.last_fetch_at
+    if at is None:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - at < timedelta(seconds=settings.fetcher_job_timeout * 2)
 
 
 _FEED_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
@@ -106,7 +122,7 @@ def poll_all_feeds(session: Session) -> int:
     changed: list[Book] = []
     newest_guid: dict[int, str] = {}
     for source in sources:
-        if (source.last_fetch_status or "").startswith("fetching"):
+        if _fetch_in_flight(source):
             continue  # a fetch is already in flight — its result decides what this entry meant
         try:
             parsed = _fetch_feed(source.feed_url)

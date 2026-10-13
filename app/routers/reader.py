@@ -39,7 +39,8 @@ def reader_page(slug: str, db: Session = Depends(get_db)) -> HTMLResponse:
         _reader_html(
             title, book.author, drop.word_count,
             sign_image_urls(
-                sanitize_html(drop.content_html), current_feed_secret(db), settings.base_url
+                sanitize_html(drop.content_html), current_feed_secret(db), settings.base_url,
+                settings.image_alias_bases,
             ),
             feedback_block(drop),
         ),

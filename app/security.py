@@ -10,6 +10,7 @@ import hmac
 import ipaddress
 import logging
 import re
+from collections.abc import Sequence
 from html import unescape
 from urllib.parse import unquote
 
@@ -45,8 +46,14 @@ def verify_image_signature(secret: str, calibre_id: int, path: str, sig: str | N
     return secrets_equal(image_signature(secret, calibre_id, path), sig)
 
 
-def sign_image_urls(html: str, secret: str, base_url: str) -> str:
+def sign_image_urls(html: str, secret: str, base_url: str, alias_bases: Sequence[str] = ()) -> str:
     """Append `?sig=` to every `{base_url}/img/{id}/{path}` URL in rendered chapter HTML.
+
+    `alias_bases` are other origins that are really ours — the feedback origin, and origins a
+    stored drop was materialised under before the base URL moved. Their `/img/` URLs are rewritten
+    onto `base_url` (the one origin guaranteed to serve /img) and signed too. Hosts that are not
+    listed are never touched: chapters legitimately embed third-party images whose path may look
+    like `/img/123/x.jpg`.
 
     Signing happens at *render* time, not when a drop is materialised: stored `content_html`
     stays byte-stable, legacy (unsigned) drops keep working, and rotating the feed secret
@@ -54,14 +61,16 @@ def sign_image_urls(html: str, secret: str, base_url: str) -> str:
     """
     if not html or not secret:
         return html
-    prefix = re.escape(f"{base_url.rstrip('/')}/img/")
-    pattern = re.compile(rf"({prefix}(\d+)/)([^\"'\s<>,)?#]+)")
+    base = base_url.rstrip("/")
+    origins = [base] + [a.rstrip("/") for a in alias_bases if a and a.rstrip("/") != base]
+    prefix = "(?:" + "|".join(re.escape(o) for o in origins) + ")/img/"
+    pattern = re.compile(rf"{prefix}(\d+)/([^\"'\s<>,)?#]+)")
 
     def _sub(m: re.Match) -> str:
-        raw = m.group(3)
+        raw = m.group(2)
         # The route verifies the percent-decoded, HTML-unescaped path.
         path = unquote(unescape(raw))
-        return f"{m.group(1)}{raw}?sig={image_signature(secret, int(m.group(2)), path)}"
+        return f"{base}/img/{m.group(1)}/{raw}?sig={image_signature(secret, int(m.group(1)), path)}"
 
     return pattern.sub(_sub, html)
 

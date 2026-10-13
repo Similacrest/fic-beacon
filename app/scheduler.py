@@ -320,14 +320,50 @@ def _abandon(session, url_to_book: dict, reason: str) -> None:
     for ids in url_to_book.values():
         for book_id in _book_ids(ids):
             book = session.get(Book, book_id)
-            if book is not None:
+            # Only a book still waiting on this job — a later fetch may have set its own status.
+            if book is not None and (book.last_fetch_status or "").startswith("fetching"):
                 book.last_fetch_status = f"error: {reason}"
+
+
+def sweep_stale_fetch_jobs(session) -> int:
+    """Clear `fetch_job:` mappings whose poll is long gone, and un-stick their books.
+
+    A mapping normally lives until its poll folds the result (or abandons it at
+    `fetcher_job_timeout`). One can be orphaned — the poll job was unscheduled before the mapping
+    committed, the scheduler restarted without it — and then it sits in app_state forever while its
+    books stay at `fetching…`, which both the initial-download backstop and the feed poller skip.
+    Anything older than twice the job timeout is past any live poll: error its books (so the next
+    cycle retries them) and drop the key. Returns how many were cleared. Caller commits.
+    """
+    from app.state import FETCH_JOB_PREFIX, delete_value, list_with_prefix
+
+    cleared = 0
+    cutoff = timedelta(seconds=settings.fetcher_job_timeout * 2)
+    for key, raw in list_with_prefix(session, FETCH_JOB_PREFIX):
+        job_id = key[len(FETCH_JOB_PREFIX):]
+        try:
+            meta = json.loads(raw)
+            submitted = datetime.fromisoformat(meta["submitted_at"])
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - submitted <= cutoff:
+                continue
+            _abandon(session, meta.get("url_to_book", {}), "fetch result lost")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            pass  # unparseable: nothing to un-stick, just drop it
+        delete_value(session, key)
+        _unschedule_poll(job_id)
+        cleared += 1
+        logger.warning("Cleared stale fetch job %s", job_id)
+    return cleared
 
 
 def _resume_pending_polls() -> None:
     """Re-register poll jobs for fetches that were in flight when the app last stopped."""
     from app.state import FETCH_JOB_PREFIX, list_with_prefix
     with db_session() as session:
+        if sweep_stale_fetch_jobs(session):
+            session.commit()
         for key, _ in list_with_prefix(session, FETCH_JOB_PREFIX):
             _schedule_poll(key[len(FETCH_JOB_PREFIX):])
 
@@ -382,6 +418,7 @@ def _run_release_cycle(schedule_id: int | None = None) -> None:
     from app.planner.planner import run_release_cycle
     from app.websub.publisher import publish_in_background
     with db_session() as session:
+        sweep_stale_fetch_jobs(session)  # un-stick anything a lost poll left at `fetching…`
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
         # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
         poll_all_feeds(session)

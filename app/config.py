@@ -14,6 +14,14 @@ class Settings(BaseSettings):
 
     # Feed
     base_url: str = "http://localhost:8000"
+    # Origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links (in feed items and on /read pages). Unset → base_url.
+    # Feeds, /img, /read and the WebSub hub always stay on base_url; only /fb/* moves, so the proxy
+    # that serves this origin needs to pass nothing but /fb/*.
+    feedback_base_url: str | None = None
+    # Comma-separated origins that drops stored before a base-URL change still carry in their
+    # baked-in image URLs (e.g. https://fb.ilac.rest). /img/ URLs on them are rewritten to base_url
+    # and signed at render time. Only these (and feedback_base_url) are touched — never other hosts.
+    legacy_base_urls: str = ""
     feed_secret: str = secrets.token_urlsafe(32)
 
     # Reverse-proxy shared secret (see app/security.py:ProxyTokenMiddleware). When set, every
@@ -63,6 +71,24 @@ class Settings(BaseSettings):
     # Root log level for the app's own loggers (e.g. "DEBUG" to trace the WebSub
     # subscribe/verify/push flow). Anything Python's logging accepts: DEBUG/INFO/WARNING/…
     log_level: str = "INFO"
+
+
+    @property
+    def feedback_base(self) -> str:
+        """Origin for feedback links: `feedback_base_url`, else `base_url` (no trailing slash)."""
+        return (self.feedback_base_url or self.base_url).rstrip("/")
+
+    @property
+    def image_alias_bases(self) -> list[str]:
+        """Other origins whose `/img/…` URLs are really ours: the feedback origin (it doesn't serve
+        /img) and any legacy origins. Excludes `base_url` itself."""
+        own = self.base_url.rstrip("/")
+        found = [self.feedback_base] + [u.strip().rstrip("/") for u in self.legacy_base_urls.split(",")]
+        out: list[str] = []
+        for u in found:
+            if u and u != own and u not in out:
+                out.append(u)
+        return out
 
 
 settings = Settings()

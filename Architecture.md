@@ -41,7 +41,7 @@ SQLite, Jinja + HTMX.
 | Area | Decision |
 |---|---|
 | Calibre access | The app reads the library folder directly (mounted **read-only**); parses `metadata.db` (incl. **tags**) + EPUBs in place. **Writes happen only in the separate fetcher container.** No Calibre process needed by the app. |
-| Fetcher | A separate, isolated container runs **FanFicFare + `calibredb`** (library RW). `POST /fetch {urls}` → `202 {job_id}`; it downloads/updates the EPUBs into Calibre in a background single-worker pool and exposes `GET /fetch/{job_id}` → per-URL `{calibre_id, chapter_count, stub?, story_url, story_status}`. The app submits batches and polls (FanFicFare can take ~15 min); it coexists with an external calibre-web on the same library. |
+| Fetcher | A separate, isolated container runs **FanFicFare + `calibredb`** (library RW). `POST /fetch {urls, calibre_ids?}` → `202 {job_id}` (`calibre_ids` pins a URL to the Calibre entry the app already reads; otherwise the entry is found by story identity, not exact `url:`); it downloads/updates the EPUBs into Calibre in a background single-worker pool and exposes `GET /fetch/{job_id}` → per-URL `{calibre_id, chapter_count, stub?, story_url, story_status}`. The app submits batches and polls (FanFicFare can take ~15 min); it coexists with an external calibre-web on the same library. |
 | Channels | **Every source belongs to exactly one channel** (`book.channel_id` NOT NULL) — no global/default group. Each channel has a **weight** (its share of every release's budget) + parallel slots; release timing and budgets live on **schedules**. A **"General"** channel is auto-created on first run; books can be moved between channels and channels renamed from the admin UI; the slug is editable (changing it rewrites that channel's feed URLs). |
 | Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`. A slot is a feed *bucket* — it carries the one backlog book streaming in that slot **plus** the tracked stories pinned to it, interleaved. No all-channels union feed — subscribe per channel/slot. |
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
@@ -211,7 +211,10 @@ C4Component
 ### 6.2 Update detection & fetch (pre-drop submit, async; daily sweep for feed-less)
 The poller reads each tracked, feed-backed source's `feed_url` and compares the newest entry GUID
 to `last_seen_guid`. Changed sources are **batched** and handed to `scheduler.submit_and_track`,
-which POSTs all their URLs to the fetcher in one request. Because a FanFicFare run can take ~15 min,
+which POSTs all their URLs (plus the Calibre entry each already reads, `calibre_ids`) to the fetcher in
+one request. The new GUID is *not* recorded yet: it travels with the job and becomes `last_seen_guid`
+only when the fetch lands chapters, so a failed or fruitless fetch is retried next cycle (capped at 3
+fetches per GUID). Because a FanFicFare run can take ~15 min,
 the call is **asynchronous**: the fetcher returns a `job_id` (HTTP 202) and works in the background
 (a single-worker pool → serialized `calibredb` writes; new stories share one warm `fanficfare -i`
 pass; existing ones update per-story with force-detection + a 3-try backoff). The app marks the

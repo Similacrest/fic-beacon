@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-13
+
+Fixes from the ops review of the live instance (stories silently not receiving chapters, dead logs,
+phantom backlog) plus the "story name becomes its URL" regression.
+
+### Fixed — tracked stories silently stopped receiving chapters
+- **The fetcher updates the Calibre entry beacon actually reads.** The app now sends each URL's
+  `calibre_id` (`POST /fetch {urls, calibre_ids}`) and the fetcher updates exactly that entry. Before, it
+  searched the library by the exact `url:` string — which missed a differently-spelled identifier
+  (RoyalRoad `/fiction/186926/slug/` vs `/fiction/186926`, SpaceBattles `/reader/`), so every cycle took the
+  NEW path, `calibredb add` was refused as a duplicate and the book never moved; and with two entries
+  sharing a URL it picked the first id, which could be the archive.
+- **Library lookup is by story identity** (host + numeric story id, `_story_key`) instead of exact string;
+  calibredb's `=url:X` is a *contains* match, so the search is only a pre-filter and every hit is key-checked.
+  With several live matches the lowest id wins.
+- **Stub archives can no longer shadow the live book.** The archive copy is added with `calibredb add -d`
+  (same title/author is silently refused otherwise, so no archive was ever kept) and its URL is moved from
+  `url:` to `url-archive:`. A NEW download that calibredb refuses as a duplicate refreshes the matching
+  entry (or re-adds with `-d` when it is a different work) instead of reporting a phantom success.
+- `apply_result` ignores a result for a Calibre entry other than the book's own (its count and stub
+  describe a different EPUB) and only follows a new id if the old entry was deleted from Calibre.
+- **A feed trigger counts as handled only when chapters landed.** `last_seen_guid` used to advance when the
+  fetch was *submitted*, so a failed or fruitless fetch was never retried until another chapter was posted.
+  Now it advances when the fetch grows the EPUB; otherwise the next cycle retries, up to 3 fetches per GUID.
+  The poller skips a book whose fetch is still in flight, treats a `304` from a trigger feed as "no change",
+  and a stale `fetch_job:` mapping (its poll lost) is cleared — un-sticking its books — at startup and at
+  the start of every release cycle.
+
+### Fixed — dashboard and naming
+- **"N waiting" no longer uses the fetcher's chapter count.** `total_chapters` and the fresh-chapter test
+  use beacon's own chapterizer count of the EPUB it reads; the fetcher's spine count (front matter
+  included, possibly another entry's EPUB) is only a fallback.
+- **Regression: a story added without a name kept its URL as its name.** The first download adopts
+  FanFicFare's canonical URL, after which `title == source_url` no longer held, so the title was never
+  resolved. Placeholder titles are now recognised by shape (a bare URL), and the author is filled in too.
+  Stories already stuck with a URL title are repaired on their next fetch.
+- Duplicate detection on add compares by story identity (a pasted slug/`/page-2`/`/reader/` spelling of an
+  already-tracked story is a duplicate) and added URLs are normalised to the form FanFicFare records.
+
+### Fixed — operations
+- **Logs were dead after startup.** The embedded Alembic run called `fileConfig()`, which set the root
+  logger to WARNING and disabled every existing logger (app *and* uvicorn access logs), so
+  `BEACON_LOG_LEVEL` did nothing. The app run no longer touches logging; the CLI path keeps existing loggers.
+- **An EPUB that chapterizes to 0 chapters no longer holds a slot forever.** The chapterizer now falls back
+  to the spine when its TOC resolves to nothing (and matches TOC hrefs by basename); a backlog book that
+  still has no chapters is paused with a recorded reason (dashboard ⚠ badge, cleared on resume) and the
+  next queued book streams in the same cycle.
+
+### Added
+- `BEACON_FEEDBACK_BASE_URL`: serve the 🪝 👍 👎 ⏸ ❌ ✓ links from their own origin (e.g. `https://fb.ilac.rest`);
+  feeds, `/read`, `/img` and WebSub stay on `BEACON_BASE_URL`. `BEACON_LEGACY_BASE_URLS`: origins old drops
+  have baked into image URLs — `/img/` URLs on them (and on the feedback origin) are rewritten to the
+  current base and signed at render time, so old drops' images load again. Both, and `BEACON_PUBLIC_WEBSUB`,
+  are now passed through `docker-compose.yml`.
+
 ### Changed — Schedules page
 - **Schedules auto-save**, like the other inline settings: the 💾 buttons are gone, and any change is
   saved 0.5 s later once the whole row validates. An invalid value (bad cron, empty name) saves nothing

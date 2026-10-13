@@ -255,8 +255,9 @@ class TestTriggerGuid:
         assert submit.call_args[0][2] == {b.id: "new"}
 
     def test_book_with_fetch_in_flight_is_not_requeued(self, in_memory_db):
+        from datetime import datetime, timezone
         b = _book(in_memory_db, feed_url="https://s/feed", last_seen_guid="old", calibre_id=1,
-                  last_fetch_status="fetching: downloading")
+                  last_fetch_status="fetching: downloading", last_fetch_at=datetime.now(timezone.utc))
         with patch("app.ongoing.poller._fetch_feed", return_value=_feed("new")), \
              patch("app.scheduler.submit_and_track") as submit:
             assert poller.poll_all_feeds(in_memory_db) == 0
@@ -440,3 +441,201 @@ class TestEmptyBacklogBookIsSetAside:
         adapter = MagicMock()
         assert _set_aside_empty_backlog(in_memory_db, [b], adapter) is False
         assert not b.paused
+
+
+# ── feedback links on their own origin; legacy image hosts ───────────────────────────────────
+
+FB = "https://fb.ilac.rest"
+
+
+class TestFeedbackOrigin:
+    def _drop(self):
+        from tests.test_feed_builder import _make_drop
+        return _make_drop(chapter_source_url=None, source_url=None)
+
+    def test_feedback_links_use_the_feedback_origin(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import _feedback_html, _permalink
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", FB + "/")
+        drop = self._drop()
+        html = _feedback_html(drop, True)
+        assert f'href="{FB}/fb/{drop.feedback_token}?action=up"' in html
+        assert f'href="{FB}/fb/confirm/{drop.feedback_token}?action=extra"' in html
+        assert "funnel.example/fb" not in html
+        # everything else stays on the public base
+        assert _permalink(drop) == f"https://funnel.example/read/{drop.reader_slug}"
+
+    def test_defaults_to_base_url(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import _feedback_html
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", None)
+        drop = self._drop()
+        assert f'href="https://funnel.example/fb/{drop.feedback_token}?action=up"' in _feedback_html(drop, False)
+
+    def test_feed_urls_do_not_move(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import build_feed
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", FB)
+        atom, _rss = build_feed([self._drop()])
+        text = atom.decode() if isinstance(atom, bytes) else atom
+        assert 'rel="hub"' in text and "https://funnel.example/websub/hub" in text
+        assert f"{FB}/websub" not in text
+
+    @pytest.fixture
+    def gated_app(self, monkeypatch):
+        """The real app + proxy gate with a token set, as deployed behind the Funnel.
+
+        Yields (client, db). StaticPool: the TestClient serves requests on another thread and must
+        see the same in-memory DB the test seeded."""
+        from fastapi.testclient import TestClient
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        from app.config import settings
+        from app.database import ensure_default_channel, get_db
+        from app.main import app
+        from app.models import Base, Config
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                               poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        db.add(Config(id=1, wpm=250, feed_secret="test-secret"))
+        db.flush()
+        ensure_default_channel(db)
+        db.commit()
+        monkeypatch.setattr(settings, "proxy_token", "s3cret")
+        monkeypatch.setattr(settings, "admin_open", False)
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", FB)
+        app.dependency_overrides[get_db] = lambda: db
+        yield TestClient(app, raise_server_exceptions=False), db
+        app.dependency_overrides.pop(get_db, None)
+        db.close()
+        engine.dispose()
+
+    def _seed(self, db):
+        from app.models import Drop
+        book = _book(db, tracked=False, calibre_id=3, total_chapters=5, cursor_chapter_index=1)
+        drop = Drop(book_id=book.id, channel_id=book.channel_id, feed_key="1", word_count=10,
+                    chapter_start=0, chapter_end=0, chapter_titles="C1", content_html="<p>x</p>",
+                    feedback_token="tok-fb", reader_slug="slug-fb")
+        db.add(drop)
+        db.commit()
+        return book, drop
+
+    def test_confirm_form_posts_from_the_feedback_host(self, gated_app):
+        client, in_memory_db = gated_app
+        book, _ = self._seed(in_memory_db)
+        headers = {"Host": "fb.ilac.rest", "Origin": FB, "Sec-Fetch-Site": "same-origin"}
+        page = client.get("/fb/confirm/tok-fb?action=drop", headers=headers)
+        assert page.status_code == 200
+        assert 'action="/fb/confirm/tok-fb"' in page.text  # relative: posts back to whichever host served it
+        resp = client.post("/fb/confirm/tok-fb", data={"action": "drop"}, headers=headers,
+                           follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/fb/done"
+        in_memory_db.refresh(book)
+        assert book.status == BookStatus.dropped
+
+    def test_instant_links_work_on_the_feedback_host(self, gated_app):
+        client, in_memory_db = gated_app
+        book, _ = self._seed(in_memory_db)
+        resp = client.get("/fb/tok-fb?action=up", headers={"Host": "fb.ilac.rest"})
+        assert resp.status_code == 200
+        in_memory_db.refresh(book)
+        assert book.thumbs_up == 1
+
+    def test_admin_stays_unreachable_through_the_feedback_host(self, gated_app):
+        client, _ = gated_app
+        resp = client.get("/admin/", headers={"Host": "fb.ilac.rest"})
+        assert resp.status_code == 401
+
+
+class TestLegacyImageHosts:
+    SECRET = "k"
+
+    def test_alias_hosts_are_rewritten_to_base_and_signed(self):
+        from app.security import image_signature, sign_image_urls
+        html = (f'<img src="{FB}/img/7/images/a.png"><img src="https://funnel.example/img/7/images/b.png">'
+                '<img src="https://cdn.example/img/7/images/c.png">')
+        out = sign_image_urls(html, self.SECRET, "https://funnel.example", [FB])
+        sig = image_signature(self.SECRET, 7, "images/a.png")
+        assert f'src="https://funnel.example/img/7/images/a.png?sig={sig}"' in out
+        assert "images/b.png?sig=" in out
+        assert 'src="https://cdn.example/img/7/images/c.png"' in out  # third party: untouched
+
+    def test_without_aliases_other_hosts_are_left_alone(self):
+        from app.security import sign_image_urls
+        html = f'<img src="{FB}/img/7/images/a.png">'
+        assert sign_image_urls(html, self.SECRET, "https://funnel.example") == html
+
+    def test_settings_alias_bases(self, monkeypatch):
+        from app.config import settings
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example/")
+        monkeypatch.setattr(settings, "feedback_base_url", FB)
+        monkeypatch.setattr(settings, "legacy_base_urls", "https://old.example/, https://funnel.example ,")
+        assert settings.image_alias_bases == [FB, "https://old.example"]
+
+    def test_feed_renders_old_drops_with_signed_current_host_images(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import _add_entry
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", FB)
+        from tests.test_feed_builder import _make_drop
+        drop = _make_drop()
+        drop.content_html = f'<p>x</p><img src="{FB}/img/7/images/a.png">'
+        fg = MagicMock()
+        _add_entry(fg, drop, secret="feedsecret")
+        content = fg.add_entry.return_value.content.call_args[0][0]
+        assert "https://funnel.example/img/7/images/a.png?sig=" in content
+        assert f"{FB}/img/" not in content
+
+
+# ── orphaned fetch_job keys ──────────────────────────────────────────────────────────────────
+
+class TestStaleFetchJobs:
+    def _job(self, db, job_id, book, age_s):
+        from datetime import datetime, timedelta, timezone
+        set_value(db, FETCH_JOB_PREFIX + job_id, json.dumps({
+            "submitted_at": (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat(),
+            "url_to_book": {book.source_url: [book.id]},
+        }))
+
+    def test_old_orphan_is_cleared_and_its_book_unstuck(self, in_memory_db, monkeypatch):
+        monkeypatch.setattr(scheduler, "_unschedule_poll", lambda j: None)
+        b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+        self._job(in_memory_db, "old", b, scheduler.settings.fetcher_job_timeout * 3)
+        assert scheduler.sweep_stale_fetch_jobs(in_memory_db) == 1
+        in_memory_db.flush()
+        assert get_value(in_memory_db, FETCH_JOB_PREFIX + "old") is None
+        assert b.last_fetch_status == "error: fetch result lost"
+
+    def test_recent_job_and_unrelated_status_are_left_alone(self, in_memory_db, monkeypatch):
+        monkeypatch.setattr(scheduler, "_unschedule_poll", lambda j: None)
+        b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+        self._job(in_memory_db, "fresh", b, 60)
+        c = _book(in_memory_db, calibre_id=2, source_url="https://other/s", last_fetch_status="ok")
+        self._job(in_memory_db, "old2", c, scheduler.settings.fetcher_job_timeout * 3)
+        assert scheduler.sweep_stale_fetch_jobs(in_memory_db) == 1
+        assert get_value(in_memory_db, FETCH_JOB_PREFIX + "fresh") is not None
+        assert b.last_fetch_status == "fetching…"
+        assert c.last_fetch_status == "ok"  # a newer fetch's status is not overwritten
+
+    def test_garbage_mapping_is_dropped(self, in_memory_db, monkeypatch):
+        monkeypatch.setattr(scheduler, "_unschedule_poll", lambda j: None)
+        set_value(in_memory_db, FETCH_JOB_PREFIX + "junk", "not json")
+        assert scheduler.sweep_stale_fetch_jobs(in_memory_db) == 1
+
+    def test_lost_fetching_status_does_not_block_feed_polling_forever(self, in_memory_db):
+        from datetime import datetime, timedelta, timezone
+        b = _book(in_memory_db, feed_url="https://s/feed", last_seen_guid="old", calibre_id=1,
+                  last_fetch_status="fetching…",
+                  last_fetch_at=datetime.now(timezone.utc) - timedelta(
+                      seconds=scheduler.settings.fetcher_job_timeout * 3))
+        with patch("app.ongoing.poller._fetch_feed", return_value=_feed("new")), \
+             patch("app.scheduler.submit_and_track") as submit:
+            assert poller.poll_all_feeds(in_memory_db) == 1
+        assert list(submit.call_args[0][1]) == [b]
