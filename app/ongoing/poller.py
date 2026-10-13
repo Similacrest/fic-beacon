@@ -61,7 +61,7 @@ _FEED_MAX_BYTES = 5 * 1024 * 1024
 
 
 def _fetch_feed(url: str):
-    """Fetch + parse a trigger feed with a hard timeout and size cap.
+    """Fetch + parse a trigger feed with a hard timeout and size cap. None = "not modified".
 
     `feedparser.parse(url)` fetches via urllib with *no* timeout: one hung feed host would block
     the whole poll — which runs inside the release cycle holding the cycle lock.
@@ -69,6 +69,8 @@ def _fetch_feed(url: str):
     with httpx.Client(timeout=_FEED_TIMEOUT, follow_redirects=True,
                       headers={"User-Agent": "Fic-Beacon/feed-trigger"}) as client:
         with client.stream("GET", url) as resp:
+            if resp.status_code == 304:  # some hosts answer 304 unprompted; it means "no change"
+                return None
             resp.raise_for_status()
             body = b""
             for chunk in resp.iter_bytes():
@@ -102,22 +104,34 @@ def poll_all_feeds(session: Session) -> int:
         .all()
     )
     changed: list[Book] = []
+    newest_guid: dict[int, str] = {}
     for source in sources:
+        if (source.last_fetch_status or "").startswith("fetching"):
+            continue  # a fetch is already in flight — its result decides what this entry meant
         try:
-            newest = _newest_guid(_fetch_feed(source.feed_url))
+            parsed = _fetch_feed(source.feed_url)
+            newest = _newest_guid(parsed) if parsed is not None else None
             if newest is None or newest == source.last_seen_guid:
                 continue
-            first_sight = source.last_seen_guid is None
-            source.last_seen_guid = newest
-            if not first_sight:  # genuine new chapter → queue a fetch
-                changed.append(source)
+            if source.last_seen_guid is None:  # first sight: seed only, it was downloaded at add time
+                source.last_seen_guid = newest
+                continue
+            # A genuine new entry → queue a fetch. It is NOT marked seen yet: that happens when the
+            # fetch actually lands chapters (scheduler._settle_trigger), so a failed or fruitless
+            # fetch is retried next cycle rather than waiting for yet another chapter to be posted.
+            changed.append(source)
+            newest_guid[source.id] = newest
         except Exception:  # never let one bad feed break the cycle
             logger.exception(
                 "Failed to poll tracked source '%s' (%s)", source.title, source.feed_url
             )
-    changed = _drop_done(changed)
+    kept = _drop_done(changed)
+    for source in changed:
+        if source not in kept:  # finished story: nothing to fetch, so the entry is simply seen
+            source.last_seen_guid = newest_guid[source.id]
+    changed = kept
     if changed:
-        submit_and_track(session, changed)
+        submit_and_track(session, changed, {b.id: newest_guid[b.id] for b in changed})
     from app.state import LAST_POLL_RUN, mark_run
     mark_run(session, LAST_POLL_RUN)
     session.flush()

@@ -51,21 +51,33 @@ class FetchResult:
     # Canonical story URL and publication status read from the downloaded EPUB by the fetcher.
     story_url: str | None = None
     story_status: str | None = None
+    # Set by apply_result: did this fetch land chapters the app didn't have (a first download, a
+    # longer EPUB, or a stub)? Drives whether the RSS trigger GUID counts as "dealt with".
+    new_chapters: bool = False
 
 
 def _headers() -> dict[str, str]:
     return {"X-Fetcher-Token": settings.fetcher_token} if settings.fetcher_token else {}
 
 
-def submit_fetch(urls: list[str]) -> str | None:
-    """Submit a batch of story URLs to the fetcher. Returns the job_id, or None on failure."""
+def submit_fetch(urls: list[str], calibre_ids: dict[str, int] | None = None) -> str | None:
+    """Submit a batch of story URLs to the fetcher. Returns the job_id, or None on failure.
+
+    `calibre_ids` maps a submitted URL to the Calibre entry beacon already reads for it. The fetcher
+    updates exactly that entry instead of searching the library by URL (a search that can miss a
+    differently-spelled `url:` identifier or hit an archive copy). An older fetcher ignores it.
+    """
     urls = [u for u in urls if u]
     if not urls:
         return None
+    payload: dict = {"urls": urls}
+    pinned = {u: i for u, i in (calibre_ids or {}).items() if u in urls and i}
+    if pinned:
+        payload["calibre_ids"] = pinned
     try:
         resp = httpx.post(
             f"{settings.fetcher_url.rstrip('/')}/fetch",
-            json={"urls": urls},
+            json=payload,
             headers=_headers(),
             timeout=settings.fetcher_timeout,
         )
@@ -132,29 +144,92 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
     if book.calibre_id is None and result.calibre_id is not None:
         book.calibre_id = result.calibre_id
         _adopt_canonical_url(book, result.story_url)
+    elif result.calibre_id is not None and result.calibre_id != book.calibre_id:
+        # The fetcher worked on a different Calibre entry than the one beacon reads (an older
+        # fetcher that looked the story up by URL, or the pinned entry was gone). Beacon's
+        # `calibre_id` stays authoritative: the count and stub below describe the *other* entry's
+        # EPUB, so applying them would corrupt this book's cursor/labels — record it and stop.
+        if _entry_missing(book.calibre_id) and not _owned_elsewhere(book, result.calibre_id):
+            book.calibre_id = result.calibre_id  # our entry was deleted from Calibre → follow the new one
+        else:
+            logger.warning(
+                "Fetch for book %s updated calibre %s but beacon reads calibre %s — result ignored",
+                book.id, result.calibre_id, book.calibre_id,
+            )
+            book.last_fetch_status = (
+                f"warn: fetcher updated calibre {result.calibre_id}, beacon reads {book.calibre_id}"
+            )
+            return result
     if result.story_status:
         book.story_status = result.story_status
     old_total = book.total_chapters  # the EPUB's chapter count as of the last broadcast
-    if result.chapter_count is not None:
+    count = _epub_chapter_count(book)  # beacon's own chapterizer count of the EPUB it reads
+    if count is None:
+        count = result.chapter_count  # EPUB unreadable here; fall back to the fetcher's spine count
+    if count is not None:
         # Chapters that arrive by an *update* are fresh (they jump the stochastic roll). Not the
         # first download / import backfill (old_total is None) — a newly added 200-chapter serial
-        # must not claim priority on all of it. The fetcher's count is a rough spine count, so this
-        # comparison can over-trigger; that is harmless because old_total is a valid lower bound
-        # (a flag with no chapter at/after it matches nothing) — see Book.fresh_from_index.
-        if old_total is not None and result.chapter_count > old_total:
+        # must not claim priority on all of it. `count` and `old_total` are both chapterizer
+        # counts (the fetcher's spine count includes front matter and is of whichever entry it
+        # touched, so it must not be mixed in), and old_total is a valid lower bound — see
+        # Book.fresh_from_index.
+        if old_total is not None and count > old_total:
             book.fresh_from_index = (
                 old_total if book.fresh_from_index is None
                 else min(book.fresh_from_index, old_total)
             )
-        book.total_chapters = result.chapter_count
+        result.new_chapters = count > 0 and (old_total is None or count > old_total)
+        book.total_chapters = count
 
     if result.stub and result.stub.old > result.stub.new:
         _apply_stub(book, result.stub)
         book.fresh_from_index = None  # indices were remapped; the flag no longer points anywhere
+        result.new_chapters = True  # the site changed under us — the trigger has been acted on
     else:
         book.last_fetch_status = "ok"
 
     return result
+
+
+def _calibre_adapter():
+    from app.calibre.adapter import CalibreAdapter
+    return CalibreAdapter(settings.calibre_library_path)
+
+
+def _epub_chapter_count(book: Book) -> int | None:
+    """How many chapters beacon's chapterizer finds in the EPUB it reads for this book, or None
+    if that can't be determined here (no calibre_id, library/EPUB unreadable)."""
+    if book.calibre_id is None:
+        return None
+    try:
+        from app.epub.chapterizer import chapterize
+        adapter = _calibre_adapter()
+        cbook = adapter.get_book(book.calibre_id)
+        if cbook is None:
+            return None
+        path = adapter.epub_path(cbook)
+        return len(chapterize(path)) if path.exists() else None
+    except Exception:
+        logger.debug("Could not chapterize the EPUB of calibre %s", book.calibre_id, exc_info=True)
+        return None
+
+
+def _owned_elsewhere(book: Book, calibre_id: int) -> bool:
+    """Another source already reads this Calibre entry (calibre_id is unique per book)."""
+    session = object_session(book)
+    return session is not None and session.query(Book.id).filter(
+        Book.calibre_id == calibre_id, Book.id != book.id
+    ).first() is not None
+
+
+def _entry_missing(calibre_id: int | None) -> bool:
+    """True only when metadata.db is readable and has no such book (not merely unreadable)."""
+    if calibre_id is None:
+        return True
+    try:
+        return _calibre_adapter().get_book(calibre_id) is None
+    except Exception:
+        return False
 
 
 def _adopt_canonical_url(book: Book, story_url: str | None) -> None:

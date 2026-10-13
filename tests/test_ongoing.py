@@ -70,7 +70,10 @@ class TestPollTriggers:
         assert queued == 1
         mock_submit.assert_called_once()
         assert list(mock_submit.call_args[0][1]) == [src]
-        assert src.last_seen_guid == "c5"
+        # Not "seen" yet: the fold marks it once the fetch lands chapters (scheduler._settle_trigger),
+        # so a failed/fruitless fetch is retried next cycle. The GUID travels with the job instead.
+        assert src.last_seen_guid == "c4"
+        assert mock_submit.call_args[0][2] == {src.id: "c5"}
 
     def test_unchanged_guid_no_fetch(self, in_memory_db):
         _tracked(in_memory_db, last_seen_guid="c5")

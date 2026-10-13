@@ -24,6 +24,7 @@ app_state so a restart mid-fetch resumes polling.
 """
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -73,12 +74,16 @@ _poll_misses: dict[str, int] = {}
 
 # ── Async fetch orchestration ────────────────────────────────────────────────────────────
 
-def submit_and_track(session, books) -> str | None:
+def submit_and_track(session, books, trigger_guids: dict[int, str] | None = None) -> str | None:
     """Submit a batch fetch for `books` and schedule polling. Returns the job_id, or None.
 
     Marks each book `fetching…`, persists the job→book mapping in app_state, and registers a
     `fetch_poll_{job_id}` interval job that folds results when the fetcher finishes. The
     caller commits the session (the persisted mapping must be durable before the poll fires).
+
+    `trigger_guids` ({book id: feed GUID}) is the RSS entry that prompted each fetch. It is only
+    recorded as "seen" when the fetch actually lands chapters (see `_settle_trigger`), so a fetch
+    that fails or finds nothing is retried next cycle instead of waiting for another chapter.
     """
     from app.fetch.client import submit_fetch
     from app.models import utcnow
@@ -88,7 +93,7 @@ def submit_and_track(session, books) -> str | None:
     books = [b for b in books if b.source_url and is_fetchable_url(b.source_url)]
     if not books:
         return None
-    job_id = submit_fetch([b.source_url for b in books])
+    job_id = submit_fetch([b.source_url for b in books], _pinned_calibre_ids(books))
     if job_id is None:
         for b in books:
             b.last_fetch_status = "error: could not reach fetcher"
@@ -101,9 +106,21 @@ def submit_and_track(session, books) -> str | None:
     set_value(session, FETCH_JOB_PREFIX + job_id, json.dumps({
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "url_to_book": _group_by_url(books),
+        "guids": {str(b.id): trigger_guids[b.id] for b in books if b.id in (trigger_guids or {})},
     }))
     _schedule_poll(job_id)
     return job_id
+
+
+def _pinned_calibre_ids(books) -> dict[str, int]:
+    """{url: calibre id} for URLs whose every book already reads one and the same Calibre entry.
+
+    Sent to the fetcher so it updates that entry rather than guessing from the URL. A URL shared
+    by books with different (or missing) entries is left to the fetcher's own lookup."""
+    by_url: dict[str, set] = {}
+    for b in books:
+        by_url.setdefault(b.source_url, set()).add(b.calibre_id)
+    return {url: next(iter(ids)) for url, ids in by_url.items() if len(ids) == 1 and None not in ids}
 
 
 def _group_by_url(books) -> dict[str, list[int]]:
@@ -163,6 +180,7 @@ def _poll_fetch_job(job_id: str) -> None:
         _poll_misses.pop(job_id, None)
         meta = json.loads(raw)
         url_to_book = meta.get("url_to_book", {})
+        guids = meta.get("guids", {})
 
         status = poll_fetch(job_id)
         if status is None:  # transient HTTP error — try again next interval
@@ -202,27 +220,91 @@ def _poll_fetch_job(job_id: str) -> None:
                 if raw_result is None:
                     book.last_fetch_status = "error: no result from fetcher"
                 else:
-                    apply_result(book, raw_result)
+                    result = apply_result(book, raw_result)
                     _sync_title(book)
+                    _settle_trigger(session, book, result, guids.get(str(book.id)))
         delete_value(session, FETCH_JOB_PREFIX + job_id)
         session.commit()
     _unschedule_poll(job_id)
 
 
-def _sync_title(book) -> None:
-    """Replace a URL-placeholder title with the real Calibre title once the EPUB exists.
+# How many fetches one feed GUID may trigger before it is written off as "nothing new to fetch"
+# (a GUID can change without a new story chapter — a skipped threadmark category, an RSS entry
+# that runs ahead of the site, an edited post). The first fetch plus two retries, one per cycle.
+TRIGGER_MAX_ATTEMPTS = 3
 
-    A story added by URL on the Tracked Stories page starts with `title == source_url`
-    (no title known yet). After the first fetch links a `calibre_id`, read the actual
-    title from Calibre (RO) so the dashboard/feeds show the story name, not the URL.
+
+def _settle_trigger(session, book, result, guid: str | None) -> None:
+    """Decide whether the feed entry that triggered this fetch counts as dealt with.
+
+    It does once the fetch landed new chapters. A fetch that failed, or succeeded but found
+    nothing new, leaves `last_seen_guid` alone so the next cycle's poll retries — up to
+    TRIGGER_MAX_ATTEMPTS fetches for the same GUID, after which it is marked seen anyway.
+    """
+    from app.state import TRIGGER_RETRY_PREFIX, delete_value, get_value, set_value
+
+    if guid is None:
+        return
+    key = TRIGGER_RETRY_PREFIX + str(book.id)
+    if result.ok and result.new_chapters:
+        book.last_seen_guid = guid
+        delete_value(session, key)
+        return
+    attempts = 1
+    try:
+        prev = json.loads(get_value(session, key) or "null")
+        if isinstance(prev, dict) and prev.get("guid") == guid:
+            attempts = int(prev.get("n", 0)) + 1
+    except (ValueError, TypeError):
+        pass
+    if attempts >= TRIGGER_MAX_ATTEMPTS:
+        logger.warning(
+            "Book %s (%s): feed entry %s produced no new chapters after %d fetches — giving up on it",
+            book.id, book.title, guid, attempts,
+        )
+        book.last_seen_guid = guid
+        delete_value(session, key)
+    else:
+        set_value(session, key, json.dumps({"guid": guid, "n": attempts}))
+
+
+def _is_placeholder_title(book) -> bool:
+    """True while a book still carries the stand-in title given at add time (no name was typed).
+
+    The placeholder is the pasted URL. That is *not* necessarily the book's current `source_url`:
+    the first download adopts FanFicFare's canonical URL (FFN adds `/1/Title`, RoyalRoad drops the
+    slug, …), so a `title == source_url` test stops matching exactly when the title is finally
+    resolvable. Recognise it by shape instead — a bare http(s) URL (or blank) is never a real title.
+    """
+    title = (book.title or "").strip()
+    return not title or title == book.source_url or bool(re.fullmatch(r"https?://\S+", title))
+
+
+def _sync_title(book) -> None:
+    """Fill in the name (and author) of a story added by URL once its EPUB exists.
+
+    A story added on the Tracked Stories page starts with `title == <pasted url>` and author
+    "Unknown" (nothing is known yet). After the first fetch links a `calibre_id`, read the real
+    values from Calibre (RO) so the dashboard/feeds show the story name, not the URL. A title or
+    author the user typed (or an import supplied) is never overwritten.
     """
     from app.calibre.adapter import CalibreAdapter
 
-    if book.calibre_id is None or book.title != book.source_url:
-        return  # nothing fetched yet, or the user/import already gave it a real title
-    cbook = CalibreAdapter(settings.calibre_library_path).get_book(book.calibre_id)
-    if cbook is not None and cbook.title:
+    need_title = _is_placeholder_title(book)
+    need_author = (book.author or "Unknown") == "Unknown"
+    if book.calibre_id is None or not (need_title or need_author):
+        return  # nothing fetched yet, or the user/import already named it
+    try:
+        cbook = CalibreAdapter(settings.calibre_library_path).get_book(book.calibre_id)
+    except Exception:  # an unreadable metadata.db must not sink the whole fetch fold
+        logger.exception("Could not read the title of calibre id %s", book.calibre_id)
+        return
+    if cbook is None:
+        return
+    if need_title and cbook.title:
         book.title = cbook.title
+    if need_author and cbook.author and cbook.author != "Unknown":
+        book.author = cbook.author
 
 
 def _expired(meta: dict) -> bool:

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config
 from app.ongoing.feed_url import infer_feed_url, is_fetchable_url
+from app.ongoing.story_key import normalize_story_url, story_key
 from app.planner.planner import assign_channel_slots, pause_book, resume_book
 from app.version import __version__
 
@@ -47,10 +48,15 @@ def _add_tracked_story(
     scheduler.trigger_fetch_pending) so the request returns promptly. Returns the new
     Book, or None if the URL was blank / already tracked.
     """
-    story_url = story_url.strip()
+    story_url = normalize_story_url(story_url)
     if not is_fetchable_url(story_url):
         return None
-    if db.query(Book).filter(Book.source_url == story_url).first() is not None:
+    # Same story under another spelling (pasted slug/page, FanFicFare's canonical form) is a duplicate.
+    key = story_key(story_url)
+    if any(
+        src == story_url or (key and story_key(src) == key)
+        for (src,) in db.query(Book.source_url).filter(Book.source_url.isnot(None))
+    ):
         return None
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     cfg = db.get(Config, 1)
