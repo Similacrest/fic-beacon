@@ -42,6 +42,17 @@ def _valid_channel_id(db: Session, channel_id: int | None) -> int:
     return ensure_default_channel(db).id
 
 
+def existing_for_url(db: Session, story_url: str) -> Book | None:
+    """The source already registered for this story, if any. The same story under another spelling
+    (pasted slug/page, FanFicFare's canonical form) counts as the same one."""
+    story_url = normalize_story_url(story_url)
+    key = story_key(story_url)
+    for book in db.query(Book).filter(Book.source_url.isnot(None)).order_by(Book.id):
+        if book.source_url == story_url or (key and story_key(book.source_url) == key):
+            return book
+    return None
+
+
 def _add_tracked_story(
     db: Session, story_url: str, title: str, channel_id: int
 ) -> Book | None:
@@ -54,12 +65,7 @@ def _add_tracked_story(
     story_url = normalize_story_url(story_url)
     if not is_fetchable_url(story_url):
         return None
-    # Same story under another spelling (pasted slug/page, FanFicFare's canonical form) is a duplicate.
-    key = story_key(story_url)
-    if any(
-        src == story_url or (key and story_key(src) == key)
-        for (src,) in db.query(Book.source_url).filter(Book.source_url.isnot(None))
-    ):
+    if existing_for_url(db, story_url) is not None:
         return None
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     cfg = db.get(Config, 1)

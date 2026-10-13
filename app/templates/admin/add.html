@@ -1,60 +1,105 @@
 {% extends "base.html" %}
-{% block title %}Library — Fic Beacon{% endblock %}
+{% block title %}Add — Fic Beacon{% endblock %}
 {% block content %}
 
-<h1>Library</h1>
+<h1>Add</h1>
 
-{% if books %}
-<p>
-  Select books to add. Each is routed by its Calibre <code>#status</code>: ongoing serials
-  (In-Progress / Incomplete / Hiatus) become <strong>tracked</strong> auto-updating sources;
-  everything else joins the <strong>backlog</strong> queue. A tracked book marked
-  <code>#read=Yes</code> starts at the current chapter end (only new chapters drop).
-  <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
-</p>
-
-<div style="margin-bottom:1em; display:flex; gap:1em; align-items:center; flex-wrap:wrap">
-  <input type="text" id="filter" placeholder="🔍 Filter by title or author…"
-         style="max-width:360px" oninput="filterBooks()">
-  <select id="filter-status" onchange="filterBooks()" style="width:auto">
-    <option value="">Status: all</option>
-    {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-  </select>
-  <select id="filter-read" onchange="filterBooks()" style="width:auto">
-    <option value="">Read: all</option>
-    <option value="1">Read ✓</option>
-    <option value="0">Unread</option>
-  </select>
-  <select id="filter-source" onchange="filterBooks()" style="width:auto">
-    <option value="">Source: all</option>
-    {% for d in sources %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
-  </select>
-  <span id="filter-count" style="color:#888; font-size:.85em"></span>
-  <span id="page-controls" style="display:flex; gap:.4em; align-items:center; font-size:.9em">
-    <button type="button" id="prev-page" onclick="changePage(-1)" class="btn" style="padding:.2em .6em">‹ Prev</button>
-    <span id="page-label" style="color:#555"></span>
-    <button type="button" id="next-page" onclick="changePage(1)" class="btn" style="padding:.2em .6em">Next ›</button>
-  </span>
+{% macro result_row(r) %}
+<div class="src-row">
+  <a class="src-title" href="/admin/books/{{ r.book.id }}">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</a>
+  <span class="why why-{{ r.why.tone }}">{{ r.why.icon }} {{ r.why.text }}</span>
+  <span class="src-meta">{{ r.channel.name if r.channel else '' }}</span>
 </div>
+{% endmacro %}
+{% if results %}
+<section class="card" style="margin-bottom:1em">
+  {% if results.empty %}
+  <h2>Nothing to add</h2>
+  <p class="muted">Paste a story URL or tick a book from your library below.</p>
+  {% endif %}
+  {% if results.added %}
+  <h2>✓ Added {{ results.added|length }}</h2>
+  {% for r in results.added %}{{ result_row(r) }}{% endfor %}
+  <p class="muted" style="font-size:.85em; margin:.5em 0 0">
+    Tracked stories from a URL download in the background (up to ~15 min); new chapters then
+    join the next release.
+  </p>
+  {% endif %}
+  {% if results.dupes %}
+  <h2>Already here ({{ results.dupes|length }})</h2>
+  {% for r in results.dupes %}{{ result_row(r) }}{% endfor %}
+  {% endif %}
+  {% if results.invalid %}
+  <p style="color:#8a1c1c; margin:.6em 0 0">⚠ {{ results.invalid }} line(s) weren't a valid http(s) story URL and were skipped.</p>
+  {% endif %}
+  {% if results.missing %}
+  <p style="color:#8a1c1c; margin:.6em 0 0">⚠ {{ results.missing }} selected book(s) were no longer in Calibre.</p>
+  {% endif %}
+</section>
+{% endif %}
 
-<form method="post" action="/admin/library/add" id="import-form">
-  {# ── Controls at top (sticky while scrolling) ─────────────────────────── #}
+<form method="post" action="/admin/add" id="import-form">
+  {# ── One bar: where it goes, and the single Add button (sticky while scrolling) ── #}
   <div style="position:sticky; top:0; background:#fafafa; z-index:10;
               padding:.5em 0; border-bottom:1px solid #ddd; margin-bottom:.75em;
               display:flex; flex-wrap:wrap; gap:.6em; align-items:center">
-    {% if channels %}
-    <label for="channel_id_top" style="font-weight:500; white-space:nowrap">Add to channel:</label>
+    <label for="channel_id_top" style="font-weight:500; white-space:nowrap; margin:0">Channel</label>
     <select name="channel_id" id="channel_id_top" style="width:auto; display:inline-block">
-      <option value="">— Auto (by genre) —</option>
+      <option value="">Auto — by genre (URLs → General)</option>
       {% for ch in channels %}
       <option value="{{ ch.id }}">{{ ch.name }}{% if ch.genre_match %} ({{ ch.genre_match }}){% endif %}</option>
       {% endfor %}
     </select>
-    {% endif %}
-    <button class="btn btn-primary" type="submit">Add selected</button>
+    <button class="btn btn-primary btn-lg" type="submit">Add</button>
     <span id="selected-count" style="color:#888; font-size:.85em"></span>
   </div>
 
+  <section class="card" style="margin-bottom:1em">
+    <h2>From the web</h2>
+    <label for="urls" style="font-weight:normal; font-size:.9em">Story URLs — one per line</label>
+    <textarea name="urls" id="urls" rows="3"
+              style="width:100%; font-family:monospace; font-size:.85em"
+              placeholder="https://royalroad.com/fiction/12345/&#10;https://forums.spacebattles.com/threads/…"></textarea>
+    <p class="muted" style="font-size:.85em; margin:.4em 0 0">
+      Anything FanFicFare understands (RoyalRoad, SpaceBattles, SufficientVelocity, AO3, …). Each
+      becomes a <strong>tracked</strong> story downloaded into Calibre in the background; it starts at
+      chapter 1 (use “Only new chapters” on its page to skip ahead). The title fills in once it
+      downloads. Sites that need a login need it in the fetcher's <code>personal.ini</code>.
+    </p>
+  </section>
+
+  <h2 style="margin-top:1.2em">From your Calibre library</h2>
+  {% if books %}
+  <p style="margin:.2em 0 .8em">
+    Each is routed by its Calibre <code>#status</code>: ongoing serials
+    (In-Progress / Incomplete / Hiatus) become <strong>tracked</strong> auto-updating sources;
+    everything else joins the <strong>backlog</strong> queue. A tracked book marked
+    <code>#read=Yes</code> starts at the current chapter end (only new chapters drop).
+    <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
+  </p>
+  <div style="margin-bottom:1em; display:flex; gap:1em; align-items:center; flex-wrap:wrap">
+    <input type="text" id="filter" placeholder="🔍 Filter by title or author…"
+           style="max-width:360px" oninput="filterBooks()">
+    <select id="filter-status" onchange="filterBooks()" style="width:auto">
+      <option value="">Status: all</option>
+      {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+    <select id="filter-read" onchange="filterBooks()" style="width:auto">
+      <option value="">Read: all</option>
+      <option value="1">Read ✓</option>
+      <option value="0">Unread</option>
+    </select>
+    <select id="filter-source" onchange="filterBooks()" style="width:auto">
+      <option value="">Source: all</option>
+      {% for d in sources %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+    <span id="filter-count" style="color:#888; font-size:.85em"></span>
+    <span id="page-controls" style="display:flex; gap:.4em; align-items:center; font-size:.9em">
+      <button type="button" id="prev-page" onclick="changePage(-1)" class="btn" style="padding:.2em .6em">‹ Prev</button>
+      <span id="page-label" style="color:#555"></span>
+      <button type="button" id="next-page" onclick="changePage(1)" class="btn" style="padding:.2em .6em">Next ›</button>
+    </span>
+  </div>
   <table>
     <thead><tr>
       <th><input type="checkbox" id="check-all" title="Select all visible"></th>
@@ -90,8 +135,12 @@
     {% endfor %}
     </tbody>
   </table>
+{% else %}
+  <p style="color:#888">All EPUB books in your Calibre library are already added.</p>
+  {% endif %}
 </form>
 
+{% if books %}
 <script>
   const PAGE_SIZE = 50;
   let currentPage = 0;
@@ -171,8 +220,6 @@
   );
   showPage(0);
 </script>
-{% else %}
-<p style="color:#888">All EPUB books in your Calibre library are already imported.</p>
 {% endif %}
 
 {% endblock %}

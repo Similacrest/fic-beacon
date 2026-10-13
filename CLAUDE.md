@@ -156,12 +156,16 @@ smallest — so the first release after upgrading is the same size and split as 
   FanFicFare fetch URL. All sources hold `quota_weight`, votes, `status`, and live in a channel.
 - A **unit** is one drop-able chunk: a whole EPUB chapter (`chapterize(epub)[cursor]`). Unit shape:
   `{title, html, word_count, source_url}`. There is no separate ongoing-entry path.
-- **Library import (`POST /admin/library/add`) is routed by Calibre `#status`** (see
+- **Library import (`import_library_books`, via `POST /admin/add`) is routed by Calibre `#status`** (see
   `app/calibre/status.py`): an *updating* status (In-Progress / Incomplete / Hiatus) → a **tracked**
   source; a *done* status (Completed / Abandoned / Published) or blank → a **backlog** queue entry.
   A tracked book marked **`#read=Yes`** starts its `cursor_chapter_index` at the current EPUB end
-  (caught up → only new chapters drop); otherwise it starts at chapter 1. One batched **Add** button
-  in the Library UI — there is no separate per-row track action.
+  (caught up → only new chapters drop); otherwise it starts at chapter 1. **One Add page** (`/admin/add`):
+  a textarea of story URLs (one per line → tracked, fetched in the background) and the Calibre library
+  table share one channel picker and one **Add** button, and the redirect lists what happened to each
+  item (added / already here / invalid / gone from Calibre, with its live *why*). `/admin/library` and
+  `/admin/import` redirect there; `POST /admin/library/add` and `/admin/ongoing/add[-bulk]` remain as
+  compat endpoints. Nothing on the page needs a per-row track action.
   - **Tracked sources import at a higher default `quota_weight`** (`config.tracked_default_weight`,
     default **2.0**, tunable on the admin Settings page) vs **1.0** for backlog, so real ongoing
     serials get priority over the finite archive in the stochastic budget pass. This is a

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-13
+
+### Changed
+- **One Add page** replaces the Library page and the two add forms on Tracked Stories. Paste story
+  URLs (one or many) and/or tick books from your Calibre library, choose a channel once, press
+  **Add** once. Afterwards the page lists every item: added (with where it went and its status —
+  *Awaiting download*, *Queued #3*, *On air · 12 waiting*), already here (linked to the existing
+  story), invalid lines, and books no longer in Calibre. The pasted-URL title field is gone: the real
+  title fills in after the first download. `/admin/library` redirects to `/admin/add`; the old POST
+  endpoints still work.
+- **Terser reasons.** "Caught up — waiting for the author" is "Caught up", "Dropped 2 chapters last
+  release — 12 waiting" is "Released 2 chapters · 12 waiting" ("dropping" means cancelling a source),
+  and so on, with the detail kept in a tooltip or inline for problems.
+- **WebSub list replaced by a per-feed indicator.** Each slot shows ⚡ n (subscribers get pushes),
+  ⚠ n stale (unverified/expired) or "polling" (nobody subscribed). The System status section keeps
+  only a note for subscriptions on feeds that no longer exist.
+- Recently completed and Dropped start collapsed on every page load.
+
 ## [0.17.0] — 2026-10-13
 
 ### Changed

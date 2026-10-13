@@ -36,7 +36,7 @@ reader with plain feedback links.
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — a finite backlog book streams in a slot
   and rolls to the next when it finishes, while **tracked** (auto-updating) stories ride alongside
   it in the same slot feeds. There's no separate ongoing feed.
-- **Importing from the Library** uses one **Add** button that routes each book by its Calibre
+- **Adding** is one page: paste story URLs and/or pick books already in Calibre, then press **Add**. Each Calibre book is routed by its
   `#status`: ongoing serials (In-Progress / Incomplete / Hiatus) become **tracked** auto-updating
   sources; finished/blank ones join the **backlog** queue. A tracked book you've marked `#read=Yes`
   starts at the current end (only *new* chapters drop); an unread one starts at chapter 1.

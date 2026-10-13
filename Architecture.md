@@ -236,7 +236,7 @@ Both the poller and the sweep **skip** tracked stories whose Calibre **`#status`
 time; already-downloaded chapters still drop through the cursor path.
 
 ### 6.3 Library import — routed by `#status` / `#read`
-The Library page's single **Add** button (`POST /admin/library/add`) routes each selected Calibre
+The Add page's single **Add** button (`POST /admin/add`, alongside pasted story URLs) routes each selected Calibre
 book by its `#status`: an **updating** status (In-Progress / Incomplete / Hiatus) creates a
 **tracked** auto-updating source; a **done**/blank status creates a **backlog** queue entry. The
 books already live in Calibre, so tracked ones need no initial fetch. For a tracked book the cursor

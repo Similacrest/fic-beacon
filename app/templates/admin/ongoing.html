@@ -108,49 +108,8 @@
 {% endif %}
 </div>{# /#ongoing-list #}
 
-<h2>Add a story</h2>
-<form method="post" action="/admin/ongoing/add"
-      style="display:flex; gap:.5em; align-items:flex-end; flex-wrap:wrap; max-width:700px">
-  <div style="flex:2; min-width:200px">
-    <label for="source_url" style="font-size:.9em">Story URL</label>
-    <input type="url" name="source_url" id="source_url" required
-           placeholder="https://royalroad.com/fiction/12345/...">
-  </div>
-  <div style="flex:1; min-width:120px">
-    <label for="title" style="font-size:.9em">Title (optional)</label>
-    <input type="text" name="title" id="title" placeholder="My serial">
-  </div>
-  <div style="min-width:140px">
-    <label for="channel_id" style="font-size:.9em">Channel</label>
-    <select name="channel_id" id="channel_id">
-      <option value="">— General —</option>
-      {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
-    </select>
-  </div>
-  <button class="btn btn-primary" type="submit" style="align-self:flex-end">Add</button>
-</form>
-<small style="color:#666; display:block; margin-top:.4em">
-  Paste any URL FanFicFare understands (RoyalRoad, SpaceBattles, SufficientVelocity, AO3, …).
-  Auth-gated sites need a password in the fetcher's <code>personal.ini</code>. The first
-  download runs in the background; new chapters start at the beginning of the work — set the
-  cursor on the Dashboard if you only want future chapters.
-</small>
-
-<h2>Add several at once</h2>
-<form method="post" action="/admin/ongoing/add-bulk" style="max-width:700px">
-  <p style="color:#555; font-size:.9em; margin:.2em 0">One story URL per line.</p>
-  <textarea name="urls" rows="6" required
-            style="width:100%; font-family:monospace; font-size:.85em"
-            placeholder="https://royalroad.com/fiction/111/...&#10;https://forums.spacebattles.com/threads/...&#10;..."></textarea>
-  <div style="display:flex; gap:.5em; align-items:center; margin-top:.4em">
-    <label for="bulk_channel" style="font-size:.9em">Channel</label>
-    <select name="channel_id" id="bulk_channel">
-      <option value="">— General —</option>
-      {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
-    </select>
-    <button class="btn btn-primary" type="submit">Add all</button>
-  </div>
-</form>
+<p style="margin-top:1.2em"><a class="btn btn-primary" href="/admin/add">➕ Add stories</a>
+  <span class="muted" style="font-size:.9em">paste URLs or pick books from Calibre</span></p>
 
 <script>
 // Delegated so it survives HTMX swaps of #ongoing-list. The check-all box declares which
