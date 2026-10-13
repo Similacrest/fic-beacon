@@ -707,3 +707,64 @@ class TestAbandonedFetchesCountAsAttempts:
             self._mapping(in_memory_db, b, "g", age_s=scheduler.settings.fetcher_job_timeout * 2)
             self._fold(in_memory_db, monkeypatch, {"status": "running", "results": []})
         assert b.last_seen_guid == "g"
+
+
+# ── v0.14.0 follow-up B: a fetch poll must not give up before its mapping is committed ───────
+
+class TestFetchPollAfterCommit:
+    def test_poll_is_registered_only_when_the_submit_commits(self, in_memory_db, monkeypatch):
+        scheduled = []
+        monkeypatch.setattr(scheduler, "_schedule_poll", scheduled.append)
+        b = _book(in_memory_db, calibre_id=1)
+        in_memory_db.commit()
+        with patch("app.fetch.client.submit_fetch", return_value="job1"):
+            assert scheduler.submit_and_track(in_memory_db, [b]) == "job1"
+        assert scheduled == []          # a long release cycle hasn't committed yet: no poll
+        in_memory_db.commit()
+        assert scheduled == ["job1"]    # …and once it does, the poll starts
+        in_memory_db.commit()
+        assert scheduled == ["job1"]    # once only
+
+    def test_orphaned_mapping_gets_its_poll_back(self, in_memory_db, monkeypatch):
+        from apscheduler.schedulers.background import BackgroundScheduler
+        sched = BackgroundScheduler()
+        sched.start(paused=True)
+        try:
+            monkeypatch.setattr(scheduler, "_scheduler", sched)
+            b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+            set_value(in_memory_db, FETCH_JOB_PREFIX + "orphan", json.dumps({
+                "submitted_at": "2026-10-13T17:40:00+00:00", "url_to_book": {b.source_url: [b.id]}}))
+            scheduler._poll_misses["orphan"] = scheduler._POLL_MISS_LIMIT
+            assert scheduler.ensure_fetch_polls(in_memory_db) == 1
+            assert sched.get_job("fetch_poll_orphan") is not None
+            assert "orphan" not in scheduler._poll_misses
+            assert scheduler.ensure_fetch_polls(in_memory_db) == 0  # already polled: left alone
+        finally:
+            sched.shutdown(wait=False)
+
+
+# ── v0.14.0 follow-up C: URL secrets never reach the access log ──────────────────────────────
+
+class TestAccessLogMasking:
+    def test_feed_token_sig_and_feedback_token_are_masked(self):
+        import logging
+        from app.main import _AccessLogSecretFilter
+        rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                                ("1.2.3.4:5", "GET", "/feed/fantasy/1?token=s3cret&x=1", "1.1", 200),
+                                None)
+        assert _AccessLogSecretFilter().filter(rec)
+        msg = rec.getMessage()
+        assert "s3cret" not in msg and "token=***&x=1" in msg
+        from app.main import _mask_url_secrets as m
+        assert m("/img/4/a.png?sig=abc") == "/img/4/a.png?sig=***"
+        assert m("/fb/tok123?action=up") == "/fb/***?action=up"
+        assert m("/fb/confirm/tok123") == "/fb/confirm/***"
+        assert m("/read/slug-1") == "/read/slug-1"
+
+    def test_filter_is_installed_once(self):
+        import logging
+        from app.main import _AccessLogSecretFilter, _configure_logging
+        _configure_logging()
+        _configure_logging()
+        access = logging.getLogger("uvicorn.access")
+        assert sum(isinstance(f, _AccessLogSecretFilter) for f in access.filters) == 1

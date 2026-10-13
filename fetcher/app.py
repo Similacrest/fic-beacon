@@ -97,6 +97,11 @@ app = FastAPI(title="fic-beacon-fetcher")
 # common case; the generic guidance covers metadata/chapter mismatches that also want force.
 _STUB_RE = re.compile(r"Existing epub contains (\d+) chapters?, web site only has (\d+)")
 _NEEDS_FORCE_RE = re.compile(r"force_update_epub_always|Use Overwrite or", re.IGNORECASE)
+# FanFicFare's writer refuses to overwrite an output file whose mtime *date* is later than the
+# story's last-updated date ("File(x.epub) Updated(…) more recently than Story(…) - Skipping"). It
+# only gets that far when the site has more chapters than the EPUB, so this always means "new
+# chapters were found and then not written".
+_SKIPPED_RE = re.compile(r"more recently than Story\(.*?\)\s*-\s*Skipping", re.IGNORECASE)
 # Transient site/network failures worth a retry (vs. a permanent "no such story" error).
 _TRANSIENT_RE = re.compile(
     r"\b(50[234]|429|timed? ?out|timeout|connection|temporarily|rate.?limit|reset by peer)\b",
@@ -139,6 +144,18 @@ def _fanficfare(*args: str, cwd: str) -> subprocess.CompletedProcess:
     if Path(PERSONAL_INI).exists():
         base += ["-c", PERSONAL_INI]
     return _run([*base, *args], cwd=cwd, timeout=FANFICFARE_TIMEOUT)
+
+
+def _fanficfare_update(epub: Path, *opts: str, cwd: str) -> subprocess.CompletedProcess:
+    """`fanficfare -u` an exported EPUB in place, without the writer's mtime short-circuit.
+
+    `calibredb export` stamps the file with mtime=now, and FanFicFare skips writing when that date
+    is later than the story's last update — so an update only landed when the author posted on the
+    fetch's own calendar day. Backdating the file and passing `always_overwrite` each defeat that on
+    their own; both are applied so a lost personal.ini line or a changed FanFicFare check can't
+    bring it back. Re-backdated before every call: a previous pass wrote the file at mtime=now."""
+    os.utime(epub, (0, 0))
+    return _fanficfare("-u", f"./{epub.name}", "-o", "always_overwrite=true", *opts, cwd=cwd)
 
 
 def _with_retry(label: str, fn):
@@ -651,7 +668,7 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
         if epub is None:
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
-        upd = _fanficfare("-u", f"./{epub.name}", cwd=str(work))
+        upd = _fanficfare_update(epub, cwd=str(work))
         combined = (upd.stdout or "") + (upd.stderr or "")
 
         stub = None
@@ -660,13 +677,22 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             old, new = int(m.group(1)), int(m.group(2))
             _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
-            _fanficfare("-u", f"./{epub.name}", "-o", "force_update_epub_always=true", cwd=str(work))
+            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work))
+            if _SKIPPED_RE.search((forced.stdout or "") + (forced.stderr or "")):
+                return entry, _fail(entry, "fanficfare skipped writing the stub re-download: "
+                                    + _tail((forced.stdout or "") + (forced.stderr or "")))
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
             stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
-            _fanficfare("-u", f"./{epub.name}", "-o", "force_update_epub_always=true", cwd=str(work))
+            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work))
+            combined = (forced.stdout or "") + (forced.stderr or "")
         elif upd.returncode != 0 and _TRANSIENT_RE.search(combined):
             return entry, combined  # retryable
+        if not stub and _SKIPPED_RE.search(combined):
+            # New chapters were found but not written. Reporting the unchanged EPUB as `ok` is what
+            # hid this — fail loudly instead, and leave the Calibre entry as it was.
+            return entry, _fail(entry, "fanficfare found new chapters but skipped writing them: "
+                                + _tail(combined))
 
         _calibredb("add_format", str(calibre_id), str(epub))
         entry["calibre_id"] = calibre_id

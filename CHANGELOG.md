@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-13
+
+Post-deploy follow-ups from ops on 0.14.0. No schema change. Both containers change.
+
+### Fixed
+- **Story updates were silently discarded unless the author posted that same day.** FanFicFare's
+  writer skips writing when the output file's mtime date is later than the story's last update, and
+  `calibredb export` stamps the exported EPUB with mtime=now — so `-u` logged "Do update", wrote nothing
+  and the fetch was reported `ok`. The fetcher now backdates the exported EPUB before every `-u` (the
+  first pass and any forced re-run) and passes `-o always_overwrite=true`; either alone fixes it, so a
+  lost `personal.ini` line can't bring it back. FanFicFare's "more recently than Story … - Skipping"
+  is now a fetch **error** (the Calibre entry is left untouched) instead of `ok`.
+- **A fetch submitted by a slow release cycle was never polled.** The poll was registered at submit
+  time but the job→book mapping only committed when the cycle ended; a cycle over ~90 s (e.g. the cold
+  chapterizer cache after a restart) let the poll give up first, leaving the story at `fetching…`. The
+  poll is now registered only once the submitting transaction commits, the release cycle commits its
+  feed poll/submits before planning drops, and every cycle re-registers a poll for any persisted fetch
+  job that has none.
+
+### Security
+- **URL secrets are masked in the access log.** uvicorn access lines carried the global feed secret
+  (`?token=` on every feed/topic URL), and the logs are shipped off-host. `?token=`, `?sig=` and the
+  per-drop `/fb/{token}` are now logged as `***`.
+
 ## [0.14.0] — 2026-10-13
 
 Fixes from the ops review of the live instance (stories silently not receiving chapters, dead logs,

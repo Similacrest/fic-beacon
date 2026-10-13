@@ -420,7 +420,7 @@ The admin dashboard lists current subscribers + last/next cron runs for diagnosi
 updating".
 
 ### Public-exposure security (see CHANGELOG "Security")
-Everything is **deny-by-default** behind `app/security.py:ProxyTokenMiddleware`: only `/feed` `/read` `/fb` `/img` `/static` (+`/robots.txt`; `/websub` iff `BEACON_PUBLIC_WEBSUB`) are reachable without a valid `X-Beacon-Proxy-Token` (`BEACON_PROXY_TOKEN`); the rest 401, or 503 when the token is unset and `BEACON_BIND_HOST` isn't loopback. `X-Remote-User` is audit-only and honoured only with a valid token. New public routes must be added to `_PUBLIC_PREFIXES`. Non-GET admin requests are CSRF-checked (`Sec-Fetch-Site`/`Origin`). `BEACON_ADMIN_OPEN` is the explicit no-proxy opt-out. Chapter HTML is sanitised (`app/sanitize.py`) and `/read`+`/fb` pages carry a CSP and escape every story-derived string — keep it that way. Story URLs must pass `is_fetchable_url` (they reach FanFicFare argv); the fetcher is gated by `FETCHER_TOKEN`. The WebSub hub
+Everything is **deny-by-default** behind `app/security.py:ProxyTokenMiddleware`: only `/feed` `/read` `/fb` `/img` `/static` (+`/robots.txt`; `/websub` iff `BEACON_PUBLIC_WEBSUB`) are reachable without a valid `X-Beacon-Proxy-Token` (`BEACON_PROXY_TOKEN`); the rest 401, or 503 when the token is unset and `BEACON_BIND_HOST` isn't loopback. `X-Remote-User` is audit-only and honoured only with a valid token. New public routes must be added to `_PUBLIC_PREFIXES`. Non-GET admin requests are CSRF-checked (`Sec-Fetch-Site`/`Origin`). `BEACON_ADMIN_OPEN` is the explicit no-proxy opt-out. Chapter HTML is sanitised (`app/sanitize.py`) and `/read`+`/fb` pages carry a CSP and escape every story-derived string — keep it that way. Story URLs must pass `is_fetchable_url` (they reach FanFicFare argv); the fetcher is gated by `FETCHER_TOKEN`. URL secrets (`?token=`, `?sig=`, `/fb/{token}`) are masked in the uvicorn access log (`main._AccessLogSecretFilter`) — logs leave the host. The WebSub hub
 The WebSub hub requires the **tokened** topic and only https callbacks resolving to public IPs, connected by pinned IP with no
 redirects (`app/websub/safety.py`) — never loosen these. `/img` serves only `image/*` entries with a valid
 `?sig=` (HMAC keyed by the feed secret), signed at render time (`sign_image_urls`) not stored. The DB
@@ -480,6 +480,10 @@ broadcast or an admin request.
   identifier, so a `url:` lookup can never resolve to the archive instead of the live book. It borrows two ideas from AutomatedFanfic, trimmed: broad
   **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is
   the stub case) and a **3-try exponential backoff** on transient site/network errors.
+  **Every `-u` backdates the exported EPUB and passes `-o always_overwrite=true`**
+  (`fetcher/app.py:_fanficfare_update`): FanFicFare's writer skips a file whose mtime date is later
+  than the story's last update, and `calibredb export` writes mtime=now, so updates silently landed
+  only on same-day posts. Its "more recently than Story … - Skipping" warning is a fetch error, not ok.
   **Every `subprocess.run` has a wall-clock `timeout=`** (`FETCHER_FANFICFARE_TIMEOUT`, default
   1200s; `FETCHER_CALIBREDB_TIMEOUT`, default 600s): a hung site socket would otherwise block the
   lone worker forever and stall every queued job behind it (the "stuck at `fetching…`" failure). On
@@ -492,6 +496,10 @@ broadcast or an admin request.
   `dc:subject`.
 - App side: `submit_fetch(urls)` posts the batch and returns the `job_id`; `scheduler.submit_and_track`
   marks the books `fetching…` and persists the job→book map in `app_state` (so a restart resumes).
+  The poll is registered only **after the submitting transaction commits** (a SQLAlchemy
+  `after_commit` hook), the release cycle commits its feed poll/submits *before* planning drops, and
+  `scheduler.ensure_fetch_polls` (startup + every cycle) re-polls any persisted job lacking a poll —
+  else a slow cycle let the poll give up before its mapping existed.
   A transient `fetch_poll_{id}` interval job polls until `done`, reflecting each book's live `phase`
   on the dashboard, then `apply_result(book, raw)` folds calibre_id / chapter_count / stub into the
   row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them —

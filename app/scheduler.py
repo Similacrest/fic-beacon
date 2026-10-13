@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import event
 
 from app.config import settings
 from app.database import db_session
@@ -79,7 +80,8 @@ def submit_and_track(session, books, trigger_guids: dict[int, str] | None = None
 
     Marks each book `fetching…`, persists the job→book mapping in app_state, and registers a
     `fetch_poll_{job_id}` interval job that folds results when the fetcher finishes. The
-    caller commits the session (the persisted mapping must be durable before the poll fires).
+    caller commits the session; the poll is only registered once that commit lands, so it can never
+    run (and give up) against a mapping that a long release cycle hasn't committed yet.
 
     `trigger_guids` ({book id: feed GUID}) is the RSS entry that prompted each fetch. It is only
     recorded as "seen" when the fetch actually lands chapters (see `_settle_trigger`), so a fetch
@@ -108,7 +110,7 @@ def submit_and_track(session, books, trigger_guids: dict[int, str] | None = None
         "url_to_book": _group_by_url(books),
         "guids": {str(b.id): trigger_guids[b.id] for b in books if b.id in (trigger_guids or {})},
     }))
-    _schedule_poll(job_id)
+    event.listen(session, "after_commit", lambda _s: _schedule_poll(job_id), once=True)
     return job_id
 
 
@@ -370,14 +372,31 @@ def sweep_stale_fetch_jobs(session) -> int:
     return cleared
 
 
+def ensure_fetch_polls(session) -> int:
+    """Register a poll for every persisted fetch job that has none. Returns how many were added.
+
+    Covers a mapping whose poll is gone while the job may still be live — the app restarted, or a
+    poll gave up before the mapping became visible — so it is folded by its own poll instead of
+    sitting at `fetching…` until `sweep_stale_fetch_jobs` writes it off."""
+    from app.state import FETCH_JOB_PREFIX, list_with_prefix
+    if not _scheduler.running:
+        return 0
+    added = 0
+    for key, _ in list_with_prefix(session, FETCH_JOB_PREFIX):
+        job_id = key[len(FETCH_JOB_PREFIX):]
+        if _scheduler.get_job(f"fetch_poll_{job_id}") is None:
+            _poll_misses.pop(job_id, None)
+            _schedule_poll(job_id)
+            added += 1
+    return added
+
+
 def _resume_pending_polls() -> None:
     """Re-register poll jobs for fetches that were in flight when the app last stopped."""
-    from app.state import FETCH_JOB_PREFIX, list_with_prefix
     with db_session() as session:
         if sweep_stale_fetch_jobs(session):
             session.commit()
-        for key, _ in list_with_prefix(session, FETCH_JOB_PREFIX):
-            _schedule_poll(key[len(FETCH_JOB_PREFIX):])
+        ensure_fetch_polls(session)
 
 
 # ── Recurring jobs ───────────────────────────────────────────────────────────────────────
@@ -431,6 +450,8 @@ def _run_release_cycle(schedule_id: int | None = None) -> None:
     from app.websub.publisher import publish_in_background
     with db_session() as session:
         sweep_stale_fetch_jobs(session)  # un-stick anything a lost poll left at `fetching…`
+        if ensure_fetch_polls(session):  # …and re-poll a live job whose poll went missing
+            logger.warning("Re-registered orphaned fetch poll(s)")
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
         # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
         poll_all_feeds(session)
@@ -439,6 +460,10 @@ def _run_release_cycle(schedule_id: int | None = None) -> None:
         # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
         # any submit land next cycle.
         fetch_pending(session)
+        # Commit the submitted fetches now, not after the (possibly minutes-long, cold-cache) drop
+        # planning: their polls start on commit, and the open write transaction would otherwise
+        # also block every poll's own commit until the cycle ends.
+        session.commit()
         drops = run_release_cycle(session, settings.calibre_library_path, schedule_id)
         session.commit()
         publish_in_background(drops)

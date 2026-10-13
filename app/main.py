@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -26,6 +27,30 @@ def _configure_logging() -> None:
         level = logging.INFO
     logging.basicConfig(level=logging.WARNING)  # ensure a root handler exists
     logging.getLogger("app").setLevel(level)
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _AccessLogSecretFilter) for f in access.filters):
+        access.addFilter(_AccessLogSecretFilter())
+
+
+# Secrets that ride in request URLs: the global feed secret (`?token=` on every feed/topic URL),
+# image signatures (`?sig=`), and the per-drop feedback token in `/fb/{token}`. The journal is
+# shipped off-host, so the access log must not carry them.
+_URL_SECRET_RE = re.compile(r"([?&](?:token|sig)=|/fb/(?:confirm/)?)[^&/?\s\"]+")
+
+
+def _mask_url_secrets(text: str) -> str:
+    return _URL_SECRET_RE.sub(r"\1***", text)
+
+
+class _AccessLogSecretFilter(logging.Filter):
+    """Mask URL secrets in uvicorn access records (args: client, method, path, version, status)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_mask_url_secrets(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = _mask_url_secrets(record.msg)
+        return True
 
 
 @asynccontextmanager

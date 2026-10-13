@@ -454,3 +454,52 @@ def test_new_story_that_adds_nothing_is_an_error_not_a_phantom_success(fake_tool
     fetcher._download_new([url], by_url)
 
     assert by_url[url]["phase"] == "error" and "added nothing" in by_url[url]["error"]
+
+
+# ── `-u` must not be short-circuited by the exported file's mtime ────────────────────────────
+
+def _update_with(calibre, monkeypatch, outputs):
+    """Run _update_one on 4629 with a scripted FanFicFare; returns (entry, transient, ff calls, mtimes)."""
+    fake = calibre({4629: {"url": RR}})
+    calls, mtimes = [], []
+    outputs = iter(outputs)
+
+    def fanficfare(*args, cwd):
+        calls.append(args)
+        mtimes.append((Path(cwd) / "book.epub").stat().st_mtime)
+        return subprocess.CompletedProcess(args, 0, stdout=next(outputs, ""), stderr="")
+    monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
+    real_calibredb = fetcher._calibredb
+
+    def calibredb(*args):
+        if args[0] == "export":
+            _fff_epub(Path(args[args.index("--to-dir") + 1]) / "book.epub", RR, "In-Progress")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return real_calibredb(*args)
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+    entry, transient = fetcher._update_one(RR, _entry(RR), 4629)
+    return fake, entry, transient, calls, mtimes
+
+
+def test_update_backdates_the_export_and_always_overwrites(calibre, monkeypatch):
+    fake, entry, transient, calls, mtimes = _update_with(calibre, monkeypatch, ["Do update - epub(17) vs url(27)"])
+    assert transient is None and not entry.get("error")
+    assert calls[0][:2] == ("-u", "./book.epub") and "always_overwrite=true" in calls[0]
+    assert mtimes == [0]  # older than any story's dateUpdated, so the writer can't skip
+    assert any(c[0] == "add_format" for c in fake.calls)
+
+
+def test_force_rerun_is_backdated_again(calibre, monkeypatch):
+    _, _, _, calls, mtimes = _update_with(
+        calibre, monkeypatch, ["Use Overwrite or force_update_epub_always", ""])
+    assert len(calls) == 2 and "force_update_epub_always=true" in calls[1]
+    assert "always_overwrite=true" in calls[1] and mtimes == [0, 0]
+
+
+def test_writer_skip_is_an_error_not_ok(calibre, monkeypatch):
+    skipped = ("Do update - epub(17) vs url(27)\n"
+               "File(./book.epub) Updated(2026-10-13) more recently than Story(2026-10-12) - Skipping")
+    fake, entry, transient, _, _ = _update_with(calibre, monkeypatch, [skipped])
+    assert transient is None
+    assert "skipped writing" in entry["error"] and "more recently than Story" in entry["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)  # Calibre entry left as it was
