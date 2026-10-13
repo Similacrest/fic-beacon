@@ -272,8 +272,8 @@ smallest — so the first release after upgrading is the same size and split as 
   drop is created already acknowledged**: asking for an extra chapter is engagement, not falling
   behind (it used to sit unread and penalise the source next cycle). A drop is acknowledged on opening `/read/{slug}`, clicking **any**
   `/fb/` link, or the explicit **✓ Mark read** action. This is best-effort and reader-agnostic:
-  passive read-detection is unreliable (most permalinks point at the source site, not `/read/`, and
-  readers don't report reads), so we deliberately chose an explicit/opt-in signal over a tracking
+  passive read-detection is unreliable (readers don't report reads, and many show the full item
+  content without ever opening the `/read/` permalink), so we deliberately chose an explicit/opt-in signal over a tracking
   pixel — image proxies (e.g. Inoreader) prefetch on poll and would mark everything read on ingest.
   See `planner.py:_unread_penalties`.
 - **Weight fade.** Below `config.weight_skip_floor` (default 1.0) a source's acceptance is scaled by
@@ -293,13 +293,13 @@ badge; cleared by resume) and promotes the next queued book in the same cycle. A
 Calibre entry is a different, possibly transient, problem: warned about, never paused. Tracked stories
 with 0 chapters are just still downloading and are left alone.
 
-### Permalinks (source-aware, per-chapter) — EPUB
-FanFicFare writes a **per-chapter** canonical URL into each chapter's `<head>`:
-`<meta name="chapterurl" content="...">`. The chapterizer reads it from the **raw zip** (ebooklib
-strips `<head>`) keyed by file basename — see `app/epub/chapterizer.py:_chapter_url_map`.
-Item link precedence (`app/feed/builder.py:_permalink`): (1) `drop.source_url` (per-chapter),
-(2) `book.source_url` (whole-work `url:` identifier / fetch URL), (3) `/read/{slug}` reader page.
-This applies uniformly — tracked stories are FanFicFare EPUBs and carry per-chapter `chapterurl`s too.
+### Permalinks — always the mirror
+Every feed item links to **our own reader page**, `{base_url}/read/{slug}`
+(`app/feed/builder.py:_permalink`) — **never the story site**, for backlog and tracked sources alike.
+Reading happens on the mirror, and opening it acknowledges the drop (read-gating). FanFicFare's
+per-chapter canonical URL (`<meta name="chapterurl">`, read from the raw zip by
+`app/epub/chapterizer.py:_chapter_url_map`) is still recorded on `drop.source_url` and drives stub
+identity, but it is not linked from the feed.
 **GUID ≠ link.** The item `guid`/`id` is always `urn:fic-beacon:drop:{reader_slug}` (per-drop
 uuid4) so multiple drops never collide on a shared work URL.
 

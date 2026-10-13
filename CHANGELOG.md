@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-13
+
+### Changed
+- **Feed items always link to the mirror.** Every item's link is now our own reader page
+  (`/read/{slug}`), never the story site — before, a FanFicFare chapter linked to its per-chapter
+  source URL (or the whole-work URL). Opening the link reads the chapter on the mirror and
+  acknowledges the drop, so the unread ramp now sees reads made by clicking through. The source URL
+  is still recorded on each drop; it just isn't linked.
+
 ## [0.14.1] — 2026-10-13
 
 Post-deploy follow-ups from ops on 0.14.0. No schema change. Both containers change.

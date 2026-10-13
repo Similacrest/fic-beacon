@@ -43,6 +43,10 @@ def _make_drop(
     return drop
 
 
+def parsed_link(xml) -> str:
+    return feedparser.parse(xml).entries[0].link
+
+
 class TestFeedParsing:
     def test_atom_parses_cleanly(self):
         drop = _make_drop()
@@ -82,14 +86,15 @@ class TestFeedParsing:
         ids = [e.id for e in parsed.entries]
         assert len(set(ids)) == len(ids), "GUIDs collided — readers would dedupe drops"
 
-    def test_link_uses_per_chapter_url_when_present(self):
+    def test_link_is_the_mirror_even_with_a_per_chapter_url(self):
         drop = _make_drop(
             source_url="https://archiveofourown.org/works/12345",
             chapter_source_url="https://archiveofourown.org/works/12345/chapters/678",
         )
-        atom_xml, _ = build_feed([drop])
-        parsed = feedparser.parse(atom_xml)
-        assert "chapters/678" in parsed.entries[0].link
+        atom_xml, rss_xml = build_feed([drop])
+        assert parsed_link(atom_xml).endswith(f"/read/{drop.reader_slug}")
+        assert parsed_link(rss_xml).endswith(f"/read/{drop.reader_slug}")
+        assert b"archiveofourown.org" not in atom_xml and b"archiveofourown.org" not in rss_xml
 
     def test_entry_has_published_date(self):
         drop = _make_drop()
@@ -127,17 +132,15 @@ class TestFeedParsing:
 
 
 class TestPermalinks:
-    def test_per_chapter_url_preferred(self):
+    def test_never_links_the_story_site(self):
         drop = _make_drop(
             source_url="https://archiveofourown.org/works/12345",
             chapter_source_url="https://archiveofourown.org/works/12345/chapters/678",
         )
-        assert _permalink(drop) == "https://archiveofourown.org/works/12345/chapters/678"
-
-    def test_whole_work_url_fallback(self):
-        drop = _make_drop(source_url="https://archiveofourown.org/works/12345",
-                          chapter_source_url=None)
-        assert _permalink(drop) == "https://archiveofourown.org/works/12345"
+        drop.reader_slug = "abc"
+        assert _permalink(drop).endswith("/read/abc")
+        drop.source_url = None  # whole-work URL only: still the mirror
+        assert _permalink(drop).endswith("/read/abc")
 
     def test_reader_page_used_when_no_source_url(self):
         drop = _make_drop(source_url=None, chapter_source_url=None)

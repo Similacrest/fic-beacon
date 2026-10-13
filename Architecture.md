@@ -52,7 +52,7 @@ SQLite, Jinja + HTMX.
 | Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
-| Permalinks | Source-aware and uniform (all sources are FanFicFare EPUBs): per-chapter `chapterurl` → whole-work `url:` identifier → reader page. `guid` always per-drop and independent of link. |
+| Permalinks | Always our own reader page `/read/{slug}`, never the story site. `guid` always per-drop and independent of link. |
 | Stack | Python + FastAPI + SQLite, Jinja + HTMX. Two Docker containers: `beacon` (app, library RO) + `fetcher` (FanFicFare/calibredb, library RW). |
 
 ## 4. C4 Model
@@ -67,7 +67,7 @@ C4Context
   System_Ext(fetcher, "Fetcher", "Isolated FanFicFare + calibredb service; writes the Calibre library")
   System_Ext(calibre, "Calibre Library", "Folder + metadata.db; EPUBs. App reads RO; fetcher writes")
   System_Ext(reader_app, "RSS Reader", "Any reader (InoReader/FreshRSS/Miniflux/...). Polls feeds (or WebSub), follows feedback links")
-  System_Ext(sources, "Original fic sites", "AO3, FFN, Royal Road, forums, ... (FanFicFare downloads + permalinks)")
+  System_Ext(sources, "Original fic sites", "AO3, FFN, Royal Road, forums, ... (FanFicFare downloads)")
   System_Ext(ongoing, "Trigger RSS feeds", "Used only to notice a tracked story updated")
 
   Rel(reader, reader_app, "Reads in")
@@ -253,8 +253,8 @@ drop) and at chapter 1 otherwise. Chapter count comes from chapterizing the exis
   source `dropped` immediately + promote next.
 
 ### 6.4 Permalink resolution
-Uniform across all sources (every book is a FanFicFare EPUB): (1) the drop's first-chapter
-`chapterurl`, (2) whole-work `url:` identifier, (3) `/read/{slug}`. `guid`/`id` is always
+Every item links to our own reader page, `{base_url}/read/{slug}` — never the story site (the
+per-chapter `chapterurl` is recorded on the drop but not linked). `guid`/`id` is always
 `urn:fic-beacon:drop:{slug}`, independent of the link, so multiple drops never collapse.
 
 ### 6.5 WebSub

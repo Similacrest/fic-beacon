@@ -134,15 +134,12 @@ def _add_entry(fg: FeedGenerator, drop: Drop, secret: str | None = None) -> None
 
 
 def _permalink(drop: Drop) -> str:
-    """The clickable link for the item, in order of precision:
-    1. The exact per-chapter source URL (FanFicFare chapterurl) for this drop.
-    2. The whole-work source URL (Calibre 'url' identifier) as a fallback.
-    3. Our self-hosted reader page (non-FanFicFare books).
+    """The clickable link for the item: always our own reader page, never the story site.
+
+    Reading happens on the mirror — the drop's whole chapter as dropped, with its feedback links —
+    and opening it is also what acknowledges the drop for the unread ramp. The per-chapter source
+    URL (`drop.source_url`) is still recorded, just not linked from the feed.
     """
-    if drop.source_url:
-        return drop.source_url
-    if drop.book.source_url:
-        return drop.book.source_url
     return f"{settings.base_url}/read/{drop.reader_slug}"
 
 
