@@ -89,7 +89,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "slot_view": slot_view,
         "status": status,
         "subscribers": subscribers,
-        "book_notes": book_notes,
         "fetch_progress": fetch_progress,
         "cycle": cycle,
         "schedule_rows": schedule_rows,
@@ -593,10 +592,23 @@ def set_book_channel(
     book = db.get(Book, book_id)
     target = db.get(Channel, channel_id)
     if book and target and book.channel_id != target.id:
+        from app.planner.planner import _assign_slots
+        old = db.get(Channel, book.channel_id)
+        if not book.tracked and book.status == BookStatus.active:
+            # A streaming backlog book joins the new channel's queue rather than taking over a
+            # slot there (which would push out the book already streaming in it).
+            book.status = BookStatus.queued
+        if not book.tracked:  # … at the back of that queue, not wherever its old position lands
+            last = db.query(func.max(Book.queue_position)).scalar() or 0
+            book.queue_position = last + 1
         book.channel_id = target.id
         book.slot_index = None
-        from app.planner.planner import assign_channel_slots
-        assign_channel_slots(db, target.id)  # tracked: placed now, not at the next release
+        db.flush()
+        # Rebalance both now: the old channel's freed slot takes its next queued book; in the new
+        # one a tracked story is placed and a backlog book streams if a slot is free.
+        for ch in (old, target):
+            if ch is not None:
+                _assign_slots(db, ch.parallel_slots, ch.id)
         db.commit()
     return _back(next)
 
@@ -724,22 +736,6 @@ def set_weight(
         book.quota_weight = max(0.0, min(WEIGHT_CAP, round(weight, 3)))  # never auto-drops
         db.commit()
     return _saved(request, next)
-
-
-@router.post("/books/batch-drop")
-def batch_drop(
-    book_ids: list[int] = Form(...),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    from app.planner.planner import _refill_book_channel
-    for book_id in book_ids:
-        book = db.get(Book, book_id)
-        if book and book.status not in (BookStatus.completed, BookStatus.dropped):
-            book.status = BookStatus.dropped
-            book.slot_index = None
-            _refill_book_channel(db, book)
-    db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
 
 
 @router.post("/books/{book_id}/drop")

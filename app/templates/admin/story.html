@@ -76,7 +76,7 @@
     <h2>Priority</h2>
     <form method="post" action="/admin/books/{{ book.id }}/set-weight" class="inline-row">{{ back() }}
       <label for="weight">Weight</label>
-      <input id="weight" type="number" name="weight" value="{{ '%g'|format(book.quota_weight) }}" step="0.25" min="0" max="100"
+      <input id="weight" type="number" name="weight" value="{{ '%g'|format(book.quota_weight) }}" step="any" min="0" max="100"
              hx-post="/admin/books/{{ book.id }}/set-weight" hx-trigger="change delay:500ms" hx-swap="none"
              class="autosave" style="width:5.5em">
     </form>

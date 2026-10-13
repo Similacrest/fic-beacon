@@ -70,6 +70,11 @@ class TestExplainLiveState:
         assert "3 unread drops" in explain(_b(), unread=3).text
         assert explain(_b(), unread=1).text == "On air — 6 waiting"  # one unread is normal
 
+    def test_unknown_chapter_count_is_not_all_out(self):
+        # A just-promoted backlog book (or fresh import) isn't chapterized until the next release.
+        assert "next release" in explain(_b(total_chapters=None)).text
+        assert "next release" in explain(_b(tracked=True, total_chapters=None)).text
+
     def test_missing_calibre_entry(self):
         assert explain(_b(), {"missing": True}).text == "Not found in Calibre"
 

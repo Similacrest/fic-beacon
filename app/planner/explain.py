@@ -93,6 +93,8 @@ def explain(
     if book.quota_weight <= 0:
         return SourceStatus("off", "⛔", "Weight 0 — never posts")
 
+    if book.total_chapters is None:  # not chapterized yet — counting happens at the next release
+        return SourceStatus("wait", "…", "Chapters get counted at the next release")
     pending = pending_chapters(book)
     if pending == 0:
         if not book.tracked:

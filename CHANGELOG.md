@@ -24,8 +24,11 @@ All notable changes to this project are documented here. The format is based on
 - The dashboard's **Active sources** and **Queue** tables are gone; their controls live on the story
   page. The queue shows under each channel ("Up next") with ↑↓ reordering. Batch drop on the
   dashboard is gone (batch actions remain on Tracked Stories).
-- Moving a story to another channel places a tracked story in a slot at once, not at the next
-  release.
+- Moving a story to another channel rebalances both channels at once. A tracked story is placed in
+  a slot; a backlog book joins the back of the new channel's queue (streaming at once only if a slot
+  is free) instead of pushing out the book already streaming there, and its old slot is refilled.
+- Times across the admin UI are relative ("5h ago", "in 3h"); the full timestamp, now in
+  `BEACON_TZ` and labelled, is the tooltip.
 - The release cycle's skip log records the planner's reasons (`book_id`, oversized, fresh, unread
   penalty, weight fade, the channel's budget and use) and the sources whose Calibre entry is missing.
 

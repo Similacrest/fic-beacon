@@ -66,12 +66,12 @@
       {% endif %}
     </td>
     <td>{{ chan_name.get(s.channel_id, '—') }}</td>
-    <td style="font-size:.82em" title="{{ s.last_fetch_at }}">
+    <td style="font-size:.82em" title="{{ s.last_fetch_at|stamp }}">
       {% if s.last_fetch_status %}
         <span style="color:{{ '#a00' if s.last_fetch_status.startswith('error') else ('#856404' if s.last_fetch_status == 'pending' or s.last_fetch_status.startswith('fetching') else '#155724') }}">{{ s.last_fetch_status }}</span>
       {% else %}—{% endif %}
       {% if s.last_fetch_at %}
-        <span style="color:#999; white-space:nowrap"> · {{ s.last_fetch_at.strftime('%Y-%m-%d %H:%M') }}</span>
+        <span style="color:#999; white-space:nowrap" title="{{ s.last_fetch_at|stamp }}"> · {{ s.last_fetch_at|ago }}</span>
       {% endif %}
     </td>
     <td style="font-size:.8em; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">

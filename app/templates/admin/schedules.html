@@ -58,7 +58,7 @@
     <div style="margin-top:.6em">
       <span class="muted sched-status" style="font-size:.85em" aria-live="polite">
         {% if not sc.enabled %}disabled — never fires
-        {% elif next_times.get(sc.id) %}next: {{ next_times[sc.id].strftime('%a %Y-%m-%d %H:%M') }}
+        {% elif next_times.get(sc.id) %}next: <span title="{{ next_times[sc.id]|stamp }}">{{ next_times[sc.id].strftime('%a %H:%M') }} ({{ next_times[sc.id]|ago }})</span>
         {% else %}not scheduled{% endif %}
       </span>
       <noscript><button class="btn btn-primary" type="submit" title="Save schedule">💾</button></noscript>

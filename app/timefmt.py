@@ -25,6 +25,15 @@ def relative(dt: datetime | None, now: datetime | None = None) -> str:
 
 
 def absolute(dt: datetime | None) -> str:
+    """Full timestamp in the scheduling timezone (BEACON_TZ, else UTC), labelled."""
     if dt is None:
         return ""
-    return dt.strftime("%Y-%m-%d %H:%M %Z").strip() or dt.strftime("%Y-%m-%d %H:%M")
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from app.config import settings
+    try:
+        tz = ZoneInfo(settings.tz) if settings.tz else timezone.utc
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = timezone.utc
+    local = _aware(dt).astimezone(tz)
+    return local.strftime("%Y-%m-%d %H:%M ") + (settings.tz or "UTC")

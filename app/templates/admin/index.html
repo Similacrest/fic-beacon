@@ -2,7 +2,8 @@
 {% block title %}Dashboard — Fic Beacon{% endblock %}
 {% block content %}
 
-{% macro fmt_dt(dt) %}{% if dt %}{{ dt.strftime('%Y-%m-%d %H:%M %Z') or dt.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}<span class="muted">never</span>{% endif %}{% endmacro %}
+{# Relative time ("5h ago" / "in 3h"); the full timestamp (BEACON_TZ) is the tooltip. #}
+{% macro fmt_dt(dt) %}{% if dt %}<span title="{{ dt|stamp }}">{{ dt|ago }}</span>{% else %}<span class="muted">never</span>{% endif %}{% endmacro %}
 
 <h1>📡 Dashboard</h1>
 
@@ -11,8 +12,8 @@
 </p>
 
 {# In-place actions: forms below post via HTMX and swap only this #dash-main block, so the
-   page never reloads or jumps to the top. Value inputs (cursor/weight) override hx-swap to
-   "none" and auto-save on change. Forms keep method/action so they still work without JS. #}
+   page never reloads or jumps to the top. Forms keep method/action so they still work without
+   JS. Per-story controls live on the story page (/admin/books/{id}). #}
 <div id="dash-main" hx-target="#dash-main" hx-select="#dash-main" hx-swap="outerHTML scroll:none" hx-push-url="false">
 <div style="display:flex; gap:.6em; flex-wrap:wrap; align-items:center; margin-bottom:1.5em">
   {% if cycle %}

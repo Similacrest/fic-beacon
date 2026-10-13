@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import timefmt
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app.models import Book, BookStatus, Channel, Config
 from app.ongoing.feed_url import infer_feed_url, is_fetchable_url
@@ -30,6 +31,8 @@ from app.version import __version__
 router = APIRouter(prefix="/admin/ongoing")
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 templates.env.globals["version"] = __version__
+templates.env.filters["ago"] = timefmt.relative
+templates.env.filters["stamp"] = timefmt.absolute
 
 
 def _valid_channel_id(db: Session, channel_id: int | None) -> int:
@@ -160,7 +163,8 @@ def fetch_now(
         raise HTTPException(status_code=404)
     scheduler.submit_and_track(db, [source])
     db.commit()
-    back = next if isinstance(next, str) and next.startswith("/admin/") and "//" not in next else "/admin/ongoing/"
+    back = next if (isinstance(next, str) and next.startswith("/admin/") and "//" not in next
+                    and "\\" not in next) else "/admin/ongoing/"
     return RedirectResponse(url=back, status_code=303)
 
 

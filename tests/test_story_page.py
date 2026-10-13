@@ -100,6 +100,7 @@ class TestStoryPage:
         b = _book(db, "Mistborn", slot_index=1)
         t = client.get(f"/admin/books/{b.id}").text
         assert f"Slot 3 — /feed/{ch.slug}/3" in t
+        assert 'step="any"' in t  # weights like 1.1 (from a custom vote step) must still save
 
 
 class TestActionsReturnToTheStory:
@@ -158,6 +159,54 @@ class TestChannelMove:
         client.post(f"/admin/books/{b.id}/set-channel", data={"channel_id": other.id})
         db.refresh(b)
         assert b.channel_id == other.id and b.slot_index in (1, 2)
+
+
+class TestChannelMoveBacklog:
+    def test_streaming_book_joins_the_back_of_the_new_queue(self, ctx):
+        client, db = ctx
+        other = Channel(name="Other", slug="other", parallel_slots=1, weight=1.0)
+        db.add(other)
+        db.flush()
+        mover = _book(db, "Mover", calibre_id=1, slot_index=1, queue_position=1)
+        nxt = _book(db, "Next up", calibre_id=2, status=BookStatus.queued, queue_position=2)
+        there = _book(db, "Streaming there", calibre_id=3, slot_index=1, queue_position=9,
+                      channel_id=other.id)
+        client.post(f"/admin/books/{mover.id}/set-channel", data={"channel_id": other.id})
+        for b in (mover, nxt, there):
+            db.refresh(b)
+        assert there.status == BookStatus.active and there.slot_index == 1  # not pushed out
+        assert mover.status == BookStatus.queued and mover.queue_position > there.queue_position
+        assert nxt.status == BookStatus.active and nxt.slot_index == 1  # old slot refilled
+
+    def test_moved_into_a_free_slot_streams_at_once(self, ctx):
+        client, db = ctx
+        other = Channel(name="Empty", slug="empty", parallel_slots=1, weight=1.0)
+        db.add(other)
+        db.flush()
+        mover = _book(db, "Mover", calibre_id=1, slot_index=1)
+        client.post(f"/admin/books/{mover.id}/set-channel", data={"channel_id": other.id})
+        db.refresh(mover)
+        assert mover.status == BookStatus.active and mover.slot_index == 1
+
+
+class TestTimes:
+    def test_tooltip_uses_beacon_tz(self, monkeypatch):
+        from datetime import datetime
+        from app import timefmt
+        from app.config import settings
+        monkeypatch.setattr(settings, "tz", "Europe/Tallinn")
+        assert timefmt.absolute(datetime(2026, 1, 1, 12, 0)) == "2026-01-01 14:00 Europe/Tallinn"
+        monkeypatch.setattr(settings, "tz", None)
+        assert timefmt.absolute(datetime(2026, 1, 1, 12, 0)) == "2026-01-01 12:00 UTC"
+
+    def test_relative(self):
+        from datetime import datetime, timedelta, timezone
+        from app.timefmt import relative
+        now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        assert relative(None) == "never"
+        assert relative(now - timedelta(hours=5), now) == "5h ago"
+        assert relative(now + timedelta(days=2), now) == "in 2d"
+        assert relative(now - timedelta(seconds=10), now) == "just now"
 
 
 class TestDashboard:
