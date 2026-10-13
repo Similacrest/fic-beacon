@@ -320,3 +320,110 @@ class TestUndoAndRestore:
         client.post(f"/admin/books/{b.id}/restore")
         db.refresh(b)
         assert b.status == BookStatus.active and b.quota_weight == 0.5
+
+
+class TestFindAndBatch:
+    def _page(self, client):
+        return client.get("/admin/").text
+
+    def test_rows_carry_search_text_flags_and_checkbox(self, ctx):
+        client, db = ctx
+        _book(db, "The Wandering Inn", tracked=True, calibre_id=1, slot_index=1,
+              last_fetch_status="error: HTTP 503", total_chapters=10, cursor_chapter_index=10, author="pirateaba")
+        q = _book(db, "Elantris", tracked=False, calibre_id=2, status=BookStatus.queued,
+                  queue_position=5, paused=True)
+        t = self._page(client)
+        assert 'data-search="the wandering inn pirateaba"' in t
+        row = t.split('data-search="the wandering inn pirateaba"')[1].split(">")[0]
+        assert 'data-flags="tracked attention"' in row
+        qrow = t.split('data-search="elantris unknown"')[1].split(">")[0] if 'data-search="elantris unknown"' in t \
+            else t.split('data-search="elantris ')[1].split(">")[0]
+        assert "backlog" in qrow and "paused" in qrow and "queued" in qrow
+        assert t.count('class="sel-box"') >= 2 and 'id="story-filter"' in t
+        assert 'id="batch-form"' in t and 'value="drop"' in t and 'data-flag="unread"' in t
+        assert f'value="{q.id}"' in t
+
+    def test_unread_flag(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", tracked=True, calibre_id=1, slot_index=1, total_chapters=10,
+                  cursor_chapter_index=2)
+        TestUndoAndRestore()._drops(db, b, 2, acked=False)
+        t = self._page(client)
+        assert "unread" in t.split('data-search="serial')[1].split(">")[0]
+
+    def test_batch_pause_and_resume_report_changed_and_skipped(self, ctx):
+        client, db = ctx
+        a = _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
+        b = _book(db, "B", calibre_id=2, tracked=True, slot_index=1, paused=True)
+        r = client.post("/admin/books/batch", data={"action": "pause", "book_ids": [a.id, b.id, 9999]},
+                        follow_redirects=False)
+        assert r.headers["location"] == "/admin/?done=pause&n=1&skipped=1"
+        db.refresh(a), db.refresh(b)
+        assert a.paused and b.paused
+        r = client.post("/admin/books/batch", data={"action": "resume", "book_ids": [a.id, b.id],
+                                                    "next": "/admin/"}, follow_redirects=False)
+        assert "done=resume&n=2&skipped=0" in r.headers["location"]
+        db.refresh(a), db.refresh(b)
+        assert not a.paused and not b.paused
+        assert "✓ Resumed 2 stories" in " ".join(client.get(r.headers["location"]).text.split())
+
+    def test_batch_drop_skips_already_gone_and_refills_slot(self, ctx):
+        client, db = ctx
+        live = _book(db, "Live", calibre_id=1, tracked=False, slot_index=1)
+        nxt = _book(db, "Next", calibre_id=2, tracked=False, status=BookStatus.queued, queue_position=2)
+        gone = _book(db, "Gone", calibre_id=3, tracked=False, status=BookStatus.dropped)
+        r = client.post("/admin/books/batch", data={"action": "drop", "book_ids": [live.id, gone.id]},
+                        follow_redirects=False)
+        assert "n=1&skipped=1" in r.headers["location"]
+        db.refresh(live), db.refresh(nxt)
+        assert live.status == BookStatus.dropped
+        assert nxt.status == BookStatus.active and nxt.slot_index == 1
+
+    def test_batch_move(self, ctx):
+        client, db = ctx
+        other = Channel(name="Other", slug="other", parallel_slots=2, weight=1.0)
+        db.add(other)
+        db.commit()
+        a = _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
+        stay = _book(db, "Stay", calibre_id=2, tracked=True, slot_index=1, channel_id=other.id)
+        r = client.post("/admin/books/batch", data={"action": "move", "channel_id": other.id,
+                                                    "book_ids": [a.id, stay.id]}, follow_redirects=False)
+        assert "n=1&skipped=1" in r.headers["location"]       # already in that channel → skipped
+        db.refresh(a)
+        assert a.channel_id == other.id and a.slot_index in (1, 2)
+
+    def test_batch_move_without_valid_channel_changes_nothing(self, ctx):
+        client, db = ctx
+        a = _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
+        before = a.channel_id
+        r = client.post("/admin/books/batch", data={"action": "move", "channel_id": 9999,
+                                                    "book_ids": [a.id]}, follow_redirects=False)
+        assert "n=0&skipped=1" in r.headers["location"]
+        db.refresh(a)
+        assert a.channel_id == before
+
+    def test_batch_fetch_only_tracked_and_not_in_flight(self, ctx):
+        from unittest.mock import patch
+        client, db = ctx
+        t1 = _book(db, "T1", calibre_id=1, tracked=True, slot_index=1)
+        t2 = _book(db, "T2", calibre_id=2, tracked=True, slot_index=1, last_fetch_status="fetching…")
+        bk = _book(db, "Backlog", calibre_id=3, tracked=False, slot_index=1)
+        with patch("app.scheduler.submit_and_track") as sub:
+            r = client.post("/admin/books/batch", data={"action": "fetch", "book_ids": [t1.id, t2.id, bk.id]},
+                            follow_redirects=False)
+        assert "n=1&skipped=2" in r.headers["location"]
+        assert [b.id for b in sub.call_args[0][1]] == [t1.id]
+
+    def test_unknown_action_and_hostile_next_are_harmless(self, ctx):
+        client, db = ctx
+        a = _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
+        r = client.post("/admin/books/batch", data={"action": "nuke", "book_ids": [a.id]},
+                        follow_redirects=False)
+        assert r.headers["location"] == "/admin/"
+        r = client.post("/admin/books/batch", data={"action": "pause", "book_ids": [a.id],
+                                                    "next": "https://evil.example/"}, follow_redirects=False)
+        assert r.headers["location"].startswith("/admin/?done=pause")
+
+    def test_flash_ignores_unknown_actions(self, ctx):
+        client, _ = ctx
+        assert "role=\"status\"" not in client.get("/admin/?done=<script>&n=1").text

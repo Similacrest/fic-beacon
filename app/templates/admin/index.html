@@ -27,6 +27,15 @@
 </div>
 {% endif %}
 
+{% set done = request.query_params.get('done') %}
+{% if done in ['pause', 'resume', 'fetch', 'move', 'drop'] %}
+{% set n = request.query_params.get('n', '0') %}{% set sk = request.query_params.get('skipped', '0') %}
+<div class="flash" role="status">
+  ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'drop': 'Dropped'}[done] }}
+  {{ n if n.isdigit() else 0 }} stor{{ 'y' if n == '1' else 'ies' }}{% if sk.isdigit() and sk != '0' %} · {{ sk }} skipped (didn't apply){% endif %}
+</div>
+{% endif %}
+
 <section class="card health">
   <div class="health-head">
     {% if attention %}
@@ -108,8 +117,11 @@
 
 {# ── Now broadcasting: per-channel slot feeds, one row per source with its *why* ── #}
 {% macro source_row(r, channel_id, draggable=True) %}
-<div class="src-row{% if draggable %} draggable-source{% endif %}"{% if draggable %} draggable="true"
-     data-book-id="{{ r.book.id }}" data-channel="{{ channel_id }}" title="Drag to another slot to repin"{% endif %}>
+<div class="src-row{% if draggable %} draggable-source{% endif %}" data-id="{{ r.book.id }}"
+     data-search="{{ (r.book.title ~ ' ' ~ (r.book.author or ''))|lower }}" data-flags="{{ r.flags }}"
+     {% if draggable %}draggable="true" data-book-id="{{ r.book.id }}" data-channel="{{ channel_id }}" title="Drag to another slot to repin"{% endif %}>
+  <input type="checkbox" class="sel-box" name="book_ids" value="{{ r.book.id }}" form="batch-form"
+         aria-label="Select {{ r.book.title }}">
   <a class="src-title" href="/admin/books/{{ r.book.id }}" draggable="false">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</a>
   <span class="why why-{{ r.why.tone }}"{% if r.why.detail %} title="{{ r.why.detail }}"{% endif %}>{{ r.why.icon }} {{ r.why.text }}</span>
   {% if r.last_drop %}<span class="src-meta" title="{{ r.last_drop|stamp }}">last drop {{ r.last_drop|ago }}</span>{% endif %}
@@ -117,9 +129,41 @@
   {% if r.why.detail and r.why.tone == 'warn' %}<span class="why-detail">{{ r.why.detail }}</span>{% endif %}
 </div>
 {% endmacro %}
+{# ── Find & act: client-side filter over the rows below + a multi-select action bar ── #}
+<div class="filter-bar">
+  <input type="search" id="story-filter" placeholder="🔍 Find a story or author…" autocomplete="off"
+         aria-label="Find a story or author">
+  <span class="chips" role="group" aria-label="Filter">
+    <button type="button" class="chip" data-flag="attention">⚠ Needs attention</button>
+    <button type="button" class="chip" data-flag="unread">📭 Unread</button>
+    <button type="button" class="chip" data-flag="paused">⏸ Paused</button>
+    <button type="button" class="chip" data-flag="tracked">📡 Tracked</button>
+    <button type="button" class="chip" data-flag="backlog">📖 Backlog</button>
+    <button type="button" class="chip" data-flag="queued">📋 Queued</button>
+  </span>
+  <span id="filter-count" class="muted"></span>
+  <button type="button" id="select-toggle" class="btn" aria-pressed="false">☑ Select</button>
+</div>
+<form id="batch-form" class="batch-bar" method="post" action="/admin/books/batch" hx-post="/admin/books/batch"
+      hx-include="[name='book_ids']" hidden>
+  <input type="hidden" name="next" value="/admin/">
+  <strong id="batch-count"></strong>
+  <button type="button" id="select-shown" class="btn">All shown</button>
+  <button class="btn" name="action" value="pause">⏸ Pause</button>
+  <button class="btn" name="action" value="resume">▶ Resume</button>
+  <button class="btn" name="action" value="fetch" title="Check the site for new chapters (tracked stories)">⤓ Fetch now</button>
+  <select name="channel_id" aria-label="Channel to move to">
+    {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
+  </select>
+  <button class="btn" name="action" value="move">Move</button>
+  <button class="btn btn-danger" name="action" value="drop"
+          onclick="return confirm('Drop the selected stories? They stop broadcasting; you can bring them back.')">❌ Drop</button>
+</form>
+
 <details class="section" data-section="now-broadcasting" open>
   <summary>📺 Now broadcasting <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
   {% for cv in slot_view %}
+  <div class="channel-block">
   <h3 style="margin:.6em 0 .2em">{{ cv.channel.name }}
     <span class="muted" style="font-size:.7em">/{{ cv.channel.slug }} · {{ cv.channel.parallel_slots }} slot(s)</span>
   </h3>
@@ -176,6 +220,7 @@
     {% endfor %}
   </div>
   {% endif %}
+  </div>{# /.channel-block #}
   {% else %}
   <p class="muted">No channels yet.</p>
   {% endfor %}
@@ -225,7 +270,7 @@
   <thead><tr><th>Title</th><th>Author</th><th>Actions</th></tr></thead>
   <tbody>
   {% for book in completed %}
-  <tr>
+  <tr data-search="{{ (book.title ~ ' ' ~ (book.author or ''))|lower }}">
     <td><a href="/admin/books/{{ book.id }}">{{ book.title }}</a></td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>
@@ -253,7 +298,7 @@
   <thead><tr><th>Title</th><th>Author</th><th>👎</th><th>Actions</th></tr></thead>
   <tbody>
   {% for book in dropped %}
-  <tr>
+  <tr data-search="{{ (book.title ~ ' ' ~ (book.author or ''))|lower }}">
     <td><a href="/admin/books/{{ book.id }}">{{ book.title }}</a></td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ book.thumbs_down }}</td>
@@ -285,6 +330,69 @@ document.addEventListener('change', (e) => {
     document.querySelectorAll('.' + cls).forEach(cb => cb.checked = all.checked);
   }
 });
+// ── Find: client-side filter over [data-search] rows; survives #dash-main swaps ──────────
+const FILTER = { q: '', flag: '' };
+function applyFilter() {
+  const q = FILTER.q.trim().toLowerCase();
+  const filtering = !!(q || FILTER.flag);
+  let shown = 0, total = 0;
+  document.querySelectorAll('#dash-main [data-search]').forEach((r) => {
+    const flags = (r.dataset.flags || '').split(' ');
+    const ok = (!q || r.dataset.search.includes(q)) && (!FILTER.flag || flags.includes(FILTER.flag));
+    r.hidden = !ok;
+    const holder = r.closest('.queue-item');   // the ↑↓ arrows live outside the row
+    if (holder) holder.hidden = !ok;
+    if (r.classList.contains('src-row')) { total++; if (ok) shown++; }
+    if (!ok) { const cb = r.querySelector('.sel-box'); if (cb) cb.checked = false; }
+  });
+  document.querySelectorAll('#dash-main .slot-card, #dash-main .queue-strip, #dash-main .channel-block')
+    .forEach((el) => {
+      el.classList.toggle('filtered-out', filtering && !el.querySelector('.src-row:not([hidden])'));
+    });
+  document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c.dataset.flag === FILTER.flag));
+  const input = document.getElementById('story-filter');
+  if (input && input.value !== FILTER.q) input.value = FILTER.q;
+  const count = document.getElementById('filter-count');
+  if (count) count.textContent = filtering ? shown + ' of ' + total : '';
+  updateSelection();
+}
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'story-filter') { FILTER.q = e.target.value; applyFilter(); }
+});
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest && e.target.closest('.chip');
+  if (chip) { FILTER.flag = FILTER.flag === chip.dataset.flag ? '' : chip.dataset.flag; applyFilter(); }
+});
+
+// ── Select: tick rows, then act on them all from the sticky bar ─────────────────────────
+function updateSelection() {
+  const selecting = document.body.classList.contains('selecting');
+  const n = document.querySelectorAll('.sel-box:checked').length;
+  const bar = document.getElementById('batch-form');
+  if (bar) {
+    bar.hidden = !(selecting && n > 0);
+    const c = document.getElementById('batch-count');
+    if (c) c.textContent = n + ' selected';
+  }
+  const t = document.getElementById('select-toggle');
+  if (t) t.setAttribute('aria-pressed', selecting ? 'true' : 'false');
+}
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'select-toggle') {
+    const on = document.body.classList.toggle('selecting');
+    if (!on) document.querySelectorAll('.sel-box').forEach((cb) => { cb.checked = false; });
+    updateSelection();
+  } else if (e.target.id === 'select-shown') {
+    document.querySelectorAll('.src-row:not([hidden]) .sel-box').forEach((cb) => { cb.checked = true; });
+    updateSelection();
+  }
+});
+document.addEventListener('change', (e) => {
+  if (e.target.classList && e.target.classList.contains('sel-box')) updateSelection();
+});
+document.addEventListener('htmx:afterSwap', applyFilter);
+applyFilter();
+
 // Brief "saved" flash for the auto-saving cursor/weight inputs.
 document.addEventListener('htmx:afterRequest', (e) => {
   const el = e.detail.elt;

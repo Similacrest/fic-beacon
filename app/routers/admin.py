@@ -180,13 +180,25 @@ def _build_slot_view(db, channels, active, queued, last_skips=(), book_notes=Non
     )
 
     def row(book: Book, ch: Channel, queue_pos: int | None = None) -> dict:
+        streak = unread_streak(db, book) if book.status == BookStatus.active else 0
+        why = explain(
+            book, _skip_entry(last_skips, book, ch.name),
+            unread=streak, note=book_notes.get(book.id), queue_pos=queue_pos,
+        )
+        # What the dashboard's filter chips match on.
+        flags = ["tracked" if book.tracked else "backlog"]
+        if why.tone == "warn":
+            flags.append("attention")
+        if streak > 0:
+            flags.append("unread")
+        if book.paused:
+            flags.append("paused")
+        if book.status == BookStatus.queued:
+            flags.append("queued")
         return {
             "book": book,
-            "why": explain(
-                book, _skip_entry(last_skips, book, ch.name),
-                unread=unread_streak(db, book) if book.status == BookStatus.active else 0,
-                note=book_notes.get(book.id), queue_pos=queue_pos,
-            ),
+            "why": why,
+            "flags": " ".join(flags),
             "pending": pending_chapters(book),
             "last_drop": last_drop_at.get(book.id),
         }
@@ -744,6 +756,31 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> RedirectRe
     return RedirectResponse(url="/admin/channels", status_code=303)
 
 
+def _move_to_channel(db: Session, book: Book, target: Channel) -> bool:
+    """Move a source to another channel and rebalance both channels at once. A streaming backlog
+    book joins the back of the new channel's queue (streaming at once only if a slot is free)
+    rather than pushing out the book already streaming there; a tracked story is placed in a slot.
+    Returns False if it was already there. The caller commits."""
+    if book.channel_id == target.id:
+        return False
+    from app.planner.planner import _assign_slots
+    old = db.get(Channel, book.channel_id)
+    if not book.tracked and book.status == BookStatus.active:
+        book.status = BookStatus.queued
+    if not book.tracked:  # … at the back of that queue, not wherever its old position lands
+        last = db.query(func.max(Book.queue_position)).scalar() or 0
+        book.queue_position = last + 1
+    book.channel_id = target.id
+    book.slot_index = None
+    db.flush()
+    # The old channel's freed slot takes its next queued book; in the new one a tracked story is
+    # placed and a backlog book streams if a slot is free.
+    for ch in (old, target):
+        if ch is not None:
+            _assign_slots(db, ch.parallel_slots, ch.id)
+    return True
+
+
 @router.post("/books/{book_id}/set-channel")
 def set_book_channel(
     book_id: int,
@@ -753,24 +790,7 @@ def set_book_channel(
 ) -> RedirectResponse:
     book = db.get(Book, book_id)
     target = db.get(Channel, channel_id)
-    if book and target and book.channel_id != target.id:
-        from app.planner.planner import _assign_slots
-        old = db.get(Channel, book.channel_id)
-        if not book.tracked and book.status == BookStatus.active:
-            # A streaming backlog book joins the new channel's queue rather than taking over a
-            # slot there (which would push out the book already streaming in it).
-            book.status = BookStatus.queued
-        if not book.tracked:  # … at the back of that queue, not wherever its old position lands
-            last = db.query(func.max(Book.queue_position)).scalar() or 0
-            book.queue_position = last + 1
-        book.channel_id = target.id
-        book.slot_index = None
-        db.flush()
-        # Rebalance both now: the old channel's freed slot takes its next queued book; in the new
-        # one a tracked story is placed and a backlog book streams if a slot is free.
-        for ch in (old, target):
-            if ch is not None:
-                _assign_slots(db, ch.parallel_slots, ch.id)
+    if book and target and _move_to_channel(db, book, target):
         db.commit()
     return _back(next)
 
@@ -943,16 +963,85 @@ def set_weight(
     return _saved(request, next)
 
 
+def _drop(db: Session, book: Book) -> bool:
+    """Cancel a source (it stops broadcasting; its slot is refilled). False if already gone."""
+    if book.status in (BookStatus.completed, BookStatus.dropped):
+        return False
+    from app.planner.planner import _refill_book_channel
+    book.status = BookStatus.dropped
+    book.slot_index = None
+    _refill_book_channel(db, book)
+    return True
+
+
 @router.post("/books/{book_id}/drop")
 def drop_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
-    from app.planner.planner import _refill_book_channel
     book = db.get(Book, book_id)
     if book:
         book.status = BookStatus.dropped
         book.slot_index = None
+        from app.planner.planner import _refill_book_channel
         _refill_book_channel(db, book)
         db.commit()
     return _back(next)
+
+
+BATCH_ACTIONS = ("pause", "resume", "fetch", "move", "drop")
+
+
+@router.post("/books/batch")
+def batch_books(
+    action: str = Form(...),
+    book_ids: list[int] = Form([]),
+    channel_id: int | None = Form(None),
+    next: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Apply one action to the sources ticked on the dashboard. Each is skipped (and counted) when
+    it doesn't apply — already paused, not tracked, already in that channel — rather than failing
+    the batch. Redirects with `?done=<action>&n=<changed>&skipped=<skipped>` for the dashboard's
+    one-line confirmation."""
+    from urllib.parse import urlencode
+
+    from app import scheduler
+    from app.planner.planner import pause_book, resume_book
+
+    if action not in BATCH_ACTIONS:
+        return _back(next)
+    target = db.get(Channel, channel_id) if action == "move" and channel_id else None
+    changed = skipped = 0
+    to_fetch: list[Book] = []
+    for bid in dict.fromkeys(book_ids):
+        book = db.get(Book, bid)
+        if book is None:
+            continue
+        if action == "pause":
+            ok = (not book.paused) and book.status in (BookStatus.active, BookStatus.queued)
+            if ok:
+                pause_book(db, book)
+        elif action == "resume":
+            ok = book.paused
+            if ok:
+                resume_book(db, book)
+        elif action == "fetch":
+            ok = (book.tracked and book.status in (BookStatus.active, BookStatus.queued)
+                  and not (book.last_fetch_status or "").startswith("fetching"))
+            if ok:
+                to_fetch.append(book)
+        elif action == "move":
+            ok = target is not None and book.status in (BookStatus.active, BookStatus.queued) \
+                and _move_to_channel(db, book, target)
+        else:  # drop
+            ok = _drop(db, book)
+        changed += 1 if ok else 0
+        skipped += 0 if ok else 1
+    if to_fetch:
+        scheduler.submit_and_track(db, to_fetch)
+    db.commit()
+    dest = next if isinstance(next, str) and next.startswith("/admin/") and "//" not in next else "/admin/"
+    sep = "&" if "?" in dest else "?"
+    return RedirectResponse(
+        url=dest + sep + urlencode({"done": action, "n": changed, "skipped": skipped}), status_code=303)
 
 
 @router.post("/books/{book_id}/pause")

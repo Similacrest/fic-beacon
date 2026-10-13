@@ -99,6 +99,23 @@
     .attention { list-style: none; margin: .9em 0 0; padding: .6em 0 0; border-top: 1px solid #eee; }
     .attention li { padding: .25em 0; }
     .attn-bad { color: #8a1c1c; }
+    /* Find + select (S7, S14) */
+    .filter-bar { display: flex; flex-wrap: wrap; gap: .5em .8em; align-items: center; margin: .2em 0 .8em; }
+    .filter-bar input[type=search] { flex: 1 1 14em; max-width: 22em; padding: .5em .7em; border: 1px solid #ccc;
+      border-radius: 4px; font-size: 1em; }
+    .chips { display: flex; flex-wrap: wrap; gap: .4em; }
+    .chip { padding: .35em .8em; border-radius: 1em; font-size: .9em; background: #fff; }
+    .chip.on { background: #0d6efd; color: #fff; border-color: #0d6efd; }
+    #filter-count { font-size: .85em; }
+    .src-row[hidden], .queue-item[hidden], tr[hidden], .filtered-out { display: none; }
+    .sel-box { display: none; width: 1.4em; height: 1.4em; margin: 0 .2em 0 0; align-self: center; }
+    body.selecting .sel-box { display: inline-block; }
+    .batch-bar { position: sticky; bottom: 0; z-index: 20; display: flex; flex-wrap: wrap; gap: .5em; align-items: center;
+      padding: .6em .8em; margin: .6em 0; background: #fff; border: 1px solid #b6d4fe; border-radius: 8px;
+      box-shadow: 0 -2px 8px rgba(0,0,0,.08); }
+    .batch-bar[hidden] { display: none; }
+    .batch-bar .btn, .batch-bar select { min-height: 2.4em; width: auto; }
+    .flash { background: #e6f4ea; color: #1e5631; border-radius: 6px; padding: .5em .9em; margin-bottom: .8em; }
     .queue-strip { margin: .4em 0 1em; padding: .4em .8em; background: #f6f6f6; border-radius: 6px; font-size: .95em; }
     button, .btn {
       padding: .3em .9em;

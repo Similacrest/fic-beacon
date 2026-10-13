@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-10-13
+
+### Added
+- **Find a story.** A search box on the dashboard filters every row (slots, queue, completed,
+  dropped) by title or author as you type, and one-tap chips narrow it to *Needs attention*, *Unread*,
+  *Paused*, *Tracked*, *Backlog* or *Queued*. Channels, slots and queues with nothing left to show
+  fold away, and "N of M" says how many match. The filter survives the dashboard refreshing itself.
+- **Act on several at once.** *☑ Select* shows a checkbox on each row; a bar sticks to the bottom
+  with **Pause, Resume, Fetch now, Move to channel and Drop** for everything ticked (*All shown* ticks
+  just what the filter leaves visible). Stories an action doesn't apply to — already paused, not
+  tracked, already in that channel — are skipped and counted in the confirmation line.
+
+### Changed
+- Batch drop confirms first; everything it drops can be brought back from the Dropped list.
+
 ## [0.20.0] — 2026-10-13
 
 ### Added

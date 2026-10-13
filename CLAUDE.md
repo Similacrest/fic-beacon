@@ -351,7 +351,11 @@ unwrapped (links dropped, authored number kept); note images use the image route
   a 14-day words-per-day sparkline (days cut in `BEACON_TZ`), unread count — and the **run controls**
   (▶ Run release with a schedule picker, 🔄 Check feeds). While a run is in flight the banner shows
   its live stage (`app/progress.py`, set by the scheduler job and the planner per channel) and elapsed
-  time; every run — scheduled or manual — writes its outcome (chapters/words/downloads, duration, or
+  time; **find & act** sits under it: a search box + chips (needs attention / unread / paused / tracked
+  / backlog / queued) filter the rows client-side (`data-search`/`data-flags`, set per row in
+  `admin._build_slot_view`; state survives HTMX swaps), and **☑ Select** reveals row checkboxes and a
+  sticky bar → `POST /admin/books/batch` (`pause|resume|fetch|move|drop`, each skipped-and-counted when
+  it doesn't apply, redirecting with `?done=&n=&skipped=` for the one-line flash); every run — scheduled or manual — writes its outcome (chapters/words/downloads, duration, or
   the error) to `app_state[last_run_result:release|feedcheck]` (`scheduler._record_run`). Below it,
   per channel, slot cards with one row per story + its reason chip
   (`planner/explain.py`), the channel's queue ("Up next", ↑↓ reorder within the channel), fetches,
