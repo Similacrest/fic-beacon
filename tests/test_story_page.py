@@ -1,0 +1,170 @@
+"""The per-story admin page (S6) and the book actions that return to it."""
+import pytest
+from fastapi.testclient import TestClient
+
+from app.models import BookStatus, Channel, Drop, FeedbackAction, FeedbackEvent
+
+
+@pytest.fixture
+def ctx(monkeypatch):
+    """(client, db) over a StaticPool in-memory DB — the TestClient serves on another thread."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.config import settings
+    from app.database import ensure_default_channel, get_db
+    from app.main import app
+    from app.models import Base, Config
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add(Config(id=1, wpm=250, feed_secret="test-secret"))
+    db.flush()
+    ensure_default_channel(db)
+    db.commit()
+    monkeypatch.setattr(settings, "admin_open", True)
+    monkeypatch.setattr(settings, "proxy_token", None)
+    app.dependency_overrides[get_db] = lambda: db
+    yield TestClient(app), db
+    app.dependency_overrides.pop(get_db, None)
+    db.close()
+    engine.dispose()
+
+
+def _book(db, title="Story", **kw):
+    from tests.test_planner import _make_book
+    b = _make_book(db, calibre_id=kw.pop("calibre_id", 1), title=title)
+    for k, v in kw.items():
+        setattr(b, k, v)
+    db.commit()
+    return b
+
+
+def _drop(db, book, acked):
+    from app.models import utcnow
+    d = Drop(book_id=book.id, channel_id=book.channel_id, feed_key="1", word_count=1234,
+             chapter_start=0, chapter_end=0, chapter_titles="Chapter One", content_html="x",
+             feedback_token=f"t{book.id}{acked}", reader_slug=f"s{book.id}{acked}",
+             acknowledged_at=utcnow() if acked else None)
+    db.add(d)
+    db.flush()
+    return d
+
+
+class TestStoryPage:
+    def test_active_backlog_book(self, ctx):
+        client, db = ctx
+        b = _book(db, "Mistborn", slot_index=1, total_chapters=20, cursor_chapter_index=5)
+        d = _drop(db, b, acked=False)
+        db.add(FeedbackEvent(token="t", book_id=b.id, drop_id=d.id, action=FeedbackAction.up))
+        db.add(FeedbackEvent(token="t", book_id=b.id, drop_id=d.id, action=FeedbackAction.read))
+        db.commit()
+        page = client.get(f"/admin/books/{b.id}")
+        assert page.status_code == 200
+        t = page.text
+        assert "Mistborn" in t and "On air — 15 waiting" in t
+        assert "⏸ Pause" in t and "❌ Drop" in t and "Re-queue" not in t
+        assert 'name="next" value="/admin/books/%d"' % b.id in t
+        assert "Chapter One" in t and "unread" in t
+        assert "👍" in t and t.count('class="pill"') == 1  # 'read' acks aren't listed as feedback
+
+    def test_tracked_story_has_fetch_now(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", tracked=True, slot_index=1, last_fetch_status="error: HTTP 503")
+        t = client.get(f"/admin/books/{b.id}").text
+        assert "⤓ Fetch now" in t and f"/admin/ongoing/{b.id}/fetch-now" in t
+        assert "HTTP 503" in t and "Stop tracking updates" in t
+
+    def test_queued_book_shows_position_and_arrows(self, ctx):
+        client, db = ctx
+        _book(db, "First", calibre_id=1, status=BookStatus.queued, queue_position=1)
+        b = _book(db, "Second", calibre_id=2, status=BookStatus.queued, queue_position=2)
+        t = client.get(f"/admin/books/{b.id}").text
+        assert "Queued — #2 in line" in t and "Queue position #2" in t
+
+    def test_dropped_book_offers_requeue_only(self, ctx):
+        client, db = ctx
+        b = _book(db, "Gone", status=BookStatus.dropped)
+        t = client.get(f"/admin/books/{b.id}").text
+        assert "↺ Re-queue" in t and "❌ Drop" not in t and "Placement" not in t
+
+    def test_unknown_book_404(self, ctx):
+        client, _ = ctx
+        assert client.get("/admin/books/999").status_code == 404
+
+    def test_slot_picker_for_multi_slot_channel(self, ctx):
+        client, db = ctx
+        ch = db.query(Channel).first()
+        ch.parallel_slots = 3
+        b = _book(db, "Mistborn", slot_index=1)
+        t = client.get(f"/admin/books/{b.id}").text
+        assert f"Slot 3 — /feed/{ch.slug}/3" in t
+
+
+class TestActionsReturnToTheStory:
+    def test_pause_returns_to_story_page(self, ctx):
+        client, db = ctx
+        b = _book(db, slot_index=1)
+        r = client.post(f"/admin/books/{b.id}/pause", data={"next": f"/admin/books/{b.id}"},
+                        follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == f"/admin/books/{b.id}"
+
+    @pytest.mark.parametrize("bad", ["https://evil.example/", "//evil.example/admin/",
+                                     "/admin//evil", "/feed/x"])
+    def test_next_never_leaves_admin(self, ctx, bad):
+        client, db = ctx
+        b = _book(db, slot_index=1)
+        r = client.post(f"/admin/books/{b.id}/pause", data={"next": bad}, follow_redirects=False)
+        assert r.headers["location"] == "/admin/"
+
+    def test_without_next_goes_to_dashboard(self, ctx):
+        client, db = ctx
+        b = _book(db, slot_index=1)
+        r = client.post(f"/admin/books/{b.id}/drop", follow_redirects=False)
+        assert r.headers["location"] == "/admin/"
+
+    def test_weight_plain_submit_returns_to_story(self, ctx):
+        client, db = ctx
+        b = _book(db, slot_index=1)
+        r = client.post(f"/admin/books/{b.id}/set-weight",
+                        data={"weight": "2.5", "next": f"/admin/books/{b.id}"}, follow_redirects=False)
+        assert r.headers["location"] == f"/admin/books/{b.id}"
+        db.refresh(b)
+        assert b.quota_weight == 2.5
+
+
+class TestQueueMoveStaysInChannel:
+    def test_move_up_skips_other_channels(self, ctx):
+        client, db = ctx
+        other = Channel(name="Other", slug="other", parallel_slots=1, weight=1.0)
+        db.add(other)
+        db.flush()
+        a = _book(db, "A", calibre_id=1, status=BookStatus.queued, queue_position=1)
+        x = _book(db, "X", calibre_id=2, status=BookStatus.queued, queue_position=2, channel_id=other.id)
+        b = _book(db, "B", calibre_id=3, status=BookStatus.queued, queue_position=3)
+        client.post(f"/admin/books/{b.id}/move", data={"direction": "up"})
+        db.refresh(a), db.refresh(b), db.refresh(x)
+        assert (b.queue_position, a.queue_position, x.queue_position) == (1, 3, 2)
+
+
+class TestChannelMove:
+    def test_tracked_story_is_placed_in_the_new_channel_at_once(self, ctx):
+        client, db = ctx
+        other = Channel(name="Other", slug="other", parallel_slots=2, weight=1.0)
+        db.add(other)
+        db.commit()
+        b = _book(db, tracked=True, slot_index=1)
+        client.post(f"/admin/books/{b.id}/set-channel", data={"channel_id": other.id})
+        db.refresh(b)
+        assert b.channel_id == other.id and b.slot_index in (1, 2)
+
+
+class TestDashboard:
+    def test_titles_link_to_story_and_old_tables_are_gone(self, ctx):
+        client, db = ctx
+        b = _book(db, "Mistborn", slot_index=1, total_chapters=20)
+        q = _book(db, "Elantris", calibre_id=2, status=BookStatus.queued, queue_position=5)
+        t = client.get("/admin/").text
+        assert f'href="/admin/books/{b.id}"' in t and f'href="/admin/books/{q.id}"' in t
+        assert "📚 Active sources" not in t and "📋 Queue <span" not in t

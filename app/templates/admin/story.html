@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}{{ book.title }} — Fic Beacon{% endblock %}
+{% block content %}
+{# One place per story (S6): status + why, every control, and history. Every action posts a
+   hidden `next` so it comes back here; plain forms, no JS needed (inputs also auto-save via HTMX). #}
+{% macro back() %}<input type="hidden" name="next" value="{{ here }}">{% endmacro %}
+{% set active = book.status.value == 'active' %}
+{% set queued = book.status.value == 'queued' %}
+{% set gone = book.status.value in ('completed', 'dropped') %}
+
+<p class="muted" style="margin:0 0 .3em"><a href="/admin/">← Dashboard</a></p>
+<h1 style="margin-bottom:.2em">{{ '📡' if book.tracked else '📖' }} {{ book.title }}</h1>
+<p class="muted" style="margin:0 0 .8em">
+  {% if book.author and book.author != 'Unknown' %}{{ book.author }} · {% endif %}
+  {{ 'Tracked serial' if book.tracked else 'Backlog book' }} ·
+  {{ channel.name if channel else '—' }}{% if active and book.slot_index %} › slot {{ book.slot_index }}{% endif %}
+</p>
+
+<div class="story-status">
+  <span class="why why-{{ why.tone }}" style="font-size:1em">{{ why.icon }} {{ why.text }}</span>
+  {% if why.detail %}<span class="muted" style="font-size:.9em">{{ why.detail }}</span>{% endif %}
+</div>
+
+<div class="story-actions">
+  {% if not gone %}
+  <form method="post" action="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}">{{ back() }}
+    <button class="btn btn-lg">{{ '▶ Resume' if book.paused else '⏸ Pause' }}</button>
+  </form>
+  {% if book.tracked %}
+  <form method="post" action="/admin/ongoing/{{ book.id }}/fetch-now">{{ back() }}
+    <button class="btn btn-lg" title="Check the site for new chapters now">⤓ Fetch now</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/admin/books/{{ book.id }}/drop"
+        onsubmit="return confirm('Drop this story? It stops broadcasting. You can re-queue it later.')">{{ back() }}
+    <button class="btn btn-lg btn-danger">❌ Drop</button>
+  </form>
+  {% else %}
+  <form method="post" action="/admin/books/{{ book.id }}/requeue"
+        onsubmit="return confirm('Re-queue from the start? Weight and votes reset.')">{{ back() }}
+    <button class="btn btn-lg btn-primary">↺ Re-queue</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="story-grid">
+  <section class="card">
+    <h2>Reading</h2>
+    <form method="post" action="/admin/books/{{ book.id }}/set-cursor" class="inline-row"
+          title="{% if book.cursor_floor %}Can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">{{ back() }}
+      <label for="cursor">Next chapter to drop</label>
+      <input id="cursor" type="number" name="chapter_index" value="{{ book.cursor_chapter_index }}"
+             min="{{ book.cursor_floor }}" {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
+             hx-post="/admin/books/{{ book.id }}/set-cursor" hx-trigger="change delay:500ms" hx-swap="none"
+             class="autosave" style="width:5.5em">
+      <span class="muted">of {{ book.total_chapters if book.total_chapters is not none else '?' }}</span>
+    </form>
+    {% if book.chapter_label_offset or book.label_map %}
+    <p class="muted" style="font-size:.85em; margin:.2em 0">Author's numbering: ≈ chapter {{ abs_chapter(book, book.cursor_chapter_index) }}</p>
+    {% endif %}
+    {% if book.total_chapters %}
+    <div class="bar"><span style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%"></span></div>
+    <p class="muted" style="font-size:.85em; margin:.3em 0">{{ pending }} chapter{{ '' if pending == 1 else 's' }} waiting</p>
+    {% endif %}
+    <div class="inline-row">
+      <form method="post" action="/admin/books/{{ book.id }}/cursor-start">{{ back() }}
+        <button class="btn" title="Read the whole work from chapter 1">⏮ From the start</button>
+      </form>
+      <form method="post" action="/admin/books/{{ book.id }}/cursor-latest">{{ back() }}
+        <button class="btn" title="Skip to the end — only new chapters drop">⏭ Only new chapters</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Priority</h2>
+    <form method="post" action="/admin/books/{{ book.id }}/set-weight" class="inline-row">{{ back() }}
+      <label for="weight">Weight</label>
+      <input id="weight" type="number" name="weight" value="{{ '%g'|format(book.quota_weight) }}" step="0.25" min="0" max="100"
+             hx-post="/admin/books/{{ book.id }}/set-weight" hx-trigger="change delay:500ms" hx-swap="none"
+             class="autosave" style="width:5.5em">
+    </form>
+    <p class="muted" style="font-size:.85em; margin:.2em 0">
+      Higher weight wins more of its slot's turns. 👍 {{ book.thumbs_up }} · 👎 {{ book.thumbs_down }}
+      {% if book.cooldown_remaining %} · cooling down{% endif %}
+    </p>
+    <form method="post" action="/admin/books/{{ book.id }}/track" class="inline-row">{{ back() }}
+      <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
+      <button class="btn" title="{{ 'Stop checking for new chapters; it becomes a finite backlog book' if book.tracked else 'Check for new chapters and keep it streaming' }}">
+        {{ '📴 Stop tracking updates' if book.tracked else '📡 Track updates' }}
+      </button>
+    </form>
+  </section>
+
+  {% if not gone %}
+  <section class="card">
+    <h2>Placement</h2>
+    <form method="post" action="/admin/books/{{ book.id }}/set-channel" class="inline-row">{{ back() }}
+      <label for="channel">Channel</label>
+      <select id="channel" name="channel_id" onchange="this.form.submit()" style="width:auto">
+        {% for ch in channels %}<option value="{{ ch.id }}" {% if ch.id == book.channel_id %}selected{% endif %}>{{ ch.name }}</option>{% endfor %}
+      </select>
+    </form>
+    {% if active and channel and channel.parallel_slots > 1 %}
+    <form method="post" action="/admin/books/{{ book.id }}/set-slot" class="inline-row">{{ back() }}
+      <label for="slot">Slot (feed)</label>
+      <select id="slot" name="slot_index" onchange="this.form.submit()" style="width:auto">
+        {% if not book.slot_index %}<option value="" selected>not placed yet</option>{% endif %}
+        {% for n in range(1, channel.parallel_slots + 1) %}
+        <option value="{{ n }}" {% if n == book.slot_index %}selected{% endif %}>Slot {{ n }} — /feed/{{ channel.slug }}/{{ n }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% if not book.tracked %}<p class="muted" style="font-size:.85em; margin:.2em 0">A backlog book swaps with the one already in that slot.</p>{% endif %}
+    {% elif active and channel %}
+    <p class="muted" style="font-size:.9em; margin:.2em 0">Feed: /feed/{{ channel.slug }}/{{ book.slot_index or 1 }}</p>
+    {% endif %}
+    {% if queued %}
+    <div class="inline-row">
+      <span>Queue position #{{ queue_pos }}</span>
+      <form method="post" action="/admin/books/{{ book.id }}/move">{{ back() }}<input type="hidden" name="direction" value="up"><button class="btn" title="Earlier in the queue">↑</button></form>
+      <form method="post" action="/admin/books/{{ book.id }}/move">{{ back() }}<input type="hidden" name="direction" value="down"><button class="btn" title="Later in the queue">↓</button></form>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Source</h2>
+    <div class="kv">
+      {% if book.source_url %}<span class="muted">Story</span><a href="{{ book.source_url }}" target="_blank" rel="noopener noreferrer" style="word-break:break-all">{{ book.source_url }}</a>{% endif %}
+      {% if book.tracked %}
+      <span class="muted">Update feed</span><span style="word-break:break-all">{{ book.feed_url or 'none — daily sweep' }}</span>
+      {% if book.story_status %}<span class="muted">Site status</span><span>{{ book.story_status }}</span>{% endif %}
+      <span class="muted">Last fetch</span>
+      <span {% if book.last_fetch_at %}title="{{ book.last_fetch_at|stamp }}"{% endif %}>
+        {{ book.last_fetch_at|ago }}{% if book.last_fetch_status %} — <span class="{{ 'fetch-error' if book.last_fetch_status.startswith('error') else '' }}">{{ book.last_fetch_status }}</span>{% endif %}
+      </span>
+      {% endif %}
+      <span class="muted">Calibre id</span><span>{{ book.calibre_id if book.calibre_id is not none else 'not downloaded yet' }}</span>
+      <span class="muted">Added</span><span title="{{ book.added_at|stamp }}">{{ book.added_at|ago }}</span>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Recent drops</h2>
+  {% if drops %}
+  <table style="font-size:.9em">
+    <tbody>
+    {% for d in drops %}
+    <tr>
+      <td class="muted" style="white-space:nowrap" title="{{ d.published_at|stamp }}">{{ d.published_at|ago }}</td>
+      <td>{{ d.chapter_titles or ('Ch ' ~ (d.chapter_start + 1)) }}</td>
+      <td style="white-space:nowrap">{{ '{:,}'.format(d.word_count) }} w</td>
+      <td style="white-space:nowrap">{% if d.acknowledged_at %}<span class="muted">✓ read</span>{% else %}<span class="why why-wait">unread</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">Nothing dropped yet.</p>{% endif %}
+
+  {% if votes %}
+  <h3 style="font-size:1em; margin:1em 0 .3em">Your feedback</h3>
+  <p style="margin:0; line-height:1.9">
+    {% set icons = {'up': '👍', 'down': '👎', 'extra': '🪝', 'drop': '❌', 'pause': '⏸'} %}
+    {% for v in votes %}<span class="pill" title="{{ v.created_at|stamp }}">{{ icons.get(v.action.value, v.action.value) }} {{ v.created_at|ago }}</span>{% endfor %}
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

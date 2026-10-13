@@ -7,7 +7,7 @@ import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Form, Request, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
@@ -21,7 +21,7 @@ from app.epub.chapterizer import chapterize
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app import timefmt
 from app.models import (
-    Book, BookStatus, BudgetMode, Channel, Config, Drop, Schedule,
+    Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction, Schedule,
     WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
@@ -221,11 +221,63 @@ def _build_subscriber_view(db):
     return out
 
 
+@router.get("/books/{book_id}", response_class=HTMLResponse)
+def story_page(book_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """One place per story: its status and why, every control, and its history."""
+    from app.models import FeedbackEvent
+    from app.planner.explain import explain, pending_chapters
+    from app.planner.planner import unread_streak
+
+    book = db.get(Book, book_id)
+    if book is None:
+        raise HTTPException(status_code=404)
+    channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
+    channel = db.get(Channel, book.channel_id)
+    try:
+        last_skips = json.loads(get_value(db, LAST_SKIPS) or "[]")
+    except json.JSONDecodeError:
+        last_skips = []
+    queue_pos = None
+    if book.status == BookStatus.queued:
+        ids = [
+            bid for (bid,) in db.query(Book.id)
+            .filter(Book.status == BookStatus.queued, Book.channel_id == book.channel_id)
+            .order_by(Book.queue_position)
+        ]
+        queue_pos = ids.index(book.id) + 1 if book.id in ids else None
+    why = explain(
+        book, _skip_entry(last_skips, book, channel.name if channel else ""),
+        unread=unread_streak(db, book) if book.status == BookStatus.active else 0,
+        note=get_value(db, f"{BOOK_NOTE_PREFIX}{book.id}"), queue_pos=queue_pos,
+    )
+    drops = (
+        db.query(Drop).filter(Drop.book_id == book.id)
+        .order_by(Drop.published_at.desc(), Drop.id.desc()).limit(15).all()
+    )
+    votes = (
+        db.query(FeedbackEvent)
+        .filter(FeedbackEvent.book_id == book.id, FeedbackEvent.action != FeedbackAction.read)
+        .order_by(FeedbackEvent.created_at.desc()).limit(15).all()
+    )
+    return templates.TemplateResponse(request, "admin/story.html", {
+        "book": book,
+        "channel": channel,
+        "channels": channels,
+        "why": why,
+        "pending": pending_chapters(book),
+        "queue_pos": queue_pos,
+        "drops": drops,
+        "votes": votes,
+        "here": f"/admin/books/{book.id}",
+    })
+
+
 @router.post("/books/{book_id}/set-slot")
 def set_slot(
     book_id: int,
     request: Request,
     slot_index: int = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> Response:
     """Manually pin an active source to a feed slot (drag-and-drop on the dashboard).
@@ -256,7 +308,7 @@ def set_slot(
                     occupant.slot_index = book.slot_index
             book.slot_index = slot_index
             db.commit()
-    return _saved(request)
+    return _saved(request, next)
 
 
 # ── Calibre import / Library ──────────────────────────────────────────────────
@@ -395,6 +447,7 @@ def add_from_library(
 def set_book_tracked(
     book_id: int,
     tracked: int = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Toggle whether an existing book auto-updates. Tracked books are never queued."""
@@ -413,7 +466,7 @@ def set_book_tracked(
             book.status = BookStatus.queued
             book.slot_index = None
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
@@ -534,6 +587,7 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> RedirectRe
 def set_book_channel(
     book_id: int,
     channel_id: int = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     book = db.get(Book, book_id)
@@ -541,8 +595,10 @@ def set_book_channel(
     if book and target and book.channel_id != target.id:
         book.channel_id = target.id
         book.slot_index = None
+        from app.planner.planner import assign_channel_slots
+        assign_channel_slots(db, target.id)  # tracked: placed now, not at the next release
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 # ── Queue management ──────────────────────────────────────────────────────────
@@ -551,38 +607,49 @@ def set_book_channel(
 def move_book(
     book_id: int,
     direction: str = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     book = db.get(Book, book_id)
     if book is None:
-        return RedirectResponse(url="/admin/", status_code=303)
+        return _back(next)
 
     if direction == "up":
         swap = (
             db.query(Book)
-            .filter(Book.queue_position < book.queue_position, Book.status == book.status)
+            .filter(Book.queue_position < book.queue_position, Book.status == book.status,
+                    Book.channel_id == book.channel_id)
             .order_by(Book.queue_position.desc())
             .first()
         )
     else:
         swap = (
             db.query(Book)
-            .filter(Book.queue_position > book.queue_position, Book.status == book.status)
+            .filter(Book.queue_position > book.queue_position, Book.status == book.status,
+                    Book.channel_id == book.channel_id)
             .order_by(Book.queue_position)
             .first()
         )
     if swap:
         book.queue_position, swap.queue_position = swap.queue_position, book.queue_position
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
-def _saved(request: Request) -> Response:
+def _back(next: str | None) -> RedirectResponse:
+    """Redirect after a book action: back to the page it came from (`next`, an /admin/ path —
+    the dashboard or a story page), else the dashboard. Never off-site."""
+    ok = isinstance(next, str) and next.startswith("/admin/") and "//" not in next and "\\" not in next
+    url = next if ok else "/admin/"  # (a direct call passes the Form() default — not a str)
+    return RedirectResponse(url=url, status_code=303)
+
+
+def _saved(request: Request, next: str | None = None) -> Response:
     """Reply to an inline auto-save: a bodyless 204 for HTMX (no swap, keeps focus),
-    or the usual dashboard redirect for a plain form submit (no-JS fallback)."""
+    or a redirect back for a plain form submit (no-JS fallback)."""
     if request.headers.get("HX-Request"):
         return Response(status_code=204)
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/books/{book_id}/set-cursor")
@@ -590,6 +657,7 @@ def set_cursor(
     book_id: int,
     request: Request,
     chapter_index: int = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> Response:
     book = db.get(Book, book_id)
@@ -598,7 +666,7 @@ def set_cursor(
         # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
         book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
         db.commit()
-    return _saved(request)
+    return _saved(request, next)
 
 
 def _book_chapter_count(book: Book) -> int | None:
@@ -613,7 +681,7 @@ def _book_chapter_count(book: Book) -> int | None:
 
 
 @router.post("/books/{book_id}/cursor-latest")
-def cursor_latest(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def cursor_latest(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     """Jump the cursor to the current EPUB end — 'ongoing' handling, only new chapters drop.
 
     Computes the chapter count on demand, so it works immediately after adding a book (before
@@ -626,11 +694,11 @@ def cursor_latest(book_id: int, db: Session = Depends(get_db)) -> RedirectRespon
             book.total_chapters = count
             book.cursor_chapter_index = max(book.cursor_floor, count)
             db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/books/{book_id}/cursor-start")
-def cursor_start(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def cursor_start(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     """Rewind the cursor to the start — 'from-start' handling, read the whole work."""
     book = db.get(Book, book_id)
     if book is not None:
@@ -639,7 +707,7 @@ def cursor_start(book_id: int, db: Session = Depends(get_db)) -> RedirectRespons
             book.total_chapters = count
         book.cursor_chapter_index = book.cursor_floor
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/books/{book_id}/set-weight")
@@ -647,6 +715,7 @@ def set_weight(
     book_id: int,
     request: Request,
     weight: float = Form(...),
+    next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> Response:
     from app.planner.planner import WEIGHT_CAP
@@ -654,7 +723,7 @@ def set_weight(
     if book is not None:
         book.quota_weight = max(0.0, min(WEIGHT_CAP, round(weight, 3)))  # never auto-drops
         db.commit()
-    return _saved(request)
+    return _saved(request, next)
 
 
 @router.post("/books/batch-drop")
@@ -674,7 +743,7 @@ def batch_drop(
 
 
 @router.post("/books/{book_id}/drop")
-def drop_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def drop_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     from app.planner.planner import _refill_book_channel
     book = db.get(Book, book_id)
     if book:
@@ -682,27 +751,27 @@ def drop_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
         book.slot_index = None
         _refill_book_channel(db, book)
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/books/{book_id}/pause")
-def pause_book_route(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def pause_book_route(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     from app.planner.planner import pause_book
     book = db.get(Book, book_id)
     if book and not book.paused:
         pause_book(db, book)
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/books/{book_id}/resume")
-def resume_book_route(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def resume_book_route(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     from app.planner.planner import resume_book
     book = db.get(Book, book_id)
     if book and book.paused:
         resume_book(db, book)
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 @router.post("/dropped/clear")
@@ -716,7 +785,7 @@ def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
 
 
 @router.post("/books/{book_id}/requeue")
-def requeue_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def requeue_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     book = db.get(Book, book_id)
     if book:
         # Tracked stories are never queued: they stay active and get re-pinned to a slot.
@@ -735,7 +804,7 @@ def requeue_book(book_id: int, db: Session = Depends(get_db)) -> RedirectRespons
             from app.planner.planner import assign_channel_slots
             assign_channel_slots(db, book.channel_id)
         db.commit()
-    return RedirectResponse(url="/admin/", status_code=303)
+    return _back(next)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────

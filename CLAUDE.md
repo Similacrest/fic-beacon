@@ -134,7 +134,8 @@ smallest — so the first release after upgrading is the same size and split as 
   by the fewest chapters ever dropped into that slot. A story is **placed at add/import time**
   (`planner.assign_channel_slots`, tracked only — backlog promotion stays with the release cycle),
   not lumped until the next broadcast. Pinning is **sticky** — and can be **overridden
-  manually** by dragging a source between slot cards on the dashboard (`POST /admin/books/{id}/set-slot`;
+  manually** by dragging a source between slot cards on the dashboard, or with the slot picker on its
+  story page (touch-friendly) (`POST /admin/books/{id}/set-slot`;
   backlog books swap to keep one-per-slot, tracked just move). A valid manual pin survives the next
   broadcast (the assignment step only (re)places sources lacking a valid slot). `book.tracked` is the
   single flag that distinguishes the two behaviours (there is no `kind`).
@@ -339,6 +340,18 @@ Part/chapter nav links aren't misread as notes). **Only cross-file notes are inl
 footnotes already resolve inside the dropped item. The note's own number/back-link anchors are
 unwrapped (links dropped, authored number kept); note images use the image route above.
 
+### Admin UI
+- **Dashboard** (`/admin/`): per channel, slot cards with one row per story + its reason chip
+  (`planner/explain.py`), the channel's queue ("Up next", ↑↓ reorder within the channel), fetches,
+  system status, recently completed/dropped. Titles link to the story page.
+- **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the *one place* for a story's
+  controls: pause/resume, fetch now, drop / re-queue, cursor (⏮/⏭/exact), weight, track toggle,
+  channel, slot picker, queue position, source/fetch facts, recent drops (read/unread) and feedback.
+  Book action routes take an optional `next` form field (`admin._back`: only `/admin/…` paths, no
+  `//`) and redirect there, else to the dashboard; inline auto-saves still answer HTMX with 204.
+- Relative times (`|ago`) with the full timestamp in `title=` (`|stamp`, `app/timefmt.py`). Tablet
+  use matters: reasons and errors must be readable without hover.
+
 ### Feedback contract (plain hyperlinks, any reader)
 Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
 Links render as **bare emoji** (no text label); the wording lives in each link's `title=`/`aria-label=`
@@ -370,7 +383,7 @@ Links render as **bare emoji** (no text label); the wording lives in each link's
   sources are excluded from candidate selection and slot assignment (`_active_books_in`,
   `_assign_slots` filter `paused`). **Resume is admin-UI-only** — a paused source emits no feed
   items, so the feed can't carry a resume link. Pause/resume is unified on `pause_book`/`resume_book`
-  (`planner.py`): the feed ⏸ link, the dashboard toggle (`POST /admin/books/{id}/pause|resume`), and
+  (`planner.py`): the feed ⏸ link, the story page's toggle (`POST /admin/books/{id}/pause|resume`), and
   the **Tracked Stories** page toggle (`/admin/ongoing/{id}/toggle`, batch pause/resume) all call it.
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
 - `read` → neutral **✓ Mark read** acknowledgement: sets `drop.acknowledged_at`, no weight change,

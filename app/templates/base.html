@@ -49,6 +49,29 @@
     .why-detail { flex-basis: 100%; color: #888; font-size: .8em; padding-left: 1.6em; }
     .recent-drops { margin-top: .3em; }
     .recent-drops > summary { font-size: .8em; cursor: pointer; }
+    /* Story page (admin/story.html) — tablet-friendly tap targets. */
+    .story-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4em .8em; margin-bottom: 1em; }
+    .story-actions { display: flex; flex-wrap: wrap; gap: .5em; margin-bottom: 1em; }
+    .story-actions form { margin: 0; }
+    .btn-lg { padding: .5em 1.1em; font-size: 1em; }
+    .story-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(19em, 1fr)); gap: .8em; }
+    .card { background: #fff; border: 1px solid #e3e3e3; border-radius: 6px; padding: .3em 1em 1em; margin-bottom: .8em; }
+    .story-grid .card { margin-bottom: 0; }
+    .card h2 { font-size: 1.05em; margin: .6em 0 .5em; }
+    .inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5em; margin: .4em 0; }
+    .inline-row form { margin: 0; }
+    .inline-row label { margin: 0; }
+    .inline-row .btn, .story-grid .btn { min-height: 2.3em; }
+    .bar { background: #e9ecef; border-radius: 4px; height: 8px; margin-top: .6em; }
+    .bar > span { display: block; background: #0d6efd; height: 100%; border-radius: 4px; }
+    .fetch-error { color: #8a1c1c; }
+    a.src-title { color: inherit; text-decoration: none; }
+    a.src-title:hover { text-decoration: underline; }
+    .queue-item { display: flex; align-items: center; gap: .4em; }
+    .queue-item .src-row { flex: 1; }
+    .queue-move { display: flex; gap: .3em; }
+    .queue-move form { margin: 0; }
+    .queue-move .btn { padding: .2em .6em; }
     .queue-strip { margin: .4em 0 1em; padding: .4em .8em; background: #f6f6f6; border-radius: 6px; font-size: .95em; }
     button, .btn {
       padding: .3em .9em;

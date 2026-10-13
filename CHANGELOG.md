@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-13
+
 ### Changed
 - **Dashboard says why each story did or didn't drop.** Each slot card lists its stories, one row
   each, with a reason chip: dropped last release, caught up, saving up for an oversized chapter,
@@ -14,8 +16,22 @@ All notable changes to this project are documented here. The format is based on
   The channel's queue shows under its slots. This replaces the "Next broadcast — waiting & held
   out" section and its held-out table. Times on the slot cards are relative ("5h ago"), with the
   full timestamp on hover.
+- **One page per story** (`/admin/books/{id}`): status and reason, pause/resume, fetch now,
+  drop or re-queue, reading position (exact, from the start, only new chapters), weight, track
+  toggle, channel, a slot picker (works on touch, unlike drag-and-drop), queue position, source and
+  last fetch, recent drops with read/unread, and your 👍/👎/🪝/⏸/❌ history. Titles on the dashboard
+  and the Tracked Stories page link to it, and its actions come back to it.
+- The dashboard's **Active sources** and **Queue** tables are gone; their controls live on the story
+  page. The queue shows under each channel ("Up next") with ↑↓ reordering. Batch drop on the
+  dashboard is gone (batch actions remain on Tracked Stories).
+- Moving a story to another channel places a tracked story in a slot at once, not at the next
+  release.
 - The release cycle's skip log records the planner's reasons (`book_id`, oversized, fresh, unread
   penalty, weight fade, the channel's budget and use) and the sources whose Calibre entry is missing.
+
+### Fixed
+- Queue ↑↓ swapped places with the neighbouring queued book in *any* channel; it now stays within
+  the book's own channel.
 
 ## [0.16.0] — 2026-10-13
 

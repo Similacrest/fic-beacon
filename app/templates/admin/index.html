@@ -2,92 +2,7 @@
 {% block title %}Dashboard — Fic Beacon{% endblock %}
 {% block content %}
 
-{% macro channel_select(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/set-channel" style="display:inline"
-      title="Move to another channel">
-  <select name="channel_id" style="font-size:.85em; padding:.1em .2em"
-          hx-post="/admin/books/{{ book.id }}/set-channel" hx-trigger="change"
-          onchange="if(!window.htmx) this.form.submit()">
-    {% for ch in channels %}
-    <option value="{{ ch.id }}" {% if ch.id == book.channel_id %}selected{% endif %}>{{ ch.name }}</option>
-    {% endfor %}
-  </select>
-</form>
-{% endmacro %}
-
-{# Progress cell — every source is an EPUB now (backlog or tracked). The cursor is a
-   physical chapter index; cursor_floor blocks rewinding into a stub-rewritten body. #}
-{% macro progress_cell(book) %}
-<span style="white-space:nowrap">
-  <form method="post" action="/admin/books/{{ book.id }}/set-cursor"
-        hx-post="/admin/books/{{ book.id }}/set-cursor" hx-swap="none"
-        style="display:inline; margin-right:.4em"
-        title="Set chapter cursor (auto-saves; rewind/skip ahead){% if book.cursor_floor %} — can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">
-    <input type="number" name="chapter_index"
-           value="{{ book.cursor_chapter_index }}"
-           min="{{ book.cursor_floor }}"
-           {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
-           hx-post="/admin/books/{{ book.id }}/set-cursor" hx-trigger="change delay:500ms"
-           hx-swap="none" class="autosave"
-           style="width:52px; padding:.2em .3em; font-size:.85em">
-    {% if book.total_chapters %}<span style="color:#888; font-size:.85em">/{{ book.total_chapters }}</span>{% endif %}
-    {% if book.chapter_label_offset or book.label_map %}<span style="color:#888; font-size:.8em" title="Absolute chapter label">≈ ch {{ abs_chapter(book, book.cursor_chapter_index) }}</span>{% endif %}
-  </form>
-  <form method="post" action="/admin/books/{{ book.id }}/cursor-start" hx-post="/admin/books/{{ book.id }}/cursor-start"
-        style="display:inline" title="Read from the start (chapter 1)">
-    <button type="submit" style="padding:.15em .4em; font-size:.8em">⏮</button>
-  </form>
-  <form method="post" action="/admin/books/{{ book.id }}/cursor-latest" hx-post="/admin/books/{{ book.id }}/cursor-latest"
-        style="display:inline; margin-right:.4em"
-        title="Jump to latest — only new chapters drop (ongoing handling)">
-    <button type="submit" style="padding:.15em .4em; font-size:.8em">⏭</button>
-  </form>
-  {% if book.total_chapters %}
-  <span class="progress-bar-wrap">
-    <span class="progress-bar-fill"
-      style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%">
-    </span>
-  </span>
-  {% endif %}
-</span>
-{% endmacro %}
-
 {% macro fmt_dt(dt) %}{% if dt %}{{ dt.strftime('%Y-%m-%d %H:%M %Z') or dt.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}<span class="muted">never</span>{% endif %}{% endmacro %}
-
-{# Inline weight adjustment #}
-{% macro weight_cell(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/set-weight"
-      hx-post="/admin/books/{{ book.id }}/set-weight" hx-swap="none" style="display:inline">
-  <input type="number" name="weight"
-         value="{{ '%.2f'|format(book.quota_weight) }}"
-         min="0" max="100" step="0.05"
-         hx-post="/admin/books/{{ book.id }}/set-weight" hx-trigger="change delay:500ms"
-         hx-swap="none" class="autosave"
-         title="Auto-saves on change"
-         style="width:60px; padding:.2em .3em; font-size:.85em">
-</form>
-{% endmacro %}
-
-{# Toggle a source between ongoing (tracked, auto-updating) and finite-backlog handling. #}
-{% macro track_toggle(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/track"
-      hx-post="/admin/books/{{ book.id }}/track" style="display:inline"
-      title="{{ 'Stop auto-updating — treat as finite backlog' if book.tracked else 'Auto-update from source — treat as ongoing serial' }}">
-  <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
-  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '📡' if book.tracked else '📴' }}</button>
-</form>
-{% endmacro %}
-
-{# Pause (removes a source from the rotation, freeing its slot) / Resume toggle. #}
-{% macro pause_toggle(book) %}
-<form method="post" action="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}"
-      hx-post="/admin/books/{{ book.id }}/{{ 'resume' if book.paused else 'pause' }}" style="display:inline"
-      title="{{ 'Resume broadcasting this source' if book.paused else 'Pause — stop broadcasting; a backlog book frees its slot' }}">
-  <button class="btn" style="font-size:.8em; padding:.15em .5em">{{ '▶' if book.paused else '⏸' }}</button>
-</form>
-{% endmacro %}
-
-{% macro paused_badge(book) %}{% if book.paused %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Paused — not broadcasting">⏸ paused</span>{% if book_notes and book_notes.get(book.id) %} <span class="badge" style="font-size:.7em; padding:.1em .4em; background:#fde8c8; color:#7a4a00" title="{{ book_notes[book.id] }}">⚠ {{ book_notes[book.id] }}</span>{% endif %}{% endif %}{% endmacro %}
 
 <h1>📡 Dashboard</h1>
 
@@ -131,7 +46,7 @@
 {% macro source_row(r, channel_id, draggable=True) %}
 <div class="src-row{% if draggable %} draggable-source{% endif %}"{% if draggable %} draggable="true"
      data-book-id="{{ r.book.id }}" data-channel="{{ channel_id }}" title="Drag to another slot to repin"{% endif %}>
-  <span class="src-title">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</span>
+  <a class="src-title" href="/admin/books/{{ r.book.id }}" draggable="false">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</a>
   <span class="why why-{{ r.why.tone }}"{% if r.why.detail %} title="{{ r.why.detail }}"{% endif %}>{{ r.why.icon }} {{ r.why.text }}</span>
   {% if r.last_drop %}<span class="src-meta" title="{{ r.last_drop|stamp }}">last drop {{ r.last_drop|ago }}</span>{% endif %}
   {# Problems spell out their detail inline (tablets don't show tooltips); the rest keep it in title= #}
@@ -181,8 +96,16 @@
   {% endif %}
   {% if cv.queue %}
   <div class="queue-strip">
-    <strong>Up next:</strong>
-    {% for r in cv.queue %}{{ source_row(r, cv.channel.id, False) }}{% endfor %}
+    <strong>Up next</strong>
+    {% for r in cv.queue %}
+    <div class="queue-item">
+      {{ source_row(r, cv.channel.id, False) }}
+      <span class="queue-move">
+        {% if not loop.first %}<form method="post" action="/admin/books/{{ r.book.id }}/move" hx-post="/admin/books/{{ r.book.id }}/move"><input type="hidden" name="direction" value="up"><button class="btn" title="Earlier in the queue" aria-label="Earlier in the queue">↑</button></form>{% endif %}
+        {% if not loop.last %}<form method="post" action="/admin/books/{{ r.book.id }}/move" hx-post="/admin/books/{{ r.book.id }}/move"><input type="hidden" name="direction" value="down"><button class="btn" title="Later in the queue" aria-label="Later in the queue">↓</button></form>{% endif %}
+      </span>
+    </div>
+    {% endfor %}
   </div>
   {% endif %}
   {% else %}
@@ -249,108 +172,6 @@
   {% endif %}
 </details>
 
-<details class="section" data-section="active" open>
-<summary>📚 Active sources <span class="count">— {{ active|length }}</span></summary>
-{% if active %}
-<form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="active-batch-form">
-  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
-    <input type="checkbox" data-check-all="active-check" title="Select all">
-    <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('active-check', 'Drop selected active books?')">
-      Drop selected
-    </button>
-  </div>
-</form>
-<table>
-  <thead><tr>
-    <th></th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>👍</th><th>👎</th><th>Weight</th><th>Actions</th>
-  </tr></thead>
-  <tbody>
-  {% for book in active %}
-  <tr>
-    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="active-check" form="active-batch-form"></td>
-    <td>
-      {{ book.title }}
-      {% if book.tracked %}<span class="badge badge-active" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
-      {{ paused_badge(book) }}
-    </td>
-    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
-    <td>{{ channel_select(book) }}</td>
-    <td>{{ progress_cell(book) }}</td>
-    <td>{{ book.thumbs_up }}</td>
-    <td>{{ book.thumbs_down }}</td>
-    <td>{{ weight_cell(book) }}</td>
-    <td style="white-space:nowrap">
-      {{ track_toggle(book) }}
-      {{ pause_toggle(book) }}
-      <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
-        <button class="btn btn-danger">Drop</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p style="color:#888">No active books — import and queue some!</p>
-{% endif %}
-</details>
-
-<details class="section" data-section="queue">
-<summary>📋 Queue <span class="count">— {{ queued|length }}</span></summary>
-{% if queued %}
-<form method="post" action="/admin/books/batch-drop" hx-post="/admin/books/batch-drop" id="queue-batch-form">
-  <div style="margin-bottom:.5em; display:flex; gap:.5em; align-items:center">
-    <input type="checkbox" data-check-all="queue-check" title="Select all">
-    <button class="btn btn-danger" type="submit" style="font-size:.85em; padding:.2em .6em"
-            onclick="return batchConfirm('queue-check', 'Drop selected queued items?')">
-      Drop selected
-    </button>
-  </div>
-</form>
-<table>
-  <thead><tr>
-    <th></th><th>#</th><th>Title</th><th>Author</th><th>Channel</th><th>Progress</th><th>Weight</th><th>Source</th><th>Actions</th>
-  </tr></thead>
-  <tbody>
-  {% for book in queued %}
-  <tr>
-    <td><input type="checkbox" name="book_ids" value="{{ book.id }}" class="queue-check" form="queue-batch-form"></td>
-    <td>{{ loop.index }}</td>
-    <td>
-      {{ book.title }}
-      {% if book.tracked %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Auto-updating">📡 tracked</span>{% endif %}
-      {{ paused_badge(book) }}
-    </td>
-    <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
-    <td>{{ channel_select(book) }}</td>
-    <td>{{ progress_cell(book) }}</td>
-    <td>{{ weight_cell(book) }}</td>
-    <td>{% if book.source_url %}<a href="{{ book.source_url }}" target="_blank">↗</a>{% endif %}</td>
-    <td>
-      <form method="post" action="/admin/books/{{ book.id }}/move" hx-post="/admin/books/{{ book.id }}/move" style="display:inline">
-        <input type="hidden" name="direction" value="up">
-        <button>↑</button>
-      </form>
-      <form method="post" action="/admin/books/{{ book.id }}/move" hx-post="/admin/books/{{ book.id }}/move" style="display:inline">
-        <input type="hidden" name="direction" value="down">
-        <button>↓</button>
-      </form>
-      {{ track_toggle(book) }}
-      {{ pause_toggle(book) }}
-      <form method="post" action="/admin/books/{{ book.id }}/drop" hx-post="/admin/books/{{ book.id }}/drop" style="display:inline">
-        <button class="btn btn-danger">Drop</button>
-      </form>
-    </td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p style="color:#888">Queue is empty.</p>
-{% endif %}
-</details>
-
 {% if completed %}
 <details class="section" data-section="completed">
 <summary>✅ Recently completed <span class="count">— {{ completed|length }}</span></summary>
@@ -359,7 +180,7 @@
   <tbody>
   {% for book in completed %}
   <tr>
-    <td>{{ book.title }}</td>
+    <td><a href="/admin/books/{{ book.id }}">{{ book.title }}</a></td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/requeue" hx-post="/admin/books/{{ book.id }}/requeue" style="display:inline">
@@ -387,7 +208,7 @@
   <tbody>
   {% for book in dropped %}
   <tr>
-    <td>{{ book.title }}</td>
+    <td><a href="/admin/books/{{ book.id }}">{{ book.title }}</a></td>
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ book.thumbs_down }}</td>
     <td>

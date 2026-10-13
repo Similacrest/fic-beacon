@@ -146,7 +146,9 @@ def toggle_source(source_id: int, db: Session = Depends(get_db)) -> RedirectResp
 
 
 @router.post("/{source_id}/fetch-now")
-def fetch_now(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+def fetch_now(
+    source_id: int, next: str | None = Form(None), db: Session = Depends(get_db),
+) -> RedirectResponse:
     """Queue an async fetch for one source (initial download or manual refresh).
 
     Returns immediately — the fetcher downloads in the background (up to ~15 min) and the
@@ -158,7 +160,8 @@ def fetch_now(source_id: int, db: Session = Depends(get_db)) -> RedirectResponse
         raise HTTPException(status_code=404)
     scheduler.submit_and_track(db, [source])
     db.commit()
-    return RedirectResponse(url="/admin/ongoing/", status_code=303)
+    back = next if isinstance(next, str) and next.startswith("/admin/") and "//" not in next else "/admin/ongoing/"
+    return RedirectResponse(url=back, status_code=303)
 
 
 @router.post("/{source_id}/delete")

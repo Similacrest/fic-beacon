@@ -58,7 +58,7 @@
   {% for s in sources %}
   <tr style="{{ 'opacity:.55' if s.paused }}">
     <td><input type="checkbox" name="book_ids" value="{{ s.id }}" class="ongoing-check" form="ongoing-batch-form"></td>
-    <td>{{ s.title }}
+    <td><a href="/admin/books/{{ s.id }}">{{ s.title }}</a>
       {% if s.story_status %}
         {% set done = s.story_status|lower in ['completed', 'complete', 'abandoned', 'published', 'dropped'] %}
         <span title="Story status as reported by the source site"
