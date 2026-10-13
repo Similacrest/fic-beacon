@@ -127,7 +127,17 @@
   {% endif %}
 </div>
 
-{# ── Now broadcasting: per-channel slot feeds (post + chapter level) ───────── #}
+{# ── Now broadcasting: per-channel slot feeds, one row per source with its *why* ── #}
+{% macro source_row(r, channel_id, draggable=True) %}
+<div class="src-row{% if draggable %} draggable-source{% endif %}"{% if draggable %} draggable="true"
+     data-book-id="{{ r.book.id }}" data-channel="{{ channel_id }}" title="Drag to another slot to repin"{% endif %}>
+  <span class="src-title">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</span>
+  <span class="why why-{{ r.why.tone }}"{% if r.why.detail %} title="{{ r.why.detail }}"{% endif %}>{{ r.why.icon }} {{ r.why.text }}</span>
+  {% if r.last_drop %}<span class="src-meta" title="{{ r.last_drop|stamp }}">last drop {{ r.last_drop|ago }}</span>{% endif %}
+  {# Problems spell out their detail inline (tablets don't show tooltips); the rest keep it in title= #}
+  {% if r.why.detail and r.why.tone == 'warn' %}<span class="why-detail">{{ r.why.detail }}</span>{% endif %}
+</div>
+{% endmacro %}
 <details class="section" data-section="now-broadcasting" open>
   <summary>📺 Now broadcasting <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
   {% for cv in slot_view %}
@@ -141,83 +151,43 @@
         feed <code>/feed/{{ cv.channel.slug }}/{{ slot.n }}</code>
       </span>
     </h4>
-    <div style="margin-bottom:.3em">
-      {% if slot.epub %}<span class="pill pill-epub draggable-source" draggable="true"
-        data-book-id="{{ slot.epub.id }}" data-channel="{{ cv.channel.id }}"
-        title="Drag to another slot to repin">📖 {{ slot.epub.title }}</span>{% endif %}
-      {% for o in slot.ongoings %}<span class="pill pill-ongoing draggable-source" draggable="true"
-        data-book-id="{{ o.id }}" data-channel="{{ cv.channel.id }}"
-        title="Drag to another slot to repin">📡 {{ o.title }}</span>{% endfor %}
-      {% if not slot.epub and not slot.ongoings %}<span class="muted">empty — drag a source here</span>{% endif %}
-    </div>
+    {% for r in slot.rows %}{{ source_row(r, cv.channel.id) }}{% else %}
+    <p class="muted" style="margin:.2em 0">empty — drag a source here</p>
+    {% endfor %}
     {% if slot.drops %}
-    <table style="font-size:.85em">
-      <thead><tr><th>Posted</th><th>Source</th><th>Chapter(s)</th><th>Words</th></tr></thead>
-      <tbody>
-      {% for d in slot.drops %}
-      <tr>
-        <td class="muted" style="white-space:nowrap">{{ d.published_at.strftime('%m-%d %H:%M') }}</td>
-        <td>{{ d.book.title }}</td>
-        <td>{{ d.chapter_titles or ('Ch ' ~ (d.chapter_start + 1)) }}</td>
-        <td>{{ '{:,}'.format(d.word_count) }}</td>
-      </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <span class="muted" style="font-size:.85em">no drops in this feed yet</span>
+    <details class="recent-drops">
+      <summary class="muted">Recent drops in this feed</summary>
+      <table style="font-size:.85em">
+        <tbody>
+        {% for d in slot.drops %}
+        <tr>
+          <td class="muted" style="white-space:nowrap" title="{{ d.published_at|stamp }}">{{ d.published_at|ago }}</td>
+          <td>{{ d.book.title }}</td>
+          <td>{{ d.chapter_titles or ('Ch ' ~ (d.chapter_start + 1)) }}</td>
+          <td>{{ '{:,}'.format(d.word_count) }} w</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
     {% endif %}
   </div>
   {% endfor %}
+  {% if cv.unslotted %}
+  <div class="slot-card">
+    <h4>Not in a slot yet <span class="muted" style="font-weight:normal; font-size:.8em">— placed at the next release</span></h4>
+    {% for r in cv.unslotted %}{{ source_row(r, cv.channel.id, False) }}{% endfor %}
+  </div>
+  {% endif %}
+  {% if cv.queue %}
+  <div class="queue-strip">
+    <strong>Up next:</strong>
+    {% for r in cv.queue %}{{ source_row(r, cv.channel.id, False) }}{% endfor %}
+  </div>
+  {% endif %}
   {% else %}
   <p class="muted">No channels yet.</p>
   {% endfor %}
-</details>
-
-{# ── Next broadcast: queued backlog EPUBs + tracked stories with chapters past cursor ── #}
-<details class="section" data-section="next-broadcast">
-  <summary>⏭ Next broadcast — waiting &amp; held out</summary>
-  <p class="muted" style="font-size:.85em">
-    Queued backlog books enter a slot when one frees. Tracked stories with chapters past
-    their cursor are eligible every broadcast but may be held out by the stochastic budget / lower weight.
-  </p>
-  {% for cv in slot_view %}
-  {% if cv.queued_epubs or cv.waiting_ongoings %}
-  <h4 style="margin:.5em 0 .2em">{{ cv.channel.name }}</h4>
-  {% if cv.queued_epubs %}
-  <div style="margin-bottom:.3em"><strong style="font-size:.85em">Queued backlog:</strong>
-    {% for b in cv.queued_epubs %}<span class="pill pill-epub">📖 {{ b.title }}</span>{% endfor %}
-  </div>
-  {% endif %}
-  {% if cv.waiting_ongoings %}
-  <div><strong style="font-size:.85em">Tracked stories with chapters waiting:</strong>
-    {% for b in cv.waiting_ongoings %}<span class="pill pill-ongoing">📡 {{ b.title }} (+{{ b.total_chapters - b.cursor_chapter_index }})</span>{% endfor %}
-  </div>
-  {% endif %}
-  {% endif %}
-  {% else %}
-  <p class="muted">Nothing waiting.</p>
-  {% endfor %}
-
-  {% if last_skips %}
-  <h4 style="margin:1em 0 .2em">Held out last broadcast</h4>
-  <p class="muted" style="font-size:.85em">Sources whose next unit lost the stochastic budget
-    roll (lower weight / over budget) and rolled over.</p>
-  <table style="font-size:.85em">
-    <thead><tr><th>Source</th><th>Channel</th><th>Weight</th><th>Outcome</th></tr></thead>
-    <tbody>
-    {% for s in last_skips %}
-    <tr>
-      <td>{{ s.title }}{% if s.kind == 'tracked' %} <span class="pill pill-ongoing">📡</span>{% endif %}</td>
-      <td class="muted">{{ s.channel }}</td>
-      <td>{{ s.weight }}</td>
-      <td>{% if s.held_out %}<span class="badge badge-queued">held out</span> ({{ s.remaining }} pending)
-          {% else %}dropped {{ s.dropped }}, {{ s.remaining }} rolled over{% endif %}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
 </details>
 
 {# ── Fetches in progress: async FanFicFare downloads (phase + elapsed) ──────── #}

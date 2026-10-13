@@ -88,6 +88,12 @@ class SkippedSource:
     book: Book
     dropped_count: int
     remaining_count: int
+    # Why, as the planner saw it (for the dashboard's per-source explanation):
+    next_words: int = 0          # size of the next waiting unit
+    oversized: bool = False      # next unit > the channel's base budget → saving up (pass 1)
+    fresh: bool = False          # fresh chapter that didn't fit the remaining budget
+    penalty: float = 1.0         # unread-streak multiplier applied
+    fade: float = 1.0            # weight-fade multiplier applied
 
     @property
     def held_out(self) -> bool:
@@ -194,14 +200,21 @@ def run_release_cycle(
         session.flush()
 
         active_books = _active_books_in(session, channel.id)
-        valid, book_remaining = _load_remaining(active_books, adapter)
+        missing: list[Book] = []
+        valid, book_remaining = _load_remaining(active_books, adapter, missing)
         # A backlog book whose EPUB has no chapters would sit in its slot forever and starve the
         # queue behind it. Set it aside (paused, with a reason) and let the next queued book in —
         # looping, because the promoted book may be just as broken.
         while _set_aside_empty_backlog(session, active_books, adapter):
             session.flush()
             active_books = _active_books_in(session, channel.id)
-            valid, book_remaining = _load_remaining(active_books, adapter)
+            missing = []
+            valid, book_remaining = _load_remaining(active_books, adapter, missing)
+        for book in missing:  # Calibre entry gone: nothing to drop, and the dashboard says why
+            skip_log.append({
+                "channel": channel.name, "book_id": book.id, "title": book.title,
+                "kind": "tracked" if book.tracked else "backlog", "missing": True,
+            })
         if valid:  # a channel with nothing to drop takes no share of the budget
             loaded[channel.id] = (valid, book_remaining, active_books)
 
@@ -251,12 +264,23 @@ def run_release_cycle(
         for skip in skips:
             skip_log.append({
                 "channel": channel.name,
+                "book_id": skip.book.id,
                 "title": skip.book.title,
                 "kind": "tracked" if skip.book.tracked else "backlog",
                 "weight": round(skip.book.quota_weight, 2),
                 "dropped": skip.dropped_count,
                 "remaining": skip.remaining_count,
                 "held_out": skip.held_out,
+                "next_words": skip.next_words,
+                "oversized": skip.oversized,
+                "fresh": skip.fresh,
+                "penalty": round(skip.penalty, 2),
+                "fade": round(skip.fade, 2),
+                # The channel's whole allowance this release and what it used: tells "budget ran
+                # out" apart from "lost the roll with budget to spare".
+                "budget": effective,
+                "base": int(base_budget),
+                "used": used,
             })
 
         # Carry the leftover (can be negative after an oversized post), bounded as above.
@@ -299,6 +323,24 @@ def _unread_penalty(streak: int, floor: float) -> float:
     return max(floor, 1.0 - _UNREAD_RAMP_STEP * (streak - 1))
 
 
+def unread_streak(session: Session, book: Book) -> int:
+    """How many of the source's most-recent drops in a row are unacknowledged (capped at the
+    lookback)."""
+    recent = (
+        session.query(Drop.acknowledged_at)
+        .filter(Drop.book_id == book.id)
+        .order_by(Drop.published_at.desc(), Drop.id.desc())
+        .limit(_UNREAD_STREAK_LOOKBACK)
+        .all()
+    )
+    streak = 0
+    for (acked_at,) in recent:
+        if acked_at is not None:
+            break
+        streak += 1
+    return streak
+
+
 def _unread_penalties(session: Session, books: list[Book], floor: float) -> dict[int, float]:
     """Per-source unread-streak multipliers (only sources actually penalised are present).
 
@@ -310,19 +352,7 @@ def _unread_penalties(session: Session, books: list[Book], floor: float) -> dict
     """
     out: dict[int, float] = {}
     for book in books:
-        recent = (
-            session.query(Drop.acknowledged_at)
-            .filter(Drop.book_id == book.id)
-            .order_by(Drop.published_at.desc(), Drop.id.desc())
-            .limit(_UNREAD_STREAK_LOOKBACK)
-            .all()
-        )
-        streak = 0
-        for (acked_at,) in recent:
-            if acked_at is not None:
-                break
-            streak += 1
-        penalty = _unread_penalty(streak, floor)
+        penalty = _unread_penalty(unread_streak(session, book), floor)
         if penalty < 1.0:
             out[book.id] = penalty
     return out
@@ -548,10 +578,16 @@ def _plan_drops(
         for book in valid:
             remaining_count = len(book_remaining[book.id])
             if remaining_count > 0:  # something rolled over to a later broadcast
+                next_words = book_remaining[book.id][0].word_count
                 skips_out.append(SkippedSource(
                     book=book,
                     dropped_count=len(selected[book.id]),
                     remaining_count=remaining_count,
+                    next_words=next_words,
+                    oversized=next_words > base_budget,
+                    fresh=_is_fresh(book) and book.quota_weight > 0,
+                    penalty=penalties.get(book.id, 1.0),
+                    fade=_weight_fade(book, weight_skip_floor),
                 ))
 
     return [
@@ -562,16 +598,19 @@ def _plan_drops(
 
 
 def _load_remaining(
-    active_books: list[Book], adapter: CalibreAdapter
+    active_books: list[Book], adapter: CalibreAdapter, missing_out: list[Book] | None = None,
 ) -> tuple[list[Book], dict[int, list[Unit]]]:
     """Each source's pending units, in weight order (higher weight first — that gives the pass-1
     accumulation a stable claim on saved-up credit). Returns `(sources with something pending,
-    {book id: units})`; unresolvable / caught-up sources are left out."""
+    {book id: units})`; unresolvable / caught-up sources are left out (unresolvable ones are also
+    appended to `missing_out`)."""
     book_remaining: dict[int, list[Unit]] = {}
     valid: list[Book] = []
     for book in sorted(active_books, key=lambda b: -b.quota_weight):
         units = _remaining_units(book, adapter)
         if units is None:
+            if missing_out is not None:
+                missing_out.append(book)
             continue  # unresolvable source — already warned
         if units:
             book_remaining[book.id] = list(units)

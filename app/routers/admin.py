@@ -19,6 +19,7 @@ from app.calibre.status import classify_status
 from app.config import settings
 from app.epub.chapterizer import chapterize
 from app.database import delete_book_cascade, ensure_default_channel, get_db
+from app import timefmt
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, Schedule,
     WebSubSubscription, absolute_chapter_number,
@@ -33,6 +34,8 @@ router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 templates.env.globals["version"] = __version__
 templates.env.globals["abs_chapter"] = absolute_chapter_number
+templates.env.filters["ago"] = timefmt.relative
+templates.env.filters["stamp"] = timefmt.absolute
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -48,8 +51,17 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     cfg = db.get(Config, 1)
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
 
+    try:
+        last_skips = json.loads(get_value(db, LAST_SKIPS) or "[]")
+    except json.JSONDecodeError:
+        last_skips = []
+    book_notes = {
+        int(k[len(BOOK_NOTE_PREFIX):]): v
+        for k, v in list_with_prefix(db, BOOK_NOTE_PREFIX) if k[len(BOOK_NOTE_PREFIX):].isdigit()
+    }
+
     # ── Per-channel slot view: what's broadcasting in each feed right now ──────
-    slot_view = _build_slot_view(db, channels, active, queued)
+    slot_view = _build_slot_view(db, channels, active, queued, last_skips, book_notes)
 
     # ── System status: cron last/next runs + WebSub subscribers ───────────────
     schedules = db.query(Schedule).order_by(Schedule.sort_order, Schedule.id).all()
@@ -65,11 +77,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     cycle = scheduler.cycle_status()
     subscribers = _build_subscriber_view(db)
 
-    try:
-        last_skips = json.loads(get_value(db, LAST_SKIPS) or "[]")
-    except json.JSONDecodeError:
-        last_skips = []
-
     fetch_progress = _build_fetch_progress(db)
 
     return templates.TemplateResponse(request, "admin/index.html", {
@@ -82,11 +89,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "slot_view": slot_view,
         "status": status,
         "subscribers": subscribers,
-        "last_skips": last_skips,
-        "book_notes": {
-            int(k[len(BOOK_NOTE_PREFIX):]): v
-            for k, v in list_with_prefix(db, BOOK_NOTE_PREFIX) if k[len(BOOK_NOTE_PREFIX):].isdigit()
-        },
+        "book_notes": book_notes,
         "fetch_progress": fetch_progress,
         "cycle": cycle,
         "schedule_rows": schedule_rows,
@@ -114,19 +117,46 @@ def _build_fetch_progress(db) -> list[dict]:
     return out
 
 
-def _pending_chapters(book: Book) -> int:
-    """How many whole chapters sit past the cursor (rough 'waiting to drop' count)."""
-    if book.total_chapters is None:
-        return 0
-    return max(0, book.total_chapters - book.cursor_chapter_index)
+def _skip_entry(last_skips: list[dict], book: Book, channel_name: str) -> dict | None:
+    """The book's entry in the last release's skip log. Entries written before 0.17 carry no
+    book_id; match those on title within the channel."""
+    for e in last_skips:
+        if e.get("book_id") == book.id:
+            return e
+    for e in last_skips:
+        if "book_id" not in e and e.get("title") == book.title and e.get("channel") == channel_name:
+            return e
+    return None
 
 
-def _build_slot_view(db, channels, active, queued):
-    """Assemble, per channel, what each numbered slot feed is broadcasting:
-    its streaming backlog book + pinned tracked stories, the most recent drops in that
-    feed, plus the channel's queued backlog books and tracked stories with chapters
-    waiting past their cursor.
+def _build_slot_view(db, channels, active, queued, last_skips=(), book_notes=None):
+    """Assemble, per channel, what each numbered slot feed is broadcasting: one row per source
+    pinned to the slot (its backlog book first, then tracked stories) with a one-line *why*
+    (`planner.explain`), the most recent drops in that feed, and the channel's queue.
     """
+    from sqlalchemy import func
+
+    from app.planner.explain import explain, pending_chapters
+    from app.planner.planner import unread_streak
+
+    last_skips = list(last_skips)
+    book_notes = book_notes or {}
+    last_drop_at = dict(
+        db.query(Drop.book_id, func.max(Drop.published_at)).group_by(Drop.book_id).all()
+    )
+
+    def row(book: Book, ch: Channel, queue_pos: int | None = None) -> dict:
+        return {
+            "book": book,
+            "why": explain(
+                book, _skip_entry(last_skips, book, ch.name),
+                unread=unread_streak(db, book) if book.status == BookStatus.active else 0,
+                note=book_notes.get(book.id), queue_pos=queue_pos,
+            ),
+            "pending": pending_chapters(book),
+            "last_drop": last_drop_at.get(book.id),
+        }
+
     view = []
     for ch in channels:
         # Recent drops for this channel, bucketed by feed_key (slot).
@@ -146,25 +176,24 @@ def _build_slot_view(db, channels, active, queued):
         slots = []
         for s in range(1, ch.parallel_slots + 1):
             here = [b for b in active if b.channel_id == ch.id and b.slot_index == s]
+            here.sort(key=lambda b: (b.tracked, b.title.lower()))  # the backlog book first
             slots.append({
                 "n": s,
-                "epub": next((b for b in here if not b.tracked), None),
-                "ongoings": [b for b in here if b.tracked],
+                "rows": [row(b, ch) for b in here],
                 "drops": drops_by_slot.get(str(s), [])[:5],
             })
 
-        queued_epubs = [b for b in queued if b.channel_id == ch.id and not b.tracked]
-        # Tracked stories with chapters waiting past their cursor — eligible next
-        # broadcast, may be held out by the stochastic budget.
-        waiting_ongoings = [
+        # Active sources without a valid slot (e.g. slot count just lowered) still need a why.
+        unslotted = [
             b for b in active
-            if b.channel_id == ch.id and b.tracked and _pending_chapters(b)
+            if b.channel_id == ch.id and not (1 <= (b.slot_index or 0) <= ch.parallel_slots)
         ]
+        queued_here = [b for b in queued if b.channel_id == ch.id]
         view.append({
             "channel": ch,
             "slots": slots,
-            "queued_epubs": queued_epubs,
-            "waiting_ongoings": waiting_ongoings,
+            "unslotted": [row(b, ch) for b in unslotted],
+            "queue": [row(b, ch, i) for i, b in enumerate(queued_here, 1)],
         })
     return view
 

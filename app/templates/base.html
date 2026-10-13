@@ -35,6 +35,21 @@
     .badge-queued   { background: #fff3cd; color: #856404; }
     .badge-completed{ background: #cce5ff; color: #004085; }
     .badge-dropped  { background: #f8d7da; color: #721c24; }
+    /* Dashboard: one row per source with its "why" chip (planner/explain.py). */
+    .src-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2em .6em;
+               padding: .35em .2em; border-bottom: 1px solid #f0f0f0; }
+    .src-row:last-of-type { border-bottom: none; }
+    .src-title { font-weight: 500; flex: 1 1 14em; min-width: 0; }
+    .src-meta { color: #888; font-size: .8em; white-space: nowrap; }
+    .why { font-size: .85em; padding: .1em .55em; border-radius: 1em; white-space: normal; }
+    .why-ok   { background: #e6f4ea; color: #1e5631; }
+    .why-wait { background: #fff4d6; color: #7a5a00; }
+    .why-warn { background: #fde2e1; color: #8a1c1c; }
+    .why-off  { background: #eceff1; color: #546e7a; }
+    .why-detail { flex-basis: 100%; color: #888; font-size: .8em; padding-left: 1.6em; }
+    .recent-drops { margin-top: .3em; }
+    .recent-drops > summary { font-size: .8em; cursor: pointer; }
+    .queue-strip { margin: .4em 0 1em; padding: .4em .8em; background: #f6f6f6; border-radius: 6px; font-size: .95em; }
     button, .btn {
       padding: .3em .9em;
       border: 1px solid #aaa;

@@ -258,7 +258,13 @@ smallest — so the first release after upgrading is the same size and split as 
   budget; **positive is clamped to the largest pending unit** (so an oversized chapter can be
   saved up for) or to one base budget when nothing oversized is pending (so idle channels don't
   run away). Sources whose units rolled over are written to a per-broadcast **skip log**
-  (`app_state[last_broadcast_skips]`) surfaced on the dashboard.
+  (`app_state[last_broadcast_skips]`) with *why*, as the planner saw it (`book_id`, next unit size,
+  `oversized`, `fresh`, unread `penalty`, weight `fade`, the channel's `budget`/`base`/`used`; a source
+  whose Calibre entry is gone gets `missing`). **The dashboard's per-source reason chip**
+  (`app/planner/explain.py:explain`, pure) combines that record (why it was held *last* release —
+  never recomputed from current state, which would lie once the user reads a drop) with live state
+  (paused, queued #n, cooling down, caught up, downloading, fetch error, weight 0, live unread
+  streak — the forecast for the *next* one). Old entries without `book_id` match on title.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
   that slot's feed regardless of which other sources also dropped this broadcast.
 - **Soft read-gating (transient unread ramp).** A source's stochastic acceptance is scaled by how

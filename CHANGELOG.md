@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- **Dashboard says why each story did or didn't drop.** Each slot card lists its stories, one row
+  each, with a reason chip: dropped last release, caught up, saving up for an oversized chapter,
+  held back by unread drops, low weight, budget ran out, lost the draw, new chapter going out
+  next, sitting out after a 👎, queued #n, downloading, fetch failed, not found in Calibre, paused.
+  The channel's queue shows under its slots. This replaces the "Next broadcast — waiting & held
+  out" section and its held-out table. Times on the slot cards are relative ("5h ago"), with the
+  full timestamp on hover.
+- The release cycle's skip log records the planner's reasons (`book_id`, oversized, fresh, unread
+  penalty, weight fade, the channel's budget and use) and the sources whose Calibre entry is missing.
+
 ## [0.16.0] — 2026-10-13
 
 ### Added
