@@ -23,8 +23,9 @@
     </div>
     <div style="flex:2; min-width:150px">
       <label style="font-size:.8em; display:block">Cron</label>
-      <input type="text" name="cron" value="{{ sc.cron if sc else '0 7 * * 1-5' }}" required style="width:100%"
-             title="5-field crontab: minute hour day-of-month month day-of-week">
+      <input type="text" name="cron" value="{{ sc.cron if sc else '0 7 * * mon-fri' }}" required style="width:100%"
+             title="5-field crontab: minute hour day-of-month month day-of-week. Day numbers are 0=Monday … 6=Sunday (not Sunday=0 as in classic cron) — prefer names: mon-fri, sat,sun.">
+      <small style="color:#888; display:block">min hour day month weekday · <b>0 = Monday</b> — use <code>mon-fri</code>, <code>sat,sun</code></small>
     </div>
     <div style="min-width:90px">
       <label style="font-size:.8em; display:block">Budget mode</label>
@@ -48,15 +49,19 @@
 
 {% for sc in schedules %}
 <div class="slot-card" style="{{ 'opacity:.6' if not sc.enabled }}">
-  <form method="post" action="/admin/schedules/{{ sc.id }}/edit">
+  {# Auto-saves 0.5 s after any change; the server validates the whole row and answers with the status
+     line. An invalid value (bad cron, empty name) saves nothing and says why. #}
+  <form method="post" action="/admin/schedules/{{ sc.id }}/edit" class="sched-form"
+        hx-post="/admin/schedules/{{ sc.id }}/edit" hx-trigger="change delay:500ms"
+        hx-target="find .sched-status" hx-swap="innerHTML">
     {{ fields(sc) }}
     <div style="margin-top:.6em">
-      <button class="btn btn-primary" type="submit" title="Save schedule">💾</button>
-      <span class="muted" style="margin-left:.8em; font-size:.85em">
+      <span class="muted sched-status" style="font-size:.85em" aria-live="polite">
         {% if not sc.enabled %}disabled — never fires
         {% elif next_times.get(sc.id) %}next: {{ next_times[sc.id].strftime('%a %Y-%m-%d %H:%M') }}
         {% else %}not scheduled{% endif %}
       </span>
+      <noscript><button class="btn btn-primary" type="submit" title="Save schedule">💾</button></noscript>
     </div>
   </form>
   <form method="post" action="/admin/schedules/{{ sc.id }}/delete" style="margin-top:.4em"
@@ -87,8 +92,9 @@
   {{ fields(none) }}
   <div style="margin-top:.6em"><button class="btn btn-primary" type="submit" title="Add schedule" aria-label="Add schedule">➕</button></div>
   <small style="color:#666; display:block; margin-top:.4em">
-    Cron examples: <code>0 7 * * 1-5</code> weekdays 07:00 · <code>0 19 * * 1-5</code> weekdays 19:00 ·
-    <code>0 10 * * 6,0</code> weekends 10:00. Budget is in words or minutes (minutes use the global reading speed).
+    Cron examples: <code>0 7 * * mon-fri</code> weekdays 07:00 · <code>0 19 * * mon-fri</code> weekdays 19:00 ·
+    <code>0 10 * * sat,sun</code> weekends 10:00 · <code>0 7,19 * * *</code> twice daily. In numbers, <b>0 is Monday</b>
+    and 6 is Sunday. Budget is in words or minutes (minutes use the global reading speed).
   </small>
 </form>
 
@@ -110,6 +116,14 @@
     });
   });
 })();
+</script>
+<script>
+// Dim a schedule card as soon as its Enabled box is toggled (the server confirms on save).
+document.querySelectorAll('.sched-form input[name=enabled]').forEach(function (cb) {
+  cb.addEventListener('change', function () {
+    cb.closest('.slot-card').style.opacity = cb.checked ? '' : '.6';
+  });
+});
 </script>
 
 {% endblock %}

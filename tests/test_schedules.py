@@ -15,6 +15,12 @@ from tests.make_epub import make_epub
 from tests.test_planner import _make_book, _mock_adapter, _set_release_budget
 
 
+def _request(htmx: bool = False):
+    """A stand-in Request: the schedule routes only read the HX-Request header."""
+    from types import SimpleNamespace
+    return SimpleNamespace(headers={"HX-Request": "true"} if htmx else {})
+
+
 @pytest.fixture
 def epub_path():
     """Five ~500-word chapters (2,500 words in all)."""
@@ -213,10 +219,57 @@ class TestScheduleRoutes:
     def test_edit_updates_and_unchecked_enabled_disables(self, in_memory_db):
         from app.routers.admin import edit_schedule
         sc = in_memory_db.query(Schedule).first()
-        edit_schedule(sc.id, name="Renamed", cron="0 6 * * *", budget=10, budget_mode="minutes",
-                      enabled=None, db=in_memory_db)
+        edit_schedule(_request(), sc.id, name="Renamed", cron="0 6 * * *", budget=10,
+                      budget_mode="minutes", enabled=None, db=in_memory_db)
         assert (sc.name, sc.cron, sc.budget, sc.budget_mode, sc.enabled) == \
             ("Renamed", "0 6 * * *", 10, BudgetMode.minutes, False)
+
+    def test_htmx_autosave_saves_valid_rows_and_reports_status(self, in_memory_db):
+        from app.routers.admin import edit_schedule
+        sc = in_memory_db.query(Schedule).first()
+        resp = edit_schedule(_request(htmx=True), sc.id, name="Weekdays", cron="0 7 * * mon-fri",
+                             budget=7, budget_mode="words", enabled="1", db=in_memory_db)
+        assert resp.status_code == 200 and b"saved" in resp.body
+        assert (sc.name, sc.cron, sc.budget, sc.enabled) == ("Weekdays", "0 7 * * mon-fri", 7, True)
+        self.reload.assert_called_once()
+
+    def test_htmx_autosave_rejects_bad_cron_and_changes_nothing(self, in_memory_db):
+        from app.routers.admin import edit_schedule
+        sc = in_memory_db.query(Schedule).first()
+        before = (sc.name, sc.cron, sc.budget)
+        resp = edit_schedule(_request(htmx=True), sc.id, name="Nope", cron="0 7 * * * 1-5",
+                             budget=99, budget_mode="words", enabled="1", db=in_memory_db)
+        assert b"Not saved" in resp.body and b"Wrong number of fields" in resp.body
+        assert (sc.name, sc.cron, sc.budget) == before
+        self.reload.assert_not_called()
+
+    def test_htmx_autosave_escapes_the_error(self, in_memory_db):
+        from app.routers.admin import edit_schedule
+        sc = in_memory_db.query(Schedule).first()
+        resp = edit_schedule(_request(htmx=True), sc.id, name="x", cron="<script>1</script>",
+                             budget=1, budget_mode="words", enabled="1", db=in_memory_db)
+        assert b"<script>" not in resp.body
+
+    def test_htmx_autosave_blank_name_not_saved(self, in_memory_db):
+        from app.routers.admin import edit_schedule
+        sc = in_memory_db.query(Schedule).first()
+        resp = edit_schedule(_request(htmx=True), sc.id, name="  ", cron="0 6 * * *", budget=1,
+                             budget_mode="words", enabled="1", db=in_memory_db)
+        assert b"Not saved" in resp.body
+
+    def test_weekday_names_and_numbering(self):
+        """0 is Monday here (APScheduler), unlike classic cron — the UI says so."""
+        from datetime import datetime, timezone
+        from apscheduler.triggers.cron import CronTrigger
+        sunday = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        def nxt(c):
+            return CronTrigger.from_crontab(c, timezone=timezone.utc).get_next_fire_time(None, sunday).strftime("%a")
+        assert nxt("0 7 * * 0") == "Mon" and nxt("0 7 * * mon-fri") == "Mon" and nxt("0 7 * * sat,sun") == "Sat"
+
+    def test_page_has_no_save_button_and_autosaves(self):
+        html = (Path(__file__).parent.parent / "app/templates/admin/schedules.html").read_text()
+        assert 'hx-trigger="change delay:500ms"' in html
+        assert "0 = Monday" in html and "6,0" not in html and "1-5" not in html
 
     def test_last_schedule_cannot_be_deleted(self, in_memory_db):
         from app.routers.admin import delete_schedule

@@ -798,25 +798,46 @@ def create_schedule(
     return RedirectResponse(url="/admin/schedules", status_code=303)
 
 
+def _schedule_status(schedule: Schedule | None, error: str | None = None) -> str:
+    """Inline status line for a schedule row (the auto-save response fragment)."""
+    from html import escape
+
+    from app import scheduler
+    if error:
+        return f'<span class="sched-err" style="color:#a00">✗ Not saved — {escape(error)}</span>'
+    if not schedule.enabled:
+        return "✓ saved — disabled, never fires"
+    nxt = scheduler.next_release_times().get(schedule.id)
+    when = f" · next: {nxt.strftime('%a %Y-%m-%d %H:%M')}" if nxt else " · not scheduled"
+    return f"✓ saved{when}"
+
+
 @router.post("/schedules/{schedule_id}/edit")
 def edit_schedule(
-    schedule_id: int, name: str = Form(...), cron: str = Form(...), budget: float = Form(5000),
+    request: Request, schedule_id: int, name: str = Form(...), cron: str = Form(...), budget: float = Form(5000),
     budget_mode: str = Form("words"), enabled: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     from urllib.parse import quote
     from app import scheduler
     schedule = db.get(Schedule, schedule_id)
+    htmx = bool(request.headers.get("HX-Request"))  # inline auto-save from the Schedules page
     if schedule is None:
+        if htmx:
+            return HTMLResponse(_schedule_status(None, "This schedule no longer exists — reload."))
         return RedirectResponse(url="/admin/schedules", status_code=303)
     fields, error = _schedule_fields(name, cron, budget, budget_mode)
     if error:
+        if htmx:  # nothing is saved until the whole row validates
+            return HTMLResponse(_schedule_status(None, error))
         return RedirectResponse(url=f"/admin/schedules?error={quote(error)}", status_code=303)
     for key, value in fields.items():
         setattr(schedule, key, value)
     schedule.enabled = enabled is not None  # an unchecked checkbox posts nothing
     db.commit()
     scheduler.reload_schedules()
+    if htmx:
+        return HTMLResponse(_schedule_status(schedule))
     return RedirectResponse(url="/admin/schedules", status_code=303)
 
 

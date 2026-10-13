@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — Schedules page
+- **Schedules auto-save**, like the other inline settings: the 💾 buttons are gone, and any change is
+  saved 0.5 s later once the whole row validates. An invalid value (bad cron, empty name) saves nothing
+  and the row says why ("✗ Not saved — …"); a good save shows "✓ saved · next: …". (Plain-form POST still
+  works; `<noscript>` keeps a save button.)
+- **Cron hints fixed:** day-of-week numbers are APScheduler's — **0 = Monday … 6 = Sunday**, not classic
+  cron's Sunday = 0. The field now says so and every example uses day names (`mon-fri`, `sat,sun`); the
+  old `1-5` / `6,0` examples were off by one day.
+
 ## [0.13.0] — 2026-10-04
 
 (Also rolls up the 0.12.0 entries that were still listed as unreleased: release schedules and the
