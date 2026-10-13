@@ -120,18 +120,31 @@ def _parse(epub_path: Path) -> list[Chapter]:
     toc_entries = _flatten_toc(book.toc)
     chapters: list[Chapter] = []
 
+    # A TOC href is relative to the TOC file, which is not always the OPF directory (an NCX in a
+    # subfolder, `../Text/ch1.xhtml`, …), so it can miss the spine name. Fall back to a basename
+    # match — only where the basename is unambiguous.
+    by_basename: dict[str, epub.EpubHtml] = {}
+    ambiguous: set[str] = set()
+    for name, spine_item in spine_items.items():
+        base = name.rsplit("/", 1)[-1]
+        if base in by_basename:
+            ambiguous.add(base)
+        by_basename[base] = spine_item
+    for base in ambiguous:
+        del by_basename[base]
+
     if toc_entries:
         seen_hrefs: set[str] = set()
         for title, href in toc_entries:
             bare_href, _fragment = urldefrag(href)
             # Normalize: the href in TOC is relative to the epub root
             bare_name = _normalize_name(bare_href)
-            if bare_name in seen_hrefs:
-                continue  # already included this file (multi-anchor chapter)
-            seen_hrefs.add(bare_name)
-            item = spine_items.get(bare_name)
+            item = spine_items.get(bare_name) or by_basename.get(bare_name.rsplit("/", 1)[-1])
             if item is None:
                 continue
+            if item.get_name() in seen_hrefs:
+                continue  # already included this file (multi-anchor chapter)
+            seen_hrefs.add(item.get_name())
             chapter_url = url_map.get(item.get_name().rsplit("/", 1)[-1])
             html = _extract_body(item.get_content(), item.get_name())
             if not _is_content_chapter(html, chapter_url, is_fff):
@@ -146,8 +159,10 @@ def _parse(epub_path: Path) -> list[Chapter]:
                     source_url=chapter_url,
                 )
             )
-    else:
-        # Fallback: use all spine document items in order
+    if not chapters:
+        # Fallback — no TOC at all, *or* a TOC that resolved to no usable chapter (every href
+        # missed the spine, or every target was too short): use all document items in order.
+        # A book must never chapterize to nothing just because its TOC is unusable.
         for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
             chapter_url = url_map.get(item.get_name().rsplit("/", 1)[-1])
             html = _extract_body(item.get_content(), item.get_name())

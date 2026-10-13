@@ -24,7 +24,9 @@ from app.models import (
     WebSubSubscription, absolute_chapter_number,
 )
 from app.ongoing.feed_url import infer_feed_url
-from app.state import LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_SKIPS, get_run, get_value
+from app.state import (
+    BOOK_NOTE_PREFIX, LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_SKIPS, get_run, get_value, list_with_prefix,
+)
 from app.version import __version__
 
 router = APIRouter(prefix="/admin")
@@ -81,6 +83,10 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "status": status,
         "subscribers": subscribers,
         "last_skips": last_skips,
+        "book_notes": {
+            int(k[len(BOOK_NOTE_PREFIX):]): v
+            for k, v in list_with_prefix(db, BOOK_NOTE_PREFIX) if k[len(BOOK_NOTE_PREFIX):].isdigit()
+        },
         "fetch_progress": fetch_progress,
         "cycle": cycle,
         "schedule_rows": schedule_rows,

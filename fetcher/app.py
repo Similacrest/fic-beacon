@@ -8,8 +8,11 @@ main app needs to track cursors.
 Async, batched contract (FanFicFare is slow — a run can take ~15 minutes — and cold-starting
 one process per story is wasteful):
 
-    POST /fetch  {"urls": ["<url>", ...]}
+    POST /fetch  {"urls": ["<url>", ...], "calibre_ids": {"<url>": <id>, ...}?}
       → 202 {"job_id": "<id>"}                       (accepted; work runs in the background)
+      `calibre_ids` (optional) pins a URL to the Calibre entry the app already reads for it: that
+      exact entry is updated, with no URL search. Without it (a new story, or an older app) the
+      entry is found by story identity (`_story_key`), not by exact `url:` string.
 
     GET /fetch/{job_id}
       → 200 {"status": "running"|"done"|"unknown",
@@ -26,12 +29,15 @@ FanFicFare refuses to update in place ("Existing epub contains N chapters, web s
 has M"); we then archive the old EPUB as a separate Calibre entry and force-overwrite,
 returning {old: N, new: M, old_urls, new_urls} — the ordered per-chapter canonical URLs of
 the pre- and post-stub EPUBs — so the app can match chapters by identity (labels stay exact
-past a gap anywhere, and the reader's cursor remaps to the first surviving chapter).
+past a gap anywhere, and the reader's cursor remaps to the first surviving chapter). The archive
+keeps its story URL under a `url-archive:` identifier, so it can never be found (and updated) by a
+`url:` lookup in place of the live entry.
 
 Site logins live in /config/personal.ini (edit it directly in this container).
 """
 from __future__ import annotations
 
+import json
 import logging
 import hmac
 import os
@@ -105,6 +111,8 @@ _jobs: dict[str, dict] = {}
 
 class FetchRequest(BaseModel):
     urls: list[str]
+    # url -> Calibre id the app already reads for it (see the contract above). Optional.
+    calibre_ids: dict[str, int] = {}
 
 
 def _run(cmd: list[str], cwd: str | None = None,
@@ -155,15 +163,88 @@ def _with_retry(label: str, fn):
     return result
 
 
-def _find_calibre_id(url: str) -> int | None:
-    """Find an existing Calibre book whose `url` identifier matches this story."""
-    res = _calibredb("search", f'identifiers:"=url:{url}"')
+def _quote(value: str) -> str:
+    """Escape a value for a calibre search expression inside double quotes."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _search_ids(query: str) -> list[int]:
+    """Ids matching a calibre search expression (`calibredb search` prints `12,15`)."""
+    res = _calibredb("search", query)
     out = (res.stdout or "").strip()
     if res.returncode != 0 or not out:
+        return []
+    return [int(t) for t in re.split(r"[,\s]+", out) if t.isdigit()]
+
+
+def _identifier_urls(ids: list[int]) -> dict[int, str] | None:
+    """{id: its `url:` identifier} for `ids`, or None if calibredb's listing can't be read.
+
+    `--for-machine` gives JSON where `identifiers` is a `{scheme: value}` dict (older builds: a
+    `scheme:value,…` string), so both shapes are accepted.
+    """
+    res = _calibredb("list", "--for-machine", "--fields", "identifiers",
+                     "--search", " or ".join(f"id:{i}" for i in ids))
+    if res.returncode != 0:
         return None
-    # calibredb search prints a comma-separated id list (e.g. "12,15").
-    first = out.split(",")[0].strip()
-    return int(first) if first.isdigit() else None
+    try:
+        rows = json.loads(res.stdout or "[]")
+    except ValueError:
+        return None
+    out: dict[int, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        ident = row.get("identifiers")
+        if isinstance(ident, str):
+            ident = dict(p.split(":", 1) for p in ident.split(",") if ":" in p)
+        if isinstance(row.get("id"), int) and isinstance(ident, dict):
+            out[row["id"]] = str(ident.get("url") or "")
+    return out
+
+
+def _find_calibre_ids(url: str) -> list[int]:
+    """Every live Calibre entry whose `url:` identifier is this story, lowest id first.
+
+    Matching is by **story identity** (`_story_key`), never exact string: Calibre's identifier is
+    whatever spelling FanFicFare wrote (`/fiction/186926`), the app may hold another
+    (`/fiction/186926/some-slug/`), and `calibredb`'s `=url:X` is a *contains* match on the value,
+    so the exact string misses the former and a short id can also hit a longer one
+    (`…/1188910` for `…/118891`). The search is therefore only a cheap pre-filter on the story's
+    numeric id; each hit's identifier is then checked against the key.
+
+    Archive copies kept on a stub carry a `url-archive:` identifier, so they never match here.
+    """
+    key = _story_key(url)
+    if not key:
+        return []
+    ids = _search_ids(f'identifiers:"=url:{_quote(url)}"')
+    needle = key.split("|", 1)[1]
+    if needle:
+        ids += [i for i in _search_ids(f'identifiers:"=url:{_quote(needle)}"') if i not in ids]
+    if not ids:
+        return []
+    urls = _identifier_urls(ids)
+    if urls is not None:
+        ids = [i for i in ids if _story_key(urls.get(i)) == key]
+    return sorted(set(ids))
+
+
+def _find_calibre_id(url: str) -> int | None:
+    """The live Calibre entry for this story, or None. With several matches the lowest id wins
+    (the fetcher adds a stub's archive *after* the live entry, so it always has the higher id)."""
+    ids = _find_calibre_ids(url)
+    if len(ids) > 1:
+        logger.warning("%s matches several Calibre entries %s — using %s", url, ids, ids[0])
+    return ids[0] if ids else None
+
+
+def _calibre_id_exists(calibre_id: int) -> bool:
+    return calibre_id in _search_ids(f"id:{calibre_id}")
+
+
+def _added_id(add: subprocess.CompletedProcess) -> int | None:
+    """The id `calibredb add` reports ("Added book ids: 4700"), or None (refused / unparsable)."""
+    m = re.search(r"ids?\s*[:#]?\s*(\d+)", add.stdout or "")
+    return int(m.group(1)) if m else None
 
 
 def _count_chapters(epub_path: Path) -> int:
@@ -324,6 +405,7 @@ def fetch(req: FetchRequest) -> dict:
     _jobs[job_id] = {
         "status": "running",
         "finished_at": None,
+        "pinned": {u: i for u, i in req.calibre_ids.items() if u in urls},
         "results": [{"url": u, "phase": "queued", "calibre_id": None,
                      "chapter_count": None, "stub": None, "error": None,
                      "story_url": None, "story_status": None} for u in urls],
@@ -353,18 +435,29 @@ def _run_job(job_id: str) -> None:
     entries = job["results"]
     try:
         by_url = {e["url"]: e for e in entries}
-        existing: list[str] = []
+        pinned: dict[str, int] = job.get("pinned") or {}
+        existing: dict[str, int] = {}  # url -> the Calibre entry to update
         new: list[str] = []
         for url in by_url:
-            (existing if _find_calibre_id(url) is not None else new).append(url)
+            cid = pinned.get(url)
+            if cid is not None and _calibre_id_exists(cid):
+                existing[url] = cid  # the app told us exactly which entry it reads
+                continue
+            if cid is not None:
+                logger.warning("pinned calibre id %s for %s no longer exists — looking it up", cid, url)
+            cid = _find_calibre_id(url)
+            if cid is not None:
+                existing[url] = cid
+            else:
+                new.append(url)
 
         if new:
             _process_new_batch(new, by_url)
-        for url in existing:
+        for url, cid in existing.items():
             entry = by_url[url]
             entry["phase"] = "downloading"
             try:
-                _with_retry(url, lambda u=url, e=entry: _update_one(u, e))
+                _with_retry(url, lambda u=url, e=entry, c=cid: _update_one(u, e, c))
             except Exception as exc:  # never let one story sink the job
                 logger.exception("update failed for %s", url)
                 entry["error"] = str(exc)
@@ -420,8 +513,24 @@ def _download_new(urls: list[str], by_url: dict[str, dict]) -> str:
                 entry["phase"] = "error"
                 matched.add(url)
                 continue
-            m = re.search(r"ids?\s*[:#]?\s*(\d+)", add.stdout or "")
-            entry["calibre_id"] = int(m.group(1)) if m else _find_calibre_id(src or url)
+            calibre_id = _added_id(add)
+            if calibre_id is None:
+                # Exit 0 but nothing added: calibredb refuses a book whose title+author match an
+                # existing one. If that entry is this very story (a lookup miss), refresh it in
+                # place; otherwise it is a different work that merely shares title+author, so add
+                # it regardless. Either way the story must not be reported "done" with no entry.
+                calibre_id = _find_calibre_id(src or url)
+                if calibre_id is not None:
+                    _calibredb("add_format", str(calibre_id), str(epub))
+                else:
+                    calibre_id = _added_id(_calibredb("add", "-d", str(epub)))
+            if calibre_id is None:
+                _fail(entry, "calibredb add added nothing: "
+                      f"{_tail((add.stdout or '') + (add.stderr or ''))}")
+                entry["phase"] = "error"
+                matched.add(url)
+                continue
+            entry["calibre_id"] = calibre_id
             entry["chapter_count"] = _count_chapters(epub)
             entry["story_url"] = src
             entry["story_status"] = _epub_status(epub)
@@ -480,9 +589,33 @@ def _no_epub(entry: dict, output: str, transient: bool, attempts: int | None = N
     entry["phase"] = "error"
 
 
-def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
-    """Update one existing story in place. Returns (entry, transient_error|None) for retry."""
-    calibre_id = _find_calibre_id(url)
+def _archive_copy(epub: Path, url: str) -> None:
+    """Keep the pre-stub EPUB as its own Calibre entry, findable but never mistaken for the story.
+
+    `-d` matters: the archive has the same title+author as the live entry, which a plain
+    `calibredb add` silently refuses as a duplicate (so no archive was ever kept). Its story URL is
+    then moved from `url:` to `url-archive:` so a later `url:` lookup can't land on it and update
+    the archive instead of the live book.
+    """
+    add = _calibredb("add", "-d", str(epub))
+    archive_id = _added_id(add)
+    if add.returncode != 0 or archive_id is None:
+        logger.warning("stub archive of %s was not added: %s", url,
+                       _tail((add.stdout or "") + (add.stderr or "")))
+        return
+    tag = _calibredb("set_metadata", str(archive_id), "--field", f"identifiers:url-archive:{url}")
+    if tag.returncode != 0:
+        logger.warning("could not tag archive %s of %s as url-archive: %s", archive_id, url,
+                       _tail((tag.stdout or "") + (tag.stderr or "")))
+
+
+def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[dict, str | None]:
+    """Update one existing story in place. Returns (entry, transient_error|None) for retry.
+
+    `calibre_id` is the entry to update (pinned by the app, or found by story identity); without
+    one the story is looked up again here."""
+    if calibre_id is None:
+        calibre_id = _find_calibre_id(url)
     if calibre_id is None:  # vanished between split and now → treat as new
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
@@ -492,8 +625,7 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
                 combined = (res.stdout or "") + (res.stderr or "")
                 return entry, combined if _TRANSIENT_RE.search(combined) else _fail(entry, combined)
             add = _calibredb("add", str(epub))
-            m = re.search(r"ids?\s*[:#]?\s*(\d+)", add.stdout or "")
-            entry["calibre_id"] = int(m.group(1)) if m else _find_calibre_id(url)
+            entry["calibre_id"] = _added_id(add) or _find_calibre_id(url)
             entry["chapter_count"] = _count_chapters(epub)
             entry["story_url"] = _epub_source_url(epub)
             entry["story_status"] = _epub_status(epub)
@@ -515,7 +647,7 @@ def _update_one(url: str, entry: dict) -> tuple[dict, str | None]:
         m = _STUB_RE.search(combined)
         if m:  # site dropped chapters → archive old EPUB, then force a clean re-download
             old, new = int(m.group(1)), int(m.group(2))
-            _calibredb("add", str(epub))  # standalone backup of the longer pre-stub EPUB
+            _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
             _fanficfare("-u", f"./{epub.name}", "-o", "force_update_epub_always=true", cwd=str(work))
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL

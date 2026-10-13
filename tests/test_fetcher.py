@@ -73,6 +73,7 @@ def test_chapter_urls_unreadable_returns_empty(tmp_path):
 
 # ── new-story download path (the "fanficfare produced no epub" bug) ───────────────────────────
 
+import json  # noqa: E402
 import subprocess  # noqa: E402
 
 import pytest  # noqa: E402
@@ -224,3 +225,200 @@ def test_multi_url_failure_is_attributed_per_url(fake_tools):
     assert by_url[good]["phase"] == "done"
     assert by_url[bad]["phase"] == "error"
     assert "222 is private" in by_url[bad]["error"]
+
+
+# ── library lookup by story identity, pinned ids, archive on stub ─────────────────────────────
+
+class FakeCalibre:
+    """A tiny in-memory calibredb: entries {id: {"url": ..., "url-archive": ...}} with contains-style
+    `identifiers:"=url:X"` search like the real thing, plus add / add_format / set_metadata."""
+
+    def __init__(self, entries: dict[int, dict[str, str]], next_id: int = 5000, refuse_dupes=False):
+        self.entries, self.next_id, self.refuse_dupes = entries, next_id, refuse_dupes
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, *args: str) -> subprocess.CompletedProcess:
+        self.calls.append(args)
+        cmd = args[0]
+        ok = lambda out="": subprocess.CompletedProcess(args, 0, stdout=out, stderr="")  # noqa: E731
+        if cmd == "search":
+            q = args[1]
+            if q.startswith("id:"):
+                n = int(q[3:])
+                return ok(str(n) if n in self.entries else "")
+            needle = q.split("=url:", 1)[1].rstrip('"')
+            hits = [str(i) for i, ident in sorted(self.entries.items()) if needle in ident.get("url", "")]
+            return ok(",".join(hits))
+        if cmd == "list":
+            ids = [int(t) for t in args[args.index("--search") + 1].replace("id:", "").split(" or ")]
+            return ok(json.dumps([{"id": i, "identifiers": self.entries[i]} for i in ids if i in self.entries]))
+        if cmd == "add":
+            dup_ok = "-d" in args
+            epub = Path(args[-1])
+            if self.refuse_dupes and not dup_ok:
+                return ok("The following books were not added as they already exist in the database\n")
+            self.next_id += 1
+            self.entries[self.next_id] = {"url": fetcher._epub_source_url(epub) or ""}
+            return ok(f"Added book ids: {self.next_id}")
+        if cmd == "set_metadata":
+            scheme, _, value = args[args.index("--field") + 1].partition(":")[2].partition(":")
+            self.entries[int(args[1])] = {scheme: value}
+            return ok()
+        return ok()
+
+
+@pytest.fixture
+def calibre(monkeypatch):
+    def install(entries, **kw):
+        fake = FakeCalibre(entries, **kw)
+        monkeypatch.setattr(fetcher, "_calibredb", fake)
+        return fake
+    return install
+
+
+RR = "https://www.royalroad.com/fiction/186926"
+
+
+def test_lookup_matches_story_identity_not_exact_string(calibre):
+    fake = calibre({
+        4596: {"url-archive": RR},                                       # archive copy: never matches
+        4629: {"url": RR},                                               # the live entry
+        9: {"url": "https://www.royalroad.com/fiction/1869260"},         # longer id, contains-match
+        12: {"url": "https://www.fanfiction.net/s/186926/1/x"},          # other site, same digits
+    })
+    # the app's spelling carries a slug the Calibre identifier doesn't
+    assert fetcher._find_calibre_ids(RR + "/leave-luck-to-heaven-litrpg/") == [4629]
+    assert fetcher._find_calibre_id(RR + "/leave-luck-to-heaven-litrpg/") == 4629
+    assert fetcher._find_calibre_id("https://www.royalroad.com/fiction/777777") is None
+
+
+def test_lookup_prefers_lowest_id_and_reads_string_identifiers(calibre, monkeypatch):
+    fake = calibre({10: {"url": RR}, 11: {"url": RR}})
+    orig = fake.__call__
+
+    def stringy(*args):  # older calibredb: identifiers as "scheme:value,…"
+        res = orig(*args)
+        if args[0] == "list":
+            rows = json.loads(res.stdout)
+            for r in rows:
+                r["identifiers"] = ",".join(f"{k}:{v}" for k, v in r["identifiers"].items())
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(rows), stderr="")
+        return res
+    monkeypatch.setattr(fetcher, "_calibredb", stringy)
+    assert fetcher._find_calibre_ids(RR) == [10, 11]
+    assert fetcher._find_calibre_id(RR) == 10
+
+
+def test_lookup_falls_back_to_search_hits_when_listing_unreadable(monkeypatch):
+    def calibredb(*args):
+        if args[0] == "search":
+            return subprocess.CompletedProcess(args, 0, stdout="4629", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="boom")  # `list` fails
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+    assert fetcher._find_calibre_ids(RR) == [4629]
+
+
+def test_job_updates_the_pinned_entry_without_url_lookup(calibre, monkeypatch):
+    fake = calibre({4596: {"url": RR}, 4629: {"url": RR}})  # ambiguous by URL alone
+    seen = []
+
+    def update_one(url, entry, calibre_id=None):
+        seen.append((url, calibre_id))
+        entry["calibre_id"] = calibre_id
+        return entry, None
+    monkeypatch.setattr(fetcher, "_update_one", update_one)
+    job = {"status": "running", "finished_at": None, "pinned": {RR: 4629},
+           "results": [_entry(RR)]}
+    fetcher._jobs["jobpin"] = job
+
+    fetcher._run_job("jobpin")
+
+    assert seen == [(RR, 4629)]
+    assert job["results"][0]["calibre_id"] == 4629 and job["results"][0]["phase"] == "done"
+    assert not any(c[0] == "list" for c in fake.calls)  # no identifier search was needed
+
+
+def test_job_looks_up_when_the_pinned_entry_is_gone(calibre, monkeypatch):
+    calibre({4700: {"url": RR}})
+    seen = []
+    monkeypatch.setattr(fetcher, "_update_one",
+                        lambda url, entry, calibre_id=None: (seen.append(calibre_id), (entry, None))[1])
+    fetcher._jobs["jobgone"] = {"status": "running", "finished_at": None, "pinned": {RR: 4629},
+                                "results": [_entry(RR)]}
+    fetcher._run_job("jobgone")
+    assert seen == [4700]
+
+
+def test_stub_keeps_a_tagged_archive_that_cannot_win_the_lookup(calibre, monkeypatch, tmp_path):
+    # refuse_dupes: the archive has the live entry's title+author, so only `add -d` keeps it.
+    fake = calibre({4629: {"url": RR}}, refuse_dupes=True)
+    outputs = iter(["Existing epub contains 150 chapters, web site only has 139", ""])
+
+    def fanficfare(*args, cwd):
+        return subprocess.CompletedProcess(args, 0, stdout=next(outputs, ""), stderr="")
+    monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
+
+    real_calibredb = fetcher._calibredb
+
+    def calibredb(*args):
+        if args[0] == "export":  # write the live EPUB into --to-dir
+            _fff_epub(Path(args[args.index("--to-dir") + 1]) / "book.epub", RR, "In-Progress")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return real_calibredb(*args)
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+
+    entry = _entry(RR)
+    result, transient = fetcher._update_one(RR, entry, 4629)
+
+    assert transient is None and result["stub"]["old"] == 150
+    assert result["calibre_id"] == 4629
+    adds = [c for c in fake.calls if c[0] == "add"]
+    assert len(adds) == 1 and "-d" in adds[0]
+    archive_id = fake.next_id
+    assert fake.entries[archive_id] == {"url-archive": RR}        # moved off `url:`
+    assert fake.entries[4629] == {"url": RR}                      # live entry untouched
+    assert fetcher._find_calibre_ids(RR) == [4629]                # …and only it is found by URL
+    assert any(c[0] == "add_format" and c[1] == "4629" for c in fake.calls)
+
+
+def test_new_story_refused_as_duplicate_refreshes_the_existing_entry(calibre, fake_tools, monkeypatch):
+    # `calibredb add` exits 0 but adds nothing; the story IS in the library (lookup missed it).
+    url = RR
+    fake = calibre({4629: {"url": "https://www.royalroad.com/fiction/186926"}}, refuse_dupes=True)
+    fake_tools["script"] = [([("a.epub", RR + "/t", "In-Progress")], "")]
+    # `fake_tools` replaced _find_calibre_id with "never found"; restore the real lookup after add.
+    monkeypatch.setattr(
+        fetcher, "_find_calibre_id",
+        lambda u: 4629 if any(c[0] == "add" for c in fake.calls) else None)
+    by_url = {url: _entry(url)}
+
+    fetcher._download_new([url], by_url)
+
+    e = by_url[url]
+    assert e["phase"] == "done" and e["calibre_id"] == 4629
+    assert any(c[0] == "add_format" and c[1] == "4629" for c in fake.calls)
+
+
+def test_new_story_sharing_title_with_another_work_is_added_anyway(calibre, fake_tools):
+    url = "https://www.royalroad.com/fiction/555555"
+    fake = calibre({4629: {"url": RR}}, refuse_dupes=True)
+    fake_tools["script"] = [([("a.epub", url + "/t", "In-Progress")], "")]
+    by_url = {url: _entry(url)}
+
+    fetcher._download_new([url], by_url)
+
+    e = by_url[url]
+    assert e["phase"] == "done" and e["calibre_id"] == fake.next_id
+    assert any(c[0] == "add" and "-d" in c for c in fake.calls)
+
+
+def test_new_story_that_adds_nothing_is_an_error_not_a_phantom_success(fake_tools, monkeypatch):
+    url = "https://www.royalroad.com/fiction/555555"
+    fake_tools["script"] = [([("a.epub", url + "/t", "In-Progress")], "")]
+    monkeypatch.setattr(fetcher, "_calibredb",
+                        lambda *a: subprocess.CompletedProcess(a, 0, stdout="nothing added", stderr=""))
+    by_url = {url: _entry(url)}
+
+    fetcher._download_new([url], by_url)
+
+    assert by_url[url]["phase"] == "error" and "added nothing" in by_url[url]["error"]

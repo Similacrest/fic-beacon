@@ -20,8 +20,12 @@ config = context.config
 # Inject the app's DB URL (env-driven) so we never hardcode it in alembic.ini.
 config.set_main_option("sqlalchemy.url", str(settings.database_url))
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# The `alembic` CLI wants alembic.ini's logging setup; the app does not — it embeds Alembic
+# (database.run_migrations sets `configure_logger=False`) and owns logging itself. fileConfig()
+# resets the root logger to WARNING and, by default, *disables* every logger that already exists —
+# which silenced all app and uvicorn logs after startup. Even for the CLI keep existing loggers.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

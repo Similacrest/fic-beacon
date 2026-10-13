@@ -19,6 +19,13 @@ def delete_book_cascade(session: Session, book: Book) -> None:
     Shared by the admin "clear dropped" sweep and the tracked-story delete so the deletion
     order (feedback_event before drops before book) lives in one place.
     """
+    from app.models import AppState
+    from app.state import BOOK_NOTE_PREFIX, TRIGGER_RETRY_PREFIX
+    # Per-book runtime keys must not outlive the row (they are keyed by id, which is not reused
+    # by SQLite's autoincrement, but a leftover is just dead weight on every dashboard load).
+    session.query(AppState).filter(AppState.key.in_(
+        [f"{BOOK_NOTE_PREFIX}{book.id}", f"{TRIGGER_RETRY_PREFIX}{book.id}"]
+    )).delete(synchronize_session=False)
     drop_ids = [d.id for d in session.query(Drop.id).filter(Drop.book_id == book.id)]
     if drop_ids:
         session.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(
@@ -62,6 +69,8 @@ def _alembic_config():
     cfg = AlembicConfig(str(root / "alembic.ini"))
     cfg.set_main_option("script_location", str(root / "alembic"))
     cfg.set_main_option("sqlalchemy.url", str(settings.database_url))
+    # Embedded run: don't let alembic/env.py reconfigure logging (see the note there).
+    cfg.attributes["configure_logger"] = False
     return cfg
 
 

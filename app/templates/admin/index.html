@@ -87,7 +87,7 @@
 </form>
 {% endmacro %}
 
-{% macro paused_badge(book) %}{% if book.paused %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Paused — not broadcasting">⏸ paused</span>{% endif %}{% endmacro %}
+{% macro paused_badge(book) %}{% if book.paused %}<span class="badge badge-queued" style="font-size:.7em; padding:.1em .4em" title="Paused — not broadcasting">⏸ paused</span>{% if book_notes and book_notes.get(book.id) %} <span class="badge" style="font-size:.7em; padding:.1em .4em; background:#fde8c8; color:#7a4a00" title="{{ book_notes[book.id] }}">⚠ {{ book_notes[book.id] }}</span>{% endif %}{% endif %}{% endmacro %}
 
 <h1>📡 Dashboard</h1>
 

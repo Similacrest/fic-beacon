@@ -17,12 +17,14 @@ def _configure_logging() -> None:
 
     Set BEACON_LOG_LEVEL=DEBUG to trace the WebSub subscribe → verify → store → push
     flow (app/routers/websub.py, app/websub/publisher.py). We raise only the `app`
-    logger so uvicorn's access/error logs keep their own level.
+    logger so uvicorn's access/error logs — and third-party libraries — keep their own level.
+    Nothing later may reconfigure logging: init_db()'s Alembic run is told not to
+    (database._alembic_config), which is what used to silence everything after startup.
     """
     level = logging.getLevelName(settings.log_level.upper())
     if not isinstance(level, int):
         level = logging.INFO
-    logging.basicConfig(level=level)  # ensure a root handler exists
+    logging.basicConfig(level=logging.WARNING)  # ensure a root handler exists
     logging.getLogger("app").setLevel(level)
 
 

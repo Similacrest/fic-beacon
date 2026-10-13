@@ -314,3 +314,129 @@ class TestTriggerGuid:
         fold([b], [_raw(4646, count=5)], guids=["g1"], job_id="j1")
         fold([b], [_raw(4646, count=5)], guids=["g2"], job_id="j2")
         assert json.loads(get_value(in_memory_db, TRIGGER_RETRY_PREFIX + str(b.id))) == {"guid": "g2", "n": 1}
+
+
+# ── logging survives the startup migration ───────────────────────────────────────────────────
+
+class TestLoggingSurvivesMigrations:
+    def test_embedded_alembic_run_leaves_logging_alone(self, tmp_path, monkeypatch):
+        import logging
+
+        from alembic import command
+
+        from app import database
+        from app.config import settings
+        monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path}/m.db")
+        app_logger = logging.getLogger("app.fetch.client")
+        uvicorn_logger = logging.getLogger("uvicorn.access")
+        root = logging.getLogger()
+        app_logger.setLevel(logging.INFO)
+        before = (root.level, list(root.handlers), app_logger.level, uvicorn_logger.level)
+
+        command.upgrade(database._alembic_config(), "head")
+
+        assert not app_logger.disabled and not uvicorn_logger.disabled
+        assert (root.level, list(root.handlers), app_logger.level, uvicorn_logger.level) == before
+        assert app_logger.isEnabledFor(logging.INFO)
+
+    def test_cli_logging_config_does_not_disable_existing_loggers(self, tmp_path, monkeypatch):
+        import logging
+
+        from alembic import command
+        from alembic.config import Config
+
+        from app.config import settings
+        monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path}/c.db")
+        cfg = Config("alembic.ini")  # what the `alembic` CLI builds: no configure_logger attribute
+        cfg.set_main_option("script_location", "alembic")
+        probe = logging.getLogger("app.probe.cli")
+        saved_root = (logging.getLogger().level, list(logging.getLogger().handlers))
+        try:
+            command.upgrade(cfg, "head")
+            assert not probe.disabled
+        finally:
+            root = logging.getLogger()
+            root.setLevel(saved_root[0])
+            root.handlers[:] = saved_root[1]
+
+
+# ── an EPUB that chapterizes to nothing must not hold a slot ─────────────────────────────────
+
+def _epub_with_nav(nav_hrefs: list[str], tmp_path, chapters=3, words=120, name="toc.epub"):
+    """A make_epub EPUB whose nav.xhtml is rewritten to point at `nav_hrefs`."""
+    import zipfile
+    src = make_epub(chapters=[(f"Chapter {i}", f"<p>{'word ' * words}</p>") for i in range(1, chapters + 1)])
+    dst = tmp_path / name
+    items = "".join(f'<li><a href="{h}">Real {i}</a></li>' for i, h in enumerate(nav_hrefs, 1))
+    nav = (
+        '<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Nav</title></head><body>'
+        f'<nav epub:type="toc"><ol>{items}</ol></nav></body></html>'
+    )
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
+        for info in zin.infolist():
+            data = nav.encode() if info.filename == "OEBPS/nav.xhtml" else zin.read(info.filename)
+            zout.writestr(info, data)
+    return dst
+
+
+class TestChapterizerSurvivesAnUnusableToc:
+    def test_toc_pointing_nowhere_falls_back_to_the_spine(self, tmp_path):
+        from app.epub.chapterizer import chapterize
+        epub = _epub_with_nav(["Text/gone1.xhtml", "Text/gone2.xhtml"], tmp_path)
+        assert len(chapterize(epub)) == 3  # was 0: TOC non-empty but resolved to nothing
+
+    def test_toc_in_another_directory_resolves_by_basename(self, tmp_path):
+        from app.epub.chapterizer import chapterize
+        epub = _epub_with_nav(
+            ["../Text/chapter001.xhtml", "../Text/chapter002.xhtml", "../Text/chapter003.xhtml"], tmp_path)
+        chapters = chapterize(epub)
+        assert [c.title for c in chapters] == ["Real 1", "Real 2", "Real 3"]  # TOC titles kept
+
+
+class TestEmptyBacklogBookIsSetAside:
+    def _setup(self, db, tmp_path):
+        from app.models import BookStatus
+        from tests.test_planner import _make_book
+        broken = _make_book(db, calibre_id=4639, title="Yumi", status=BookStatus.active, queue_position=1)
+        good = _make_book(db, calibre_id=4640, title="Next", status=BookStatus.queued, queue_position=2)
+        # A TOC that resolves to nothing over a document too short to count as a chapter: the TOC
+        # pass finds nothing and so does the spine fallback — the shape that stranded book 4639.
+        empty = _epub_with_nav(["Text/gone.xhtml"], tmp_path, chapters=1, words=3, name="empty.epub")
+        full = make_epub(chapters=[(f"C{i}", f"<p>{'word ' * 300}</p>") for i in range(1, 4)])
+        return broken, good, empty, full
+
+    def test_slot_passes_to_the_next_book_and_reason_is_recorded(self, in_memory_db, tmp_path):
+        from pathlib import Path
+
+        from app.planner.planner import run_release_cycle
+        from app.state import BOOK_NOTE_PREFIX, get_value
+        broken, good, empty, full = self._setup(in_memory_db, tmp_path)
+        paths = {4639: empty, 4640: full}
+
+        adapter = MagicMock()
+        adapter.get_book.side_effect = lambda cid: MagicMock(calibre_id=cid)
+        adapter.epub_path.side_effect = lambda cb: paths[cb.calibre_id]
+        with patch("app.planner.planner.CalibreAdapter", return_value=adapter):
+            drops = run_release_cycle(in_memory_db, Path("/fake"))
+
+        assert broken.paused and broken.status == BookStatus.queued and broken.slot_index is None
+        assert "no readable chapters" in get_value(in_memory_db, BOOK_NOTE_PREFIX + str(broken.id))
+        assert good.cursor_chapter_index > 0   # promoted out of the queue and streamed
+        assert [d.book_id for d in drops] == [good.id]   # the freed slot streamed this very cycle
+
+    def test_resume_clears_the_note(self, in_memory_db):
+        from app.planner.planner import pause_book, resume_book
+        from app.state import BOOK_NOTE_PREFIX, get_value, set_value
+        b = _book(in_memory_db, tracked=False, calibre_id=9)
+        set_value(in_memory_db, BOOK_NOTE_PREFIX + str(b.id), "why")
+        pause_book(in_memory_db, b)
+        resume_book(in_memory_db, b)
+        assert get_value(in_memory_db, BOOK_NOTE_PREFIX + str(b.id)) is None
+
+    def test_tracked_story_with_no_chapters_yet_is_left_alone(self, in_memory_db, tmp_path):
+        from app.planner.planner import _set_aside_empty_backlog
+        b = _book(in_memory_db, calibre_id=11, total_chapters=0)  # tracked, still downloading
+        adapter = MagicMock()
+        assert _set_aside_empty_backlog(in_memory_db, [b], adapter) is False
+        assert not b.paused

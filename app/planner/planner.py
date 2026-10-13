@@ -194,9 +194,14 @@ def run_release_cycle(
         session.flush()
 
         active_books = _active_books_in(session, channel.id)
-        if not active_books:
-            continue
         valid, book_remaining = _load_remaining(active_books, adapter)
+        # A backlog book whose EPUB has no chapters would sit in its slot forever and starve the
+        # queue behind it. Set it aside (paused, with a reason) and let the next queued book in —
+        # looping, because the promoted book may be just as broken.
+        while _set_aside_empty_backlog(session, active_books, adapter):
+            session.flush()
+            active_books = _active_books_in(session, channel.id)
+            valid, book_remaining = _load_remaining(active_books, adapter)
         if valid:  # a channel with nothing to drop takes no share of the budget
             loaded[channel.id] = (valid, book_remaining, active_books)
 
@@ -609,11 +614,47 @@ def _inclusion_probability(
     return min(1.0, remaining / word_count) * penalty
 
 
+def _set_aside_empty_backlog(
+    session: Session, active_books: list[Book], adapter: CalibreAdapter
+) -> bool:
+    """Pause every active backlog book whose EPUB exists but chapterizes to **zero** chapters.
+
+    Distinct from a *caught-up* source (cursor at the end, chapters exist) and from a missing
+    EPUB/entry (which may be transient — warned about, never paused). A tracked story with 0
+    chapters is just still downloading, so only untracked books are touched. The reason is
+    recorded for the dashboard (`book_note:{id}`), and resuming the book clears it.
+    Returns True if anything was set aside (the caller reloads the channel's candidates).
+    """
+    from app.state import BOOK_NOTE_PREFIX, set_value
+
+    emptied = False
+    for book in active_books:
+        if book.tracked or book.total_chapters != 0 or book.calibre_id is None:
+            continue
+        calibre_book = adapter.get_book(book.calibre_id)
+        if calibre_book is None or not adapter.epub_path(calibre_book).exists():
+            continue  # unresolvable/missing is a different problem (already warned)
+        logger.warning(
+            "Active backlog book '%s' (calibre %s) has an EPUB with no readable chapters — "
+            "pausing it so it stops holding slot %s", book.title, book.calibre_id, book.slot_index,
+        )
+        set_value(session, f"{BOOK_NOTE_PREFIX}{book.id}",
+                  "EPUB has no readable chapters (0 found) — paused so it doesn't hold a slot. "
+                  "Fix the EPUB in Calibre, then resume.")
+        pause_book(session, book)
+        emptied = True
+    return emptied
+
+
 def _get_chapters(
     calibre_book: CalibreBook, adapter: CalibreAdapter, book: Book
 ) -> list[Chapter]:
     epub_path = adapter.epub_path(calibre_book)
     if not epub_path.exists():
+        logger.warning(
+            "EPUB file for '%s' (calibre %s) is missing at %s — skipping this cycle",
+            book.title, book.calibre_id, epub_path,
+        )
         return []
     all_chapters = chapterize(epub_path)
     # Keep total_chapters honest for *every* active source we look at each broadcast — not just
@@ -929,7 +970,10 @@ def resume_book(session: Session, book: Book) -> None:
     the queue); a tracked story becomes eligible again. Rebalance the channel's slots so the
     resumed book is (re)placed.
     """
+    from app.state import BOOK_NOTE_PREFIX, delete_value
+
     book.paused = False
+    delete_value(session, f"{BOOK_NOTE_PREFIX}{book.id}")  # whatever set it aside no longer applies
     channel = session.get(Channel, book.channel_id)
     if channel is not None:
         _assign_slots(session, channel.parallel_slots, book.channel_id)
