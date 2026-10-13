@@ -230,7 +230,7 @@
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>
       <form method="post" action="/admin/books/{{ book.id }}/requeue" hx-post="/admin/books/{{ book.id }}/requeue" style="display:inline">
-        <button>Re-queue</button>
+        <button title="From the start; weight and votes reset">↺ Read again</button>
       </form>
     </td>
   </tr>
@@ -258,8 +258,8 @@
     <td>{{ book.author if book.author and book.author != 'Unknown' else '' }}</td>
     <td>{{ book.thumbs_down }}</td>
     <td>
-      <form method="post" action="/admin/books/{{ book.id }}/requeue" hx-post="/admin/books/{{ book.id }}/requeue" style="display:inline">
-        <button>Re-queue</button>
+      <form method="post" action="/admin/books/{{ book.id }}/restore" hx-post="/admin/books/{{ book.id }}/restore" style="display:inline">
+        <button title="Same chapter, weight and votes">↺ Bring back</button>
       </form>
     </td>
   </tr>

@@ -359,6 +359,11 @@ unwrapped (links dropped, authored number kept); note images use the image route
 - **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the *one place* for a story's
   controls: pause/resume, fetch now, drop / re-queue, cursor (⏮/⏭/exact), weight, track toggle,
   channel, slot picker, queue position, source/fetch facts, recent drops (read/unread) and feedback.
+  Undo/recovery lives there too: **✓ Mark N read** (acks every unread drop → lifts the unread
+  slowdown, weight untouched), **↩ Undo** the last manual cursor move (`app_state[cursor_undo:{id}]`;
+  offered only while the cursor is still where the move left it, so it can't re-send chapters a
+  release has since delivered), and **↺ Bring back** for a dropped source (`POST …/restore`: same
+  chapter, weight and votes; a 0 weight resets to 1) vs **⏮ Start over** (`…/requeue`, resets).
   Book action routes take an optional `next` form field (`admin._back`: only `/admin/…` paths, no
   `//`) and redirect there, else to the dashboard; inline auto-saves still answer HTMX with 204.
 - Relative times (`|ago`) with the full timestamp in `title=` (`|stamp`, `app/timefmt.py`). Tablet

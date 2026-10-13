@@ -27,7 +27,7 @@ from app.models import (
 )
 from app.ongoing.feed_url import infer_feed_url
 from app.state import (
-    BOOK_NOTE_PREFIX, LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_RUN_RESULT, LAST_SKIPS, get_run, get_value,
+    BOOK_NOTE_PREFIX, CURSOR_UNDO_PREFIX, LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_RUN_RESULT, LAST_SKIPS, get_run, get_value,
     list_with_prefix,
 )
 from app.version import __version__
@@ -300,6 +300,8 @@ def story_page(book_id: int, request: Request, db: Session = Depends(get_db)) ->
         "why": why,
         "pending": pending_chapters(book),
         "queue_pos": queue_pos,
+        "undo": _cursor_undo(db, book),
+        "unread": db.query(Drop).filter(Drop.book_id == book.id, Drop.acknowledged_at.is_(None)).count(),
         "drops": drops,
         "votes": votes,
         "here": f"/admin/books/{book.id}",
@@ -824,6 +826,15 @@ def _saved(request: Request, next: str | None = None) -> Response:
     return _back(next)
 
 
+def _remember_cursor(db: Session, book: Book, old: int) -> None:
+    """Keep the last manual cursor move so it can be undone once (see `cursor_undo`). Only a real
+    move is recorded; the story page offers the undo while the cursor is still where it landed."""
+    from app.state import set_value
+    if old != book.cursor_chapter_index:
+        set_value(db, f"{CURSOR_UNDO_PREFIX}{book.id}",
+                  json.dumps({"from": old, "to": book.cursor_chapter_index}))
+
+
 @router.post("/books/{book_id}/set-cursor")
 def set_cursor(
     book_id: int,
@@ -836,7 +847,9 @@ def set_cursor(
     if book is not None:
         upper = book.total_chapters if book.total_chapters is not None else chapter_index
         # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
+        old = book.cursor_chapter_index
         book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
+        _remember_cursor(db, book, old)
         db.commit()
     return _saved(request, next)
 
@@ -864,7 +877,9 @@ def cursor_latest(book_id: int, next: str | None = Form(None), db: Session = Dep
         count = _book_chapter_count(book)
         if count is not None:
             book.total_chapters = count
+            old = book.cursor_chapter_index
             book.cursor_chapter_index = max(book.cursor_floor, count)
+            _remember_cursor(db, book, old)
             db.commit()
     return _back(next)
 
@@ -877,7 +892,37 @@ def cursor_start(book_id: int, next: str | None = Form(None), db: Session = Depe
         count = _book_chapter_count(book)
         if count is not None:  # populate the count so the UI can show progress
             book.total_chapters = count
+        old = book.cursor_chapter_index
         book.cursor_chapter_index = book.cursor_floor
+        _remember_cursor(db, book, old)
+        db.commit()
+    return _back(next)
+
+
+@router.post("/books/{book_id}/cursor-undo")
+def cursor_undo(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
+    """Put the cursor back where it was before the last manual move — only while it's still where
+    that move left it (a release since then has moved on, and undoing would re-send chapters)."""
+    from app.state import delete_value
+    book = db.get(Book, book_id)
+    undo = _cursor_undo(db, book) if book else None
+    if book is not None and undo is not None:
+        book.cursor_chapter_index = max(book.cursor_floor, undo["from"])
+        delete_value(db, f"{CURSOR_UNDO_PREFIX}{book.id}")
+        db.commit()
+    return _back(next)
+
+
+@router.post("/books/{book_id}/mark-read")
+def mark_all_read(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
+    """Acknowledge every unread drop of this source at once — lifts the unread slowdown (the
+    streak is derived from the drop rows) without touching its weight."""
+    from app.models import utcnow
+    book = db.get(Book, book_id)
+    if book is not None:
+        now = utcnow()
+        for d in db.query(Drop).filter(Drop.book_id == book.id, Drop.acknowledged_at.is_(None)):
+            d.acknowledged_at = now
         db.commit()
     return _back(next)
 
@@ -938,6 +983,44 @@ def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
         delete_book_cascade(db, book)
     db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
+
+
+def _cursor_undo(db: Session, book: Book) -> dict | None:
+    """The pending one-step cursor undo for `book`, or None (none recorded, or the cursor has
+    moved since — e.g. a release delivered chapters)."""
+    from app.state import get_value
+    try:
+        u = json.loads(get_value(db, f"{CURSOR_UNDO_PREFIX}{book.id}") or "null")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(u, dict) and isinstance(u.get("from"), int) and u.get("to") == book.cursor_chapter_index \
+            and u["from"] != book.cursor_chapter_index:
+        return u
+    return None
+
+
+@router.post("/books/{book_id}/restore")
+def restore_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
+    """Bring a dropped source back **where it was**: same chapter, weight and votes (the other
+    re-queue starts over). A weight that was voted down to 0 is reset to 1 — at 0 it would never
+    post. A tracked story goes back to a slot at once; a backlog book re-enters the queue and
+    streams if a slot is free."""
+    from app.planner.planner import _refill_book_channel, assign_channel_slots
+    book = db.get(Book, book_id)
+    if book is not None and book.status == BookStatus.dropped:
+        book.status = BookStatus.active if book.tracked else BookStatus.queued
+        book.slot_index = None
+        book.paused = False
+        book.cooldown_remaining = 0
+        if book.quota_weight <= 0:
+            book.quota_weight = 1.0
+        db.flush()
+        if book.tracked:
+            assign_channel_slots(db, book.channel_id)
+        else:
+            _refill_book_channel(db, book)
+        db.commit()
+    return _back(next)
 
 
 @router.post("/books/{book_id}/requeue")

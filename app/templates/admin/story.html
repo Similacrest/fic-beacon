@@ -35,10 +35,23 @@
         onsubmit="return confirm('Drop this story? It stops broadcasting. You can re-queue it later.')">{{ back() }}
     <button class="btn btn-lg btn-danger">❌ Drop</button>
   </form>
+  {% elif book.status.value == 'dropped' %}
+  <form method="post" action="/admin/books/{{ book.id }}/restore">{{ back() }}
+    <button class="btn btn-lg btn-primary" title="Same chapter, weight and votes">↺ Bring back</button>
+  </form>
+  <form method="post" action="/admin/books/{{ book.id }}/requeue"
+        onsubmit="return confirm('Start over from the beginning? Weight and votes reset.')">{{ back() }}
+    <button class="btn btn-lg">⏮ Start over</button>
+  </form>
   {% else %}
   <form method="post" action="/admin/books/{{ book.id }}/requeue"
-        onsubmit="return confirm('Re-queue from the start? Weight and votes reset.')">{{ back() }}
-    <button class="btn btn-lg btn-primary">↺ Re-queue</button>
+        onsubmit="return confirm('Read it again from the start? Weight and votes reset.')">{{ back() }}
+    <button class="btn btn-lg btn-primary">↺ Read again</button>
+  </form>
+  {% endif %}
+  {% if unread and not gone %}
+  <form method="post" action="/admin/books/{{ book.id }}/mark-read">{{ back() }}
+    <button class="btn btn-lg" title="Acknowledge every unread drop — lifts the unread slowdown; weight untouched">✓ Mark {{ unread }} read</button>
   </form>
   {% endif %}
 </div>
@@ -61,6 +74,11 @@
     {% if book.total_chapters %}
     <div class="bar"><span style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%"></span></div>
     <p class="muted" style="font-size:.85em; margin:.3em 0">{{ pending }} chapter{{ '' if pending == 1 else 's' }} waiting</p>
+    {% endif %}
+    {% if undo %}
+    <form method="post" action="/admin/books/{{ book.id }}/cursor-undo" class="inline-row">{{ back() }}
+      <button class="btn" title="Put the position back to where it was before your last change">↩ Undo — back to chapter {{ undo['from'] }}</button>
+    </form>
     {% endif %}
     <div class="inline-row">
       <form method="post" action="/admin/books/{{ book.id }}/cursor-start">{{ back() }}

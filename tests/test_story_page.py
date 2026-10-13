@@ -87,7 +87,7 @@ class TestStoryPage:
         client, db = ctx
         b = _book(db, "Gone", status=BookStatus.dropped)
         t = client.get(f"/admin/books/{b.id}").text
-        assert "↺ Re-queue" in t and "❌ Drop" not in t and "Placement" not in t
+        assert "↺ Bring back" in t and "⏮ Start over" in t and "❌ Drop" not in t and "Placement" not in t
 
     def test_unknown_book_404(self, ctx):
         client, _ = ctx
@@ -240,3 +240,83 @@ class TestDashboard:
         t = client.get("/admin/").text
         assert f'href="/admin/books/{b.id}"' in t and f'href="/admin/books/{q.id}"' in t
         assert "📚 Active sources" not in t and "📋 Queue <span" not in t
+
+
+class TestUndoAndRestore:
+    def _drops(self, db, book, n, acked):
+        from app.models import utcnow
+        for i in range(n):
+            db.add(Drop(book_id=book.id, channel_id=book.channel_id, feed_key="1", word_count=100,
+                        chapter_start=i, chapter_end=i, chapter_titles=f"C{i}", content_html="x",
+                        feedback_token=f"u{book.id}{i}{acked}", reader_slug=f"v{book.id}{i}{acked}",
+                        acknowledged_at=utcnow() if acked else None))
+        db.commit()
+
+    def test_mark_all_read_lifts_the_slowdown_and_keeps_weight(self, ctx):
+        from app.planner.planner import unread_streak
+        client, db = ctx
+        b = _book(db, "Serial", slot_index=1, quota_weight=1.5)
+        self._drops(db, b, 3, acked=False)
+        assert unread_streak(db, b) == 3
+        assert "✓ Mark 3 read" in client.get(f"/admin/books/{b.id}").text
+        client.post(f"/admin/books/{b.id}/mark-read", data={"next": f"/admin/books/{b.id}"})
+        db.refresh(b)
+        assert unread_streak(db, b) == 0 and b.quota_weight == 1.5
+        assert "✓ Mark" not in client.get(f"/admin/books/{b.id}").text
+
+    def test_cursor_move_can_be_undone_once(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", slot_index=1, total_chapters=20, cursor_chapter_index=7)
+        client.post(f"/admin/books/{b.id}/set-cursor", data={"chapter_index": "15"})
+        db.refresh(b)
+        assert b.cursor_chapter_index == 15
+        assert "back to chapter 7" in client.get(f"/admin/books/{b.id}").text
+        client.post(f"/admin/books/{b.id}/cursor-undo")
+        db.refresh(b)
+        assert b.cursor_chapter_index == 7
+        assert "back to chapter" not in client.get(f"/admin/books/{b.id}").text   # one step only
+        client.post(f"/admin/books/{b.id}/cursor-undo")                          # harmless repeat
+        db.refresh(b)
+        assert b.cursor_chapter_index == 7
+
+    def test_undo_expires_once_the_cursor_has_moved_on(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", slot_index=1, total_chapters=20, cursor_chapter_index=7)
+        client.post(f"/admin/books/{b.id}/set-cursor", data={"chapter_index": "15"})
+        b.cursor_chapter_index = 16          # a release delivered a chapter
+        db.commit()
+        assert "back to chapter" not in client.get(f"/admin/books/{b.id}").text
+        client.post(f"/admin/books/{b.id}/cursor-undo")
+        db.refresh(b)
+        assert b.cursor_chapter_index == 16
+
+    def test_unchanged_cursor_records_no_undo(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", slot_index=1, total_chapters=20, cursor_chapter_index=7)
+        client.post(f"/admin/books/{b.id}/set-cursor", data={"chapter_index": "7"})
+        assert "back to chapter" not in client.get(f"/admin/books/{b.id}").text
+
+    def test_restore_keeps_position_weight_and_votes(self, ctx):
+        client, db = ctx
+        b = _book(db, "Serial", tracked=True, slot_index=1, cursor_chapter_index=9, total_chapters=20,
+                  quota_weight=2.25, thumbs_up=4, status=BookStatus.dropped)
+        client.post(f"/admin/books/{b.id}/restore")
+        db.refresh(b)
+        assert b.status == BookStatus.active and b.slot_index is not None
+        assert (b.cursor_chapter_index, b.quota_weight, b.thumbs_up) == (9, 2.25, 4)
+
+    def test_restore_backlog_book_streams_when_a_slot_is_free(self, ctx):
+        client, db = ctx
+        b = _book(db, "Mistborn", tracked=False, status=BookStatus.dropped, cursor_chapter_index=3,
+                  quota_weight=0.0)
+        client.post(f"/admin/books/{b.id}/restore")
+        db.refresh(b)
+        assert b.status == BookStatus.active and b.slot_index == 1
+        assert b.cursor_chapter_index == 3 and b.quota_weight == 1.0   # a 0 weight would never post
+
+    def test_restore_ignores_books_that_are_not_dropped(self, ctx):
+        client, db = ctx
+        b = _book(db, "Live", slot_index=1, quota_weight=0.5)
+        client.post(f"/admin/books/{b.id}/restore")
+        db.refresh(b)
+        assert b.status == BookStatus.active and b.quota_weight == 0.5

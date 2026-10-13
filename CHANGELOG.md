@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-13
+
+### Added
+- **Story page recovery tools.** *✓ Mark N read* acknowledges all of a story's unread drops at once,
+  lifting the unread slowdown without touching its weight. *↩ Undo* puts the reading position back
+  after a ⏮ / ⏭ / typed change (one step, offered only while nothing has moved the cursor since).
+  *↺ Bring back* returns a dropped story to where it was — same chapter, weight and votes (a weight
+  of 0 resets to 1, since it would never post) — next to *⏮ Start over*, the old re-queue.
+
+### Changed
+- The dashboard's Dropped list uses *Bring back*; Recently completed uses *Read again* (from the
+  start, weight and votes reset).
+
 ## [0.19.0] — 2026-10-13
 
 ### Added
