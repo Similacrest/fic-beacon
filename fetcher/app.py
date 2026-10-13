@@ -193,16 +193,24 @@ def _identifier_urls(ids: list[int]) -> dict[int, str] | None:
         return None
     out: dict[int, str] = {}
     for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            return None
         ident = row.get("identifiers")
         if isinstance(ident, str):
             ident = dict(p.split(":", 1) for p in ident.split(",") if ":" in p)
         if isinstance(row.get("id"), int) and isinstance(ident, dict):
             out[row["id"]] = str(ident.get("url") or "")
-    return out
+    # A listing that doesn't account for every id asked about is a shape we don't understand, not
+    # "none of them match": report unreadable so callers don't filter every hit away.
+    return out if all(i in out for i in ids) else None
 
 
-def _find_calibre_ids(url: str) -> list[int]:
+def _find_calibre_ids(url: str, strict: bool = False) -> list[int]:
     """Every live Calibre entry whose `url:` identifier is this story, lowest id first.
+
+    `strict` returns only hits whose identifier was actually read and key-checked — an unreadable
+    listing then means "no match" rather than falling back to the raw search hits. Use it before
+    any action that overwrites an entry on the strength of the match.
 
     Matching is by **story identity** (`_story_key`), never exact string: Calibre's identifier is
     whatever spelling FanFicFare wrote (`/fiction/186926`), the app may hold another
@@ -225,13 +233,15 @@ def _find_calibre_ids(url: str) -> list[int]:
     urls = _identifier_urls(ids)
     if urls is not None:
         ids = [i for i in ids if _story_key(urls.get(i)) == key]
+    elif strict:
+        return []
     return sorted(set(ids))
 
 
-def _find_calibre_id(url: str) -> int | None:
+def _find_calibre_id(url: str, strict: bool = False) -> int | None:
     """The live Calibre entry for this story, or None. With several matches the lowest id wins
     (the fetcher adds a stub's archive *after* the live entry, so it always has the higher id)."""
-    ids = _find_calibre_ids(url)
+    ids = _find_calibre_ids(url, strict)
     if len(ids) > 1:
         logger.warning("%s matches several Calibre entries %s — using %s", url, ids, ids[0])
     return ids[0] if ids else None
@@ -516,16 +526,17 @@ def _download_new(urls: list[str], by_url: dict[str, dict]) -> str:
             calibre_id = _added_id(add)
             if calibre_id is None:
                 # Exit 0 but nothing added: calibredb refuses a book whose title+author match an
-                # existing one. If that entry is this very story (a lookup miss), refresh it in
-                # place; otherwise it is a different work that merely shares title+author, so add
-                # it regardless. Either way the story must not be reported "done" with no entry.
-                calibre_id = _find_calibre_id(src or url)
+                # existing one. If that entry is verifiably this very story (a lookup miss), refresh
+                # it in place. Otherwise fail loudly and let a human decide — force-adding would
+                # create the duplicate entry this whole path exists to avoid, and the "different work
+                # sharing a title and author" case it would serve is rare.
+                calibre_id = _find_calibre_id(src or url, strict=True)
                 if calibre_id is not None:
                     _calibredb("add_format", str(calibre_id), str(epub))
-                else:
-                    calibre_id = _added_id(_calibredb("add", "-d", str(epub)))
             if calibre_id is None:
-                _fail(entry, "calibredb add added nothing: "
+                _fail(entry, "calibredb added nothing (a duplicate title and author is the usual "
+                      "cause) and no library entry has this story's url: identifier — add it by hand "
+                      "or fix the existing entry's url: identifier. calibredb said: "
                       f"{_tail((add.stdout or '') + (add.stderr or ''))}")
                 entry["phase"] = "error"
                 matched.add(url)

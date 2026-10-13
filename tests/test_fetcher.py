@@ -124,7 +124,7 @@ def fake_tools(monkeypatch):
 
     monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
     monkeypatch.setattr(fetcher, "_calibredb", calibredb)
-    monkeypatch.setattr(fetcher, "_find_calibre_id", lambda url: None)
+    monkeypatch.setattr(fetcher, "_find_calibre_id", lambda url, strict=False: None)
     monkeypatch.setattr(fetcher.time, "sleep", lambda s: None)
     return state
 
@@ -389,7 +389,7 @@ def test_new_story_refused_as_duplicate_refreshes_the_existing_entry(calibre, fa
     # `fake_tools` replaced _find_calibre_id with "never found"; restore the real lookup after add.
     monkeypatch.setattr(
         fetcher, "_find_calibre_id",
-        lambda u: 4629 if any(c[0] == "add" for c in fake.calls) else None)
+        lambda u, strict=False: 4629 if any(c[0] == "add" for c in fake.calls) else None)
     by_url = {url: _entry(url)}
 
     fetcher._download_new([url], by_url)
@@ -399,7 +399,9 @@ def test_new_story_refused_as_duplicate_refreshes_the_existing_entry(calibre, fa
     assert any(c[0] == "add_format" and c[1] == "4629" for c in fake.calls)
 
 
-def test_new_story_sharing_title_with_another_work_is_added_anyway(calibre, fake_tools):
+def test_new_story_refused_and_not_verifiably_in_library_is_a_loud_error_not_a_duplicate(calibre, fake_tools):
+    # Same title+author as an existing entry whose url: is a different story: do NOT force-add
+    # (that would create a duplicate entry) — report it and let a human decide.
     url = "https://www.royalroad.com/fiction/555555"
     fake = calibre({4629: {"url": RR}}, refuse_dupes=True)
     fake_tools["script"] = [([("a.epub", url + "/t", "In-Progress")], "")]
@@ -408,8 +410,38 @@ def test_new_story_sharing_title_with_another_work_is_added_anyway(calibre, fake
     fetcher._download_new([url], by_url)
 
     e = by_url[url]
-    assert e["phase"] == "done" and e["calibre_id"] == fake.next_id
-    assert any(c[0] == "add" and "-d" in c for c in fake.calls)
+    assert e["phase"] == "error" and "calibredb added nothing" in e["error"]
+    assert not any(c[0] == "add" and "-d" in c for c in fake.calls)
+    assert not any(c[0] == "add_format" for c in fake.calls)
+
+
+def test_unrecognised_listing_shape_is_unreadable_not_empty(calibre, monkeypatch):
+    fake = calibre({4629: {"url": RR}})
+    orig = fake.__call__
+
+    def odd(*args):  # parses as JSON but isn't rows of {id, identifiers}
+        if args[0] == "list":
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps([{"book": 4629}]), stderr="")
+        return orig(*args)
+    monkeypatch.setattr(fetcher, "_calibredb", odd)
+    assert fetcher._identifier_urls([4629]) is None
+    assert fetcher._find_calibre_ids(RR) == [4629]                 # keeps the raw search hits
+    assert fetcher._find_calibre_ids(RR, strict=True) == []        # …but won't act on unverified ones
+
+
+def test_refused_add_with_unreadable_listing_does_not_overwrite_a_guessed_entry(
+        calibre, fake_tools, monkeypatch):
+    fake = calibre({4629: {"url": RR}}, refuse_dupes=True)
+    fake_tools["script"] = [([("a.epub", RR + "/t", "In-Progress")], "")]
+    monkeypatch.setattr(fetcher, "_identifier_urls", lambda ids: None)
+    monkeypatch.setattr(fetcher, "_find_calibre_id",
+                        lambda u, strict=False: None if strict else 4629)
+    by_url = {RR: _entry(RR)}
+
+    fetcher._download_new([RR], by_url)
+
+    assert by_url[RR]["phase"] == "error"
+    assert not any(c[0] == "add_format" for c in fake.calls)
 
 
 def test_new_story_that_adds_nothing_is_an_error_not_a_phantom_success(fake_tools, monkeypatch):

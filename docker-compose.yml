@@ -17,9 +17,10 @@ services:
       - ${CALIBRE_LIBRARY_PATH:-.}:/calibre-library:ro
     environment:
       BEACON_BASE_URL: "${BEACON_BASE_URL:-http://localhost:8000}"
-      # Separate origin for the feedback links only (empty → BEACON_BASE_URL); see README.
-      BEACON_FEEDBACK_BASE_URL: "${BEACON_FEEDBACK_BASE_URL:-}"
-      BEACON_LEGACY_BASE_URLS: "${BEACON_LEGACY_BASE_URLS:-}"
+      # Optional, see README. Key-only: passed through from .env/the shell when set, and not
+      # defined in the container at all when not — so it can't clobber a value set another way.
+      BEACON_FEEDBACK_BASE_URL:
+      BEACON_LEGACY_BASE_URLS:
       BEACON_CALIBRE_LIBRARY_PATH: "/calibre-library"
       BEACON_DATABASE_URL: "sqlite:////data/fic-beacon.db"
       # The isolated FanFicFare/Calibre fetcher (see ./fetcher).
@@ -44,8 +45,6 @@ services:
       # Shared secret for beacon → fetcher calls; set the same FETCHER_TOKEN on the fetcher.
       BEACON_FETCHER_TOKEN: "${FETCHER_TOKEN:-}"
       BEACON_WEBSUB_CALLBACK_HOSTS: "${BEACON_WEBSUB_CALLBACK_HOSTS:-}"
-      # Serve /websub/* without the proxy token — only when the proxy publishes /websub/ as well.
-      BEACON_PUBLIC_WEBSUB: "${BEACON_PUBLIC_WEBSUB:-false}"
 
   # FanFicFare + calibredb — the ONLY container that writes the Calibre library.
   # Coexists with an external calibre-web pointed at the same library folder.

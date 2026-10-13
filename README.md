@@ -95,7 +95,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_ADMIN_OPEN` | Explicit opt-out of the gate when no token is set: `/admin` is open to anyone who can reach the port. Trusted networks only | `false` |
 | `BEACON_FETCHER_TOKEN` / `FETCHER_TOKEN` | Shared secret beacon sends (`X-Fetcher-Token`) and the fetcher requires; set both to the same value | unset |
 | `BEACON_UID` / `BEACON_GID` | Optional: run the beacon container as this non-root user (chown the `/data` volume first) | `0` / `0` |
-| `BEACON_PUBLIC_WEBSUB` | Treat `/websub/*` as public (no proxy token) — set it together with the proxy publishing `/websub/`. Feeds always advertise `rel=hub`; while the hub isn't reachable, readers just poll | `false` |
+| `BEACON_PUBLIC_WEBSUB` | Treat `/websub/*` as public (no proxy token) — set it together with the proxy publishing `/websub/` (the bundled `docker-compose.yml` does not pass it through — add it to the container environment). Feeds always advertise `rel=hub`; while the hub isn't reachable, readers just poll | `false` |
 | `BEACON_WEBSUB_CALLBACK_HOSTS` | Optional comma-separated allowlist of WebSub callback hosts (e.g. `incoming.inoreader.com`). Callbacks are always https and public-address only | any |
 | `BEACON_TZ` | Timezone for drop/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |

@@ -202,7 +202,9 @@ def _poll_fetch_job(job_id: str) -> None:
                     if book is not None and phase and phase not in ("done", "error"):
                         book.last_fetch_status = f"fetching: {phase}"
             if _expired(meta):
-                _abandon(session, url_to_book, "fetch timed out")
+                # A job that outruns the timeout counts as a fruitless attempt for its trigger GUID,
+                # or a story too big for the window would be resubmitted every cycle forever.
+                _abandon(session, url_to_book, "fetch timed out", guids)
                 delete_value(session, FETCH_JOB_PREFIX + job_id)
                 session.commit()
                 _unschedule_poll(job_id)
@@ -219,6 +221,7 @@ def _poll_fetch_job(job_id: str) -> None:
                     continue
                 if raw_result is None:
                     book.last_fetch_status = "error: no result from fetcher"
+                    _settle_trigger(session, book, _failed(), guids.get(str(book.id)))
                 else:
                     result = apply_result(book, raw_result)
                     _sync_title(book)
@@ -315,7 +318,14 @@ def _expired(meta: dict) -> bool:
     return datetime.now(timezone.utc) - submitted > timedelta(seconds=settings.fetcher_job_timeout)
 
 
-def _abandon(session, url_to_book: dict, reason: str) -> None:
+def _failed():
+    from app.fetch.client import FetchResult
+    return FetchResult(ok=False)
+
+
+def _abandon(session, url_to_book: dict, reason: str, guids: dict | None = None) -> None:
+    """Error the books still waiting on a job. With `guids`, each book's trigger entry also counts
+    one fruitless attempt (see _settle_trigger); without them (infrastructure outage) it doesn't."""
     from app.models import Book
     for ids in url_to_book.values():
         for book_id in _book_ids(ids):
@@ -323,6 +333,8 @@ def _abandon(session, url_to_book: dict, reason: str) -> None:
             # Only a book still waiting on this job — a later fetch may have set its own status.
             if book is not None and (book.last_fetch_status or "").startswith("fetching"):
                 book.last_fetch_status = f"error: {reason}"
+                if guids:
+                    _settle_trigger(session, book, _failed(), guids.get(str(book.id)))
 
 
 def sweep_stale_fetch_jobs(session) -> int:
@@ -348,7 +360,7 @@ def sweep_stale_fetch_jobs(session) -> int:
                 submitted = submitted.replace(tzinfo=timezone.utc)
             if datetime.now(timezone.utc) - submitted <= cutoff:
                 continue
-            _abandon(session, meta.get("url_to_book", {}), "fetch result lost")
+            _abandon(session, meta.get("url_to_book", {}), "fetch result lost", meta.get("guids"))
         except (ValueError, KeyError, TypeError, AttributeError):
             pass  # unparseable: nothing to un-stick, just drop it
         delete_value(session, key)

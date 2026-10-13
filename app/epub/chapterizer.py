@@ -118,28 +118,15 @@ def _parse(epub_path: Path) -> list[Chapter]:
 
     # Try to extract ordered chapter list from TOC
     toc_entries = _flatten_toc(book.toc)
-    chapters: list[Chapter] = []
 
-    # A TOC href is relative to the TOC file, which is not always the OPF directory (an NCX in a
-    # subfolder, `../Text/ch1.xhtml`, …), so it can miss the spine name. Fall back to a basename
-    # match — only where the basename is unambiguous.
-    by_basename: dict[str, epub.EpubHtml] = {}
-    ambiguous: set[str] = set()
-    for name, spine_item in spine_items.items():
-        base = name.rsplit("/", 1)[-1]
-        if base in by_basename:
-            ambiguous.add(base)
-        by_basename[base] = spine_item
-    for base in ambiguous:
-        del by_basename[base]
-
-    if toc_entries:
+    def _from_toc(find_item) -> list[Chapter]:
+        out: list[Chapter] = []
         seen_hrefs: set[str] = set()
         for title, href in toc_entries:
             bare_href, _fragment = urldefrag(href)
             # Normalize: the href in TOC is relative to the epub root
             bare_name = _normalize_name(bare_href)
-            item = spine_items.get(bare_name) or by_basename.get(bare_name.rsplit("/", 1)[-1])
+            item = find_item(bare_name)
             if item is None:
                 continue
             if item.get_name() in seen_hrefs:
@@ -150,17 +137,39 @@ def _parse(epub_path: Path) -> list[Chapter]:
             if not _is_content_chapter(html, chapter_url, is_fff):
                 continue  # FFF front-matter, or cover/map/blank in published books
             html = _inline_footnotes(html, item.get_name(), note_index)
-            chapters.append(
+            out.append(
                 Chapter(
-                    index=len(chapters),
-                    title=title or f"Chapter {len(chapters) + 1}",
+                    index=len(out),
+                    title=title or f"Chapter {len(out) + 1}",
                     html=html,
                     word_count=_count_words(html),
                     source_url=chapter_url,
                 )
             )
+        return out
+
+    # 1) The TOC, resolved by exact spine name — the only strategy a book that already
+    #    chapterizes ever uses, so its chapter list (and every cursor into it) is unchanged.
+    chapters = _from_toc(spine_items.get) if toc_entries else []
+
+    # 2) Only if that found nothing: a TOC href is relative to the TOC file, which is not always
+    #    the OPF directory (an NCX in a subfolder, `../Text/ch1.xhtml`), so it can miss the spine
+    #    name. Retry matching by basename, where the basename is unambiguous. Never mixed into a
+    #    non-empty result: that would insert chapters mid-list and shift a reader's cursor.
+    if toc_entries and not chapters:
+        by_basename: dict[str, epub.EpubHtml] = {}
+        ambiguous: set[str] = set()
+        for name, spine_item in spine_items.items():
+            base = name.rsplit("/", 1)[-1]
+            if base in by_basename:
+                ambiguous.add(base)
+            by_basename[base] = spine_item
+        for base in ambiguous:
+            del by_basename[base]
+        chapters = _from_toc(lambda n: spine_items.get(n) or by_basename.get(n.rsplit("/", 1)[-1]))
+
     if not chapters:
-        # Fallback — no TOC at all, *or* a TOC that resolved to no usable chapter (every href
+        # 3) Fallback — no TOC at all, *or* a TOC that resolved to no usable chapter (every href
         # missed the spine, or every target was too short): use all document items in order.
         # A book must never chapterize to nothing just because its TOC is unusable.
         for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):

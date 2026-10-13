@@ -639,3 +639,71 @@ class TestStaleFetchJobs:
              patch("app.scheduler.submit_and_track") as submit:
             assert poller.poll_all_feeds(in_memory_db) == 1
         assert list(submit.call_args[0][1]) == [b]
+
+
+class TestChapterListStaysPutForWorkingBooks:
+    def test_partial_toc_miss_is_not_papered_over_by_basename_matching(self, tmp_path):
+        """One TOC href resolves exactly, another only by basename. The book already chapterizes
+        (to 1 chapter) so its list — and every reader's cursor into it — must not change."""
+        from app.epub.chapterizer import chapterize
+        epub = _epub_with_nav(["chapter001.xhtml", "../Text/chapter002.xhtml"], tmp_path)
+        chapters = chapterize(epub)
+        assert [c.title for c in chapters] == ["Real 1"]
+
+    def test_all_exact_toc_is_unchanged(self, tmp_path):
+        from app.epub.chapterizer import chapterize
+        epub = _epub_with_nav(["chapter001.xhtml", "chapter002.xhtml", "chapter003.xhtml"], tmp_path)
+        assert [c.title for c in chapterize(epub)] == ["Real 1", "Real 2", "Real 3"]
+
+
+class TestAbandonedFetchesCountAsAttempts:
+    def _mapping(self, db, book, guid, age_s=0):
+        from datetime import datetime, timedelta, timezone
+        set_value(db, FETCH_JOB_PREFIX + "jobx", json.dumps({
+            "submitted_at": (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat(),
+            "url_to_book": {book.source_url: [book.id]}, "guids": {str(book.id): guid},
+        }))
+
+    def _fold(self, db, monkeypatch, poll_result):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_session():
+            yield db
+        monkeypatch.setattr(scheduler, "db_session", fake_session)
+        monkeypatch.setattr(scheduler, "_unschedule_poll", lambda j: None)
+        with patch("app.fetch.client.poll_fetch", return_value=poll_result):
+            scheduler._poll_fetch_job("jobx")
+
+    def _attempts(self, db, book):
+        raw = get_value(db, TRIGGER_RETRY_PREFIX + str(book.id))
+        return json.loads(raw)["n"] if raw else None
+
+    def test_timeout_counts(self, in_memory_db, monkeypatch):
+        b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+        self._mapping(in_memory_db, b, "g", age_s=scheduler.settings.fetcher_job_timeout * 2)
+        self._fold(in_memory_db, monkeypatch, {"status": "running", "results": []})
+        assert b.last_fetch_status == "error: fetch timed out"
+        assert self._attempts(in_memory_db, b) == 1
+
+    def test_missing_result_counts(self, in_memory_db, monkeypatch):
+        b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+        self._mapping(in_memory_db, b, "g")
+        self._fold(in_memory_db, monkeypatch, {"status": "done", "results": []})
+        assert self._attempts(in_memory_db, b) == 1
+
+    def test_fetcher_outage_does_not_count(self, in_memory_db, monkeypatch):
+        b = _book(in_memory_db, calibre_id=1, last_fetch_status="fetching…")
+        self._mapping(in_memory_db, b, "g", age_s=scheduler.settings.fetcher_job_timeout * 2)
+        self._fold(in_memory_db, monkeypatch, None)  # poll_fetch → None: fetcher unreachable
+        assert b.last_fetch_status == "error: fetcher unreachable"
+        assert self._attempts(in_memory_db, b) is None
+        assert b.last_seen_guid is None
+
+    def test_repeated_timeouts_eventually_write_the_guid_off(self, in_memory_db, monkeypatch):
+        b = _book(in_memory_db, calibre_id=1, last_seen_guid="old")
+        for _ in range(scheduler.TRIGGER_MAX_ATTEMPTS):
+            b.last_fetch_status = "fetching…"
+            self._mapping(in_memory_db, b, "g", age_s=scheduler.settings.fetcher_job_timeout * 2)
+            self._fold(in_memory_db, monkeypatch, {"status": "running", "results": []})
+        assert b.last_seen_guid == "g"

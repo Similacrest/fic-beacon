@@ -283,8 +283,10 @@ smallest — so the first release after upgrading is the same size and split as 
   is global).
 
 ### EPUBs that chapterize to nothing
-The chapterizer falls back to the spine whenever the TOC yields **no usable chapter** (not only when
-there is no TOC), and resolves a TOC href by unambiguous basename when it misses the spine name. If an
+The chapterizer resolves the TOC by exact spine name first (the only strategy a book that already
+chapterizes uses, so its chapter list and every cursor into it never change); only if that yields
+nothing does it retry by unambiguous basename, and only if *that* yields nothing does it fall back to
+the spine (also when there is no TOC at all). If an
 *active backlog* book still has an EPUB with 0 chapters, `_set_aside_empty_backlog` pauses it (so it
 stops holding its slot and starving the queue), records why in `app_state[book_note:{id}]` (dashboard ⚠
 badge; cleared by resume) and promotes the next queued book in the same cycle. A *missing* EPUB file or
@@ -471,8 +473,9 @@ broadcast or an admin request.
   carries **FanFicFare's own output** (tail) in `error`, attributed per URL (a multi-URL batch's
   failures are re-run alone so each gets its own reason). `calibredb add` exits 0 but adds nothing for
   a title+author duplicate, so a NEW download with no reported id refreshes the matching entry
-  (`add_format`) or, if it is a different work sharing title+author, re-adds with `-d`; it never reports
-  "done" without an entry. **The stub archive** is added with `add -d` (the live entry has the same
+  (`add_format`) — only if its `url:` identifier was actually read and key-matches (`strict` lookup) —
+  and otherwise fails loudly; it never force-adds a duplicate and never reports "done" without an
+  entry. **The stub archive** is added with `add -d` (the live entry has the same
   title/author, so a plain add silently kept no archive) and its URL is moved to a **`url-archive:`**
   identifier, so a `url:` lookup can never resolve to the archive instead of the live book. It borrows two ideas from AutomatedFanfic, trimmed: broad
   **force-detection** (`force_update_epub_always` guidance → force-redownload; a chapter *shrink* is

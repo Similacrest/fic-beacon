@@ -24,14 +24,15 @@ phantom backlog) plus the "story name becomes its URL" regression.
 - **Stub archives can no longer shadow the live book.** The archive copy is added with `calibredb add -d`
   (same title/author is silently refused otherwise, so no archive was ever kept) and its URL is moved from
   `url:` to `url-archive:`. A NEW download that calibredb refuses as a duplicate refreshes the matching
-  entry (or re-adds with `-d` when it is a different work) instead of reporting a phantom success.
+  entry — only when its `url:` identifier was actually read and matches — and otherwise fails loudly
+  instead of reporting a phantom success or force-adding a duplicate.
 - `apply_result` ignores a result for a Calibre entry other than the book's own (its count and stub
   describe a different EPUB) and only follows a new id if the old entry was deleted from Calibre.
 - **A feed trigger counts as handled only when chapters landed.** `last_seen_guid` used to advance when the
   fetch was *submitted*, so a failed or fruitless fetch was never retried until another chapter was posted.
   Now it advances when the fetch grows the EPUB; otherwise the next cycle retries, up to 3 fetches per GUID.
   The poller skips a book whose fetch is still in flight, treats a `304` from a trigger feed as "no change",
-  and a stale `fetch_job:` mapping (its poll lost) is cleared — un-sticking its books — at startup and at
+  (a job that times out or loses its result counts as an attempt too), and a stale `fetch_job:` mapping (its poll lost) is cleared — un-sticking its books — at startup and at
   the start of every release cycle.
 
 ### Fixed — dashboard and naming
@@ -52,7 +53,8 @@ phantom backlog) plus the "story name becomes its URL" regression.
 - **An EPUB that chapterizes to 0 chapters no longer holds a slot forever.** The chapterizer now falls back
   to the spine when its TOC resolves to nothing (and matches TOC hrefs by basename); a backlog book that
   still has no chapters is paused with a recorded reason (dashboard ⚠ badge, cleared on resume) and the
-  next queued book streams in the same cycle.
+  next queued book streams in the same cycle. (Basename matching is only tried when the exact-name pass
+  found nothing, so a book that already chapterizes keeps exactly its old chapter list and cursors.)
 
 ### Added
 - `BEACON_FEEDBACK_BASE_URL`: serve the 🪝 👍 👎 ⏸ ❌ ✓ links from their own origin (e.g. `https://fb.ilac.rest`);
