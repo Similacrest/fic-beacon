@@ -39,75 +39,75 @@ class TestExplainLiveState:
 
     def test_queued_shows_position(self):
         s = explain(_b(status=BookStatus.queued), queue_pos=3)
-        assert s.text == "Queued — #3 in line"
+        assert s.text == "Queued #3"
 
     def test_first_download_states(self):
-        assert "Waiting for its first download" == explain(_b(tracked=True, calibre_id=None)).text
-        assert "first time" in explain(_b(tracked=True, calibre_id=None,
+        assert "Awaiting download" == explain(_b(tracked=True, calibre_id=None)).text
+        assert "Downloading" in explain(_b(tracked=True, calibre_id=None,
                                            last_fetch_status="fetching: download")).text
         s = explain(_b(tracked=True, calibre_id=None, last_fetch_status="error: 404"))
         assert s.tone == "warn" and s.detail == "404"
 
     def test_cooldown_boundary(self):
         # cooldown is ticked *before* selection: 2 sits out the next release, 1 already sat out.
-        assert explain(_b(cooldown_remaining=2)).text == "Sitting out the next release"
+        assert explain(_b(cooldown_remaining=2)).text == "Sitting out next release"
         s = explain(_b(cooldown_remaining=1))
-        assert s.tone == "ok" and "back next time" in s.text
+        assert s.tone == "ok" and s.text.startswith("Rested last release")
 
     def test_weight_zero(self):
-        assert explain(_b(quota_weight=0)).text == "Weight 0 — never posts"
+        assert explain(_b(quota_weight=0)).text == "Weight 0"
 
     def test_caught_up_tracked(self):
-        assert "waiting for the author" in explain(_b(tracked=True, cursor_chapter_index=10)).text
+        assert explain(_b(tracked=True, cursor_chapter_index=10)).text == "Caught up"
         s = explain(_b(tracked=True, cursor_chapter_index=10, last_fetch_status="error: timeout"))
-        assert s.tone == "warn" and "last fetch failed" in s.text
+        assert s.tone == "warn" and "fetch failed" in s.text
 
     def test_fresh_chapter(self):
         s = explain(_b(tracked=True, fresh_from_index=4))
         assert s.icon == "🆕" and "next release" in s.text
 
     def test_live_unread_streak(self):
-        assert "3 unread drops" in explain(_b(), unread=3).text
-        assert explain(_b(), unread=1).text == "On air — 6 waiting"  # one unread is normal
+        assert "Slowed by 3 unread" in explain(_b(), unread=3).text
+        assert explain(_b(), unread=1).text == "On air · 6 waiting"  # one unread is normal
 
     def test_unknown_chapter_count_is_not_all_out(self):
         # A just-promoted backlog book (or fresh import) isn't chapterized until the next release.
-        assert "next release" in explain(_b(total_chapters=None)).text
-        assert "next release" in explain(_b(tracked=True, total_chapters=None)).text
+        assert "Not counted yet" == explain(_b(total_chapters=None)).text
+        assert "Not counted yet" == explain(_b(tracked=True, total_chapters=None)).text
 
     def test_missing_calibre_entry(self):
-        assert explain(_b(), {"missing": True}).text == "Not found in Calibre"
+        assert explain(_b(), {"missing": True}).text == "Missing from Calibre"
 
 
 class TestExplainLastRelease:
     def test_oversized(self):
         s = explain(_b(), _held(oversized=True, next_words=9000, base=3000))
-        assert s.text == "Saving up for a 9,000-word chapter" and "3,000" in s.detail
+        assert s.text == "Saving up for 9,000 words" and "3,000" in s.detail
 
     def test_partial_drop(self):
-        assert explain(_b(), _held(held_out=False, dropped=2)).text.startswith("Dropped 2 chapters")
+        assert explain(_b(), _held(held_out=False, dropped=2)).text.startswith("Released 2 chapters")
 
     def test_unread_backoff_still_unread(self):
         s = explain(_b(), _held(penalty=0.6), unread=3)
-        assert s.text.startswith("Held back: 3 unread drops") and "×0.6" in s.detail
+        assert s.text.startswith("Slowed by 3 unread") and "×0.6" in s.detail
 
     def test_unread_backoff_since_read(self):
         # The reason is the recorded one, even though the streak has since cleared.
-        assert "Held back last release for unread drops" in explain(_b(), _held(penalty=0.6)).text
+        assert "Slowed by unread drops" in explain(_b(), _held(penalty=0.6)).text
 
     def test_weight_fade(self):
         assert "Low weight" in explain(_b(), _held(fade=0.5)).text
 
     def test_budget_ran_out_vs_lost_draw(self):
-        assert explain(_b(), _held(used=4000, next_words=2000)).text.startswith("Budget ran out")
-        assert explain(_b(), _held(used=1000, next_words=2000)).text.startswith("Lost the draw")
+        assert explain(_b(), _held(used=4000, next_words=2000)).text.startswith("Over budget")
+        assert explain(_b(), _held(used=1000, next_words=2000)).text.startswith("Not picked")
 
     def test_fresh_did_not_fit(self):
         assert "didn't fit" in explain(_b(tracked=True, fresh_from_index=4), _held(fresh=True)).text
 
     def test_old_entry_without_new_fields(self):
         old = {"channel": "General", "title": "T", "held_out": True, "dropped": 0, "remaining": 6}
-        assert explain(_b(), old).text.startswith("Lost the draw")
+        assert explain(_b(), old).text.startswith("Not picked")
 
 
 class TestSkipLogFacts:
@@ -198,7 +198,7 @@ class TestDashboardRendersWhy:
         finally:
             app.dependency_overrides.pop(get_db, None)
         assert page.status_code == 200
-        assert "Saving up for a 9,000-word chapter" in page.text
+        assert "Saving up for 9,000 words" in page.text
         assert f'data-book-id="{a.id}"' in page.text  # still draggable
-        assert "Queued — #1 in line" in page.text and q.title in page.text
+        assert "Queued #1" in page.text and q.title in page.text
         assert "Next broadcast — waiting" not in page.text

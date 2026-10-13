@@ -64,7 +64,7 @@ def explain(
     if book.status == BookStatus.dropped:
         return SourceStatus("off", "🗑", "Dropped")
     if book.status == BookStatus.completed:
-        return SourceStatus("off", "✅", "Finished — every chapter is out")
+        return SourceStatus("off", "✅", "Finished")
     if book.paused:
         if note:  # set aside by the planner (e.g. an EPUB with no chapters) — that's the story
             return SourceStatus("warn", "⚠", note, "Paused until you resume it.")
@@ -72,38 +72,38 @@ def explain(
     if note:
         return SourceStatus("warn", "⚠", note)
     if book.status == BookStatus.queued:
-        where = f" — #{queue_pos} in line" if queue_pos else ""
+        where = f" #{queue_pos}" if queue_pos else ""
         return SourceStatus("wait", "📋", f"Queued{where}",
                             "Starts streaming when a slot in this channel frees up.")
 
     fetch = _fetch_state(book)
     if book.tracked and book.calibre_id is None:
         if fetch == "fetching":
-            return SourceStatus("wait", "⤓", "Downloading for the first time…")
+            return SourceStatus("wait", "⤓", "Downloading…")
         if fetch == "error":
-            return SourceStatus("warn", "⚠", "First download failed", _fetch_error(book))
-        return SourceStatus("wait", "⤓", "Waiting for its first download")
+            return SourceStatus("warn", "⚠", "Download failed", _fetch_error(book))
+        return SourceStatus("wait", "⤓", "Awaiting download")
 
     if last and last.get("missing"):
-        return SourceStatus("warn", "⚠", "Not found in Calibre",
+        return SourceStatus("warn", "⚠", "Missing from Calibre",
                             "Its Calibre entry or EPUB is missing, so nothing can drop.")
     if book.cooldown_remaining >= 2:
-        return SourceStatus("off", "👎", "Sitting out the next release",
+        return SourceStatus("off", "👎", "Sitting out next release",
                             "A 👎 makes a source skip one release.")
     if book.quota_weight <= 0:
-        return SourceStatus("off", "⛔", "Weight 0 — never posts")
+        return SourceStatus("off", "⛔", "Weight 0", "Never posts until the weight is raised.")
 
     if book.total_chapters is None:  # not chapterized yet — counting happens at the next release
-        return SourceStatus("wait", "…", "Chapters get counted at the next release")
+        return SourceStatus("wait", "…", "Not counted yet", "Chapters are counted at the next release.")
     pending = pending_chapters(book)
     if pending == 0:
         if not book.tracked:
-            return SourceStatus("ok", "✓", "All chapters out")
+            return SourceStatus("ok", "✓", "All released")
         if fetch == "fetching":
-            return SourceStatus("wait", "⤓", "Caught up — fetching new chapters…")
+            return SourceStatus("wait", "⤓", "Caught up · fetching…")
         if fetch == "error":
-            return SourceStatus("warn", "⚠", "Caught up — last fetch failed", _fetch_error(book))
-        return SourceStatus("ok", "✓", "Caught up — waiting for the author")
+            return SourceStatus("warn", "⚠", "Caught up · fetch failed", _fetch_error(book))
+        return SourceStatus("ok", "✓", "Caught up")
 
     waiting = f"{pending} waiting"
     fresh = (
@@ -118,38 +118,38 @@ def explain(
             detail = "Posts whole once enough budget has carried over."
             if base:
                 detail = f"Bigger than this channel's {base:,}-word share per release. " + detail
-            return SourceStatus("wait", "💾", f"Saving up for a {words:,}-word chapter", detail)
+            return SourceStatus("wait", "💾", f"Saving up for {words:,} words", detail)
         if not last.get("held_out"):
             got = last.get("dropped") or 0
-            return SourceStatus("ok", "▶", f"Dropped {_n(got, 'chapter')} last release — {waiting}")
+            return SourceStatus("ok", "▶", f"Released {_n(got, 'chapter')} · {waiting}")
         if last.get("fresh"):
-            return SourceStatus("wait", "🆕", f"New chapter didn't fit the last release — {waiting}",
+            return SourceStatus("wait", "🆕", f"New chapter didn't fit · {waiting}",
                                 "It goes first next time there's room.")
         penalty = last.get("penalty", 1.0)
         if penalty < 1.0:
             # The live streak may have reset since (reading clears it); say so if it has.
             if unread > 1:
-                return SourceStatus("wait", "📭", f"Held back: {unread} unread drops — {waiting}",
+                return SourceStatus("wait", "📭", f"Slowed by {unread} unread · {waiting}",
                                     f"Chance cut to ×{penalty:g}. Reading or ✓-marking a drop lifts it.")
-            return SourceStatus("wait", "📭", f"Held back last release for unread drops — {waiting}",
+            return SourceStatus("wait", "📭", f"Slowed by unread drops · {waiting}",
                                 "Since read, so no back-off next time.")
         fade = last.get("fade", 1.0)
         if fade < 1.0:
-            return SourceStatus("wait", "🔉", f"Low weight slows it (×{fade:g}) — {waiting}",
+            return SourceStatus("wait", "🔉", f"Low weight ×{fade:g} · {waiting}",
                                 "Below the fade floor, a source posts less often. 👍 raises it.")
         budget, used = last.get("budget"), last.get("used")
         if budget is not None and used is not None and used + (last.get("next_words") or 0) > budget:
-            return SourceStatus("wait", "⌛", f"Budget ran out — {waiting}",
+            return SourceStatus("wait", "⌛", f"Over budget · {waiting}",
                                 f"The channel used {used:,} of {budget:,} words.")
-        return SourceStatus("wait", "🎲", f"Lost the draw last release — {waiting}",
+        return SourceStatus("wait", "🎲", f"Not picked · {waiting}",
                             "Selection is weighted random; it rolls again next release.")
 
     if fresh:
-        return SourceStatus("ok", "🆕", "New chapter — goes out next release if it fits",
-                            waiting)
+        return SourceStatus("ok", "🆕", f"New chapter · next release · {waiting}",
+                            "Goes out next release if there's budget for it.")
     if book.cooldown_remaining == 1:
-        return SourceStatus("ok", "👎", f"Sat out last release — back next time — {waiting}")
+        return SourceStatus("ok", "👎", f"Rested last release · {waiting}")
     if unread > 1:
-        return SourceStatus("wait", "📭", f"{unread} unread drops — slowing down — {waiting}",
+        return SourceStatus("wait", "📭", f"Slowed by {unread} unread · {waiting}",
                             "Reading or ✓-marking a drop lifts it.")
-    return SourceStatus("ok", "▶", f"On air — {waiting}")
+    return SourceStatus("ok", "▶", f"On air · {waiting}")

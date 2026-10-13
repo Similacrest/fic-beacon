@@ -63,7 +63,7 @@ class TestStoryPage:
         page = client.get(f"/admin/books/{b.id}")
         assert page.status_code == 200
         t = page.text
-        assert "Mistborn" in t and "On air — 15 waiting" in t
+        assert "Mistborn" in t and "On air · 15 waiting" in t
         assert "⏸ Pause" in t and "❌ Drop" in t and "Re-queue" not in t
         assert 'name="next" value="/admin/books/%d"' % b.id in t
         assert "Chapter One" in t and "unread" in t
@@ -81,7 +81,7 @@ class TestStoryPage:
         _book(db, "First", calibre_id=1, status=BookStatus.queued, queue_position=1)
         b = _book(db, "Second", calibre_id=2, status=BookStatus.queued, queue_position=2)
         t = client.get(f"/admin/books/{b.id}").text
-        assert "Queued — #2 in line" in t and "Queue position #2" in t
+        assert "Queued #2" in t and "Queue position #2" in t
 
     def test_dropped_book_offers_requeue_only(self, ctx):
         client, db = ctx
@@ -207,6 +207,29 @@ class TestTimes:
         assert relative(now - timedelta(hours=5), now) == "5h ago"
         assert relative(now + timedelta(days=2), now) == "in 2d"
         assert relative(now - timedelta(seconds=10), now) == "just now"
+
+
+class TestPushIndicators:
+    def _sub(self, db, topic, verified=True, lease_days=5):
+        from datetime import timedelta
+        from app.models import WebSubSubscription, utcnow
+        db.add(WebSubSubscription(topic_url=topic, callback_url="https://cb.example/x", verified=verified,
+                                  lease_expires_at=utcnow() + timedelta(days=lease_days)))
+        db.commit()
+
+    def test_per_slot_indicator_and_no_subscriber_table(self, ctx):
+        client, db = ctx
+        ch = db.query(Channel).first()
+        ch.parallel_slots = 2
+        db.commit()
+        _book(db, "Mistborn", slot_index=1)
+        self._sub(db, f"https://funnel.example/feed/{ch.slug}/1?token=t")
+        self._sub(db, f"https://old.example/feed/{ch.slug}/1", lease_days=-1)   # expired, other host
+        self._sub(db, "https://funnel.example/feed/gone/1?token=t")             # orphan
+        t = client.get("/admin/").text
+        assert "⚡ 1" in t and "⚠ 1 stale" in t and "polling" in t  # slot 1 push, slot 2 polling
+        assert "1 subscription(s) on feeds that no longer exist" in t
+        assert "WebSub subscribers (realtime push)" not in t
 
 
 class TestDashboard:

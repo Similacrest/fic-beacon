@@ -75,7 +75,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     # Manual release cycle / feed check currently running (drives the progress banner and
     # disables the trigger buttons). None when idle.
     cycle = scheduler.cycle_status()
-    subscribers = _build_subscriber_view(db)
+    push_view, push_orphans = _build_push_view(db, channels)
 
     fetch_progress = _build_fetch_progress(db)
 
@@ -88,7 +88,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "channels": channels,
         "slot_view": slot_view,
         "status": status,
-        "subscribers": subscribers,
+        "push_view": push_view,
+        "push_orphans": push_orphans,
         "fetch_progress": fetch_progress,
         "cycle": cycle,
         "schedule_rows": schedule_rows,
@@ -197,27 +198,34 @@ def _build_slot_view(db, channels, active, queued, last_skips=(), book_notes=Non
     return view
 
 
-def _build_subscriber_view(db):
-    """Group WebSub subscribers by topic feed, flagging verified/expired state."""
+_FEED_PATH = re.compile(r"^/feed/([^/]+)/(\d+)/?$")
+
+
+def _build_push_view(db, channels) -> tuple[dict[tuple[str, int], dict], int]:
+    """WebSub subscribers per slot feed: `{(channel slug, slot): {"active": n, "bad": n}}` plus the
+    number of subscriptions whose topic is no longer a channel/slot feed. `bad` = unverified or
+    lease expired (they won't receive pushes). Matched on the topic's *path*, so a subscription
+    made under an older base URL still lands on its feed."""
+    from datetime import timezone
+
     from app.models import utcnow
     now = utcnow()
-    subs = db.query(WebSubSubscription).order_by(WebSubSubscription.topic_url).all()
-    out = []
-    for sub in subs:
-        topic = sub.topic_url.split("?", 1)[0]
-        label = topic.replace(f"{settings.base_url}/feed/", "")
+    known = {(c.slug, n) for c in channels for n in range(1, c.parallel_slots + 1)}
+    per_feed: dict[tuple[str, int], dict] = {}
+    orphans = 0
+    for sub in db.query(WebSubSubscription).all():
+        m = _FEED_PATH.match(urlparse(sub.topic_url).path)
+        key = (m.group(1), int(m.group(2))) if m else None
+        if key not in known:
+            orphans += 1
+            continue
         exp = sub.lease_expires_at
         if exp is not None and exp.tzinfo is None:
-            from datetime import timezone
             exp = exp.replace(tzinfo=timezone.utc)
-        out.append({
-            "label": label,
-            "callback": sub.callback_url,
-            "verified": sub.verified,
-            "expired": exp is not None and exp < now,
-            "lease_expires_at": exp,
-        })
-    return out
+        ok = sub.verified and not (exp is not None and exp < now)
+        slot = per_feed.setdefault(key, {"active": 0, "bad": 0})
+        slot["active" if ok else "bad"] += 1
+    return per_feed, orphans
 
 
 @router.get("/books/{book_id}", response_class=HTMLResponse)

@@ -66,6 +66,10 @@
       <span class="muted" style="font-weight:normal; font-size:.8em">
         feed <code>/feed/{{ cv.channel.slug }}/{{ slot.n }}</code>
       </span>
+      {% set push = push_view.get((cv.channel.slug, slot.n)) %}
+      {% if push and push.active %}<span class="push push-ok" title="Realtime push: {{ push.active }} reader subscription(s) will be notified at once">⚡ {{ push.active }}</span>{% endif %}
+      {% if push and push.bad %}<span class="push push-bad" title="Unverified or expired — these won't get pushes">⚠ {{ push.bad }} stale</span>{% endif %}
+      {% if not push %}<span class="push push-none" title="No reader subscribed for realtime push; it polls the feed instead">polling</span>{% endif %}
     </h4>
     {% for r in slot.rows %}{{ source_row(r, cv.channel.id) }}{% else %}
     <p class="muted" style="margin:.2em 0">empty — drag a source here</p>
@@ -139,42 +143,20 @@
 
 {# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
 <details class="section" data-section="system-status">
-  <summary>🛰 System status <span class="count">— {{ subscribers|length }} WebSub subscriber(s)</span></summary>
+  <summary>🛰 System status</summary>
   <div class="kv" style="margin:.5em 0 1em">
-    <span class="muted">Last release cycle</span><span>{{ fmt_dt(status.last_drop) }}</span>
+    <span class="muted">Last release</span><span>{{ fmt_dt(status.last_drop) }}</span>
     {% for row in schedule_rows %}
     <span class="muted">Next: {{ row.schedule.name }}</span><span>{% if row.schedule.enabled %}{{ fmt_dt(row.next) }}{% else %}<span class="muted">disabled</span>{% endif %}</span>
     {% endfor %}
     <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
     <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
+    {% if push_orphans %}<span class="muted">Stale push</span><span>{{ push_orphans }} subscription(s) on feeds that no longer exist</span>{% endif %}
   </div>
-  <h4 style="margin:.3em 0">WebSub subscribers (realtime push)</h4>
-  {% if subscribers %}
-  <table style="font-size:.85em">
-    <thead><tr><th>Topic feed</th><th>Status</th><th>Lease expires</th><th>Callback</th></tr></thead>
-    <tbody>
-    {% for s in subscribers %}
-    <tr>
-      <td><code>{{ s.label }}</code></td>
-      <td>
-        {% if not s.verified %}<span class="badge badge-queued">unverified</span>
-        {% elif s.expired %}<span class="badge badge-dropped">expired</span>
-        {% else %}<span class="badge badge-active">active</span>{% endif %}
-      </td>
-      <td class="muted">{{ fmt_dt(s.lease_expires_at) }}</td>
-      <td class="muted" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ s.callback }}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">No WebSub subscribers registered yet. Readers without WebSub fall back to
-    polling (InoReader free polls roughly every few hours).</p>
-  {% endif %}
 </details>
 
 {% if completed %}
-<details class="section" data-section="completed">
+<details class="section" data-section="completed" data-session-state>
 <summary>✅ Recently completed <span class="count">— {{ completed|length }}</span></summary>
 <table>
   <thead><tr><th>Title</th><th>Author</th><th>Actions</th></tr></thead>
@@ -196,7 +178,7 @@
 {% endif %}
 
 {% if dropped %}
-<details class="section" data-section="dropped">
+<details class="section" data-section="dropped" data-session-state>
 <summary>🗑 Dropped <span class="count">— {{ dropped|length }}</span></summary>
 <p>
   <form method="post" action="/admin/dropped/clear" hx-post="/admin/dropped/clear" style="display:inline"
@@ -252,15 +234,22 @@ document.addEventListener('htmx:afterRequest', (e) => {
 // (and page loads), since swapping resets <details> to their template defaults.
 function restoreSections() {
   document.querySelectorAll('details[data-section]').forEach((d) => {
-    const v = localStorage.getItem('sec:' + d.dataset.section);
+    // data-session-state sections start collapsed on every fresh visit and only stay open
+    // across in-place swaps (so re-queueing several in a row doesn't keep folding the list).
+    const store = d.hasAttribute('data-session-state') ? sessionStorage : localStorage;
+    const v = store.getItem('sec:' + d.dataset.section);
     if (v !== null) d.open = v === '1';
   });
 }
 document.addEventListener('toggle', (e) => {
   const d = e.target.closest && e.target.closest('details[data-section]');
-  if (d) localStorage.setItem('sec:' + d.dataset.section, d.open ? '1' : '0');
+  if (d) (d.hasAttribute('data-session-state') ? sessionStorage : localStorage)
+    .setItem('sec:' + d.dataset.section, d.open ? '1' : '0');
 }, true);
 document.addEventListener('htmx:afterSwap', restoreSections);
+// A real page load always starts those sections collapsed (the script is outside #dash-main, so
+// this runs on load only, never on an in-place swap).
+try { sessionStorage.removeItem('sec:completed'); sessionStorage.removeItem('sec:dropped'); } catch (e) {}
 restoreSections();
 
 // Drag a source pill between slot cards to repin it (same channel only). Delegated so it
