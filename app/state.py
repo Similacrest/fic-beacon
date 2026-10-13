@@ -13,6 +13,7 @@ LAST_SKIPS = "last_broadcast_skips"  # JSON: sources held out / partly deferred 
 EXTRA_USED_PREFIX = "extra_used:"  # + channel_id → 🪝 extras honoured since the last release cycle
 FETCH_JOB_PREFIX = "fetch_job:"  # + job_id → JSON {submitted_at, url_to_book, guids} for in-flight fetches
 TRIGGER_RETRY_PREFIX = "trigger_retry:"  # + book_id → JSON {guid, n}: fruitless fetches for one feed GUID
+LAST_RUN_RESULT = "last_run_result"  # + ":release" / ":feedcheck" → JSON: what that run did (or why it failed)
 BOOK_NOTE_PREFIX = "book_note:"  # + book_id → why the app set this source aside (shown on the dashboard)
 
 

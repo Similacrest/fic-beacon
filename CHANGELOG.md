@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-13
+
+### Added
+- **Dashboard health card.** One line says "All healthy" or "N need attention" and lists what: a
+  failed run, no enabled schedule, stories set aside or failing to fetch or missing from Calibre, a
+  download stuck over 30 minutes, stale push subscriptions — each linking to the story. Beside it:
+  last release (when, chapters, words), next release (when, which schedule), a 14-day words-per-day
+  bar sparkline with a text summary (total, busiest day) and an unread count.
+- **Runs show their stage and their outcome.** The banner names what a release is doing right now
+  ("Checking feeds…", "Planning Fantasy (2/3)…", "Publishing…") with elapsed time. Afterwards the
+  card says what the run did ("Evening — 1m 15s, 3 downloads queued") or why it failed. This also
+  records scheduled runs, and a failed run no longer vanishes into the log.
+
+### Changed
+- Run buttons are larger and labelled ("▶ Run release", "🔄 Check feeds") and sit in the health card.
+
 ## [0.18.0] — 2026-10-13
 
 ### Changed

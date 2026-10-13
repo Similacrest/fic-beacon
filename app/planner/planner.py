@@ -224,9 +224,10 @@ def run_release_cycle(
     )
 
     # ── Phase 3: plan + materialise per channel ──────────────────────────────────
-    for channel in channels:
-        if channel.id not in loaded:
-            continue
+    from app import progress
+    todo = [c for c in channels if c.id in loaded]
+    for n, channel in enumerate(todo, 1):
+        progress.set_stage(f"Planning {channel.name} ({n}/{len(todo)})…")
         valid, book_remaining, active_books = loaded[channel.id]
         base_budget = shares[channel.id]
         max_pending = max(book_remaining[b.id][0].word_count for b in valid)

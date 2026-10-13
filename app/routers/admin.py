@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import re
 import secrets
 from pathlib import Path
@@ -26,7 +27,8 @@ from app.models import (
 )
 from app.ongoing.feed_url import infer_feed_url
 from app.state import (
-    BOOK_NOTE_PREFIX, LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_SKIPS, get_run, get_value, list_with_prefix,
+    BOOK_NOTE_PREFIX, LAST_POLL_RUN, LAST_RELEASE_RUN, LAST_RUN_RESULT, LAST_SKIPS, get_run, get_value,
+    list_with_prefix,
 )
 from app.version import __version__
 
@@ -36,6 +38,8 @@ templates.env.globals["version"] = __version__
 templates.env.globals["abs_chapter"] = absolute_chapter_number
 templates.env.filters["ago"] = timefmt.relative
 templates.env.filters["stamp"] = timefmt.absolute
+templates.env.filters["compact"] = timefmt.compact
+templates.env.filters["duration"] = timefmt.duration
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -79,6 +83,30 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
 
     fetch_progress = _build_fetch_progress(db)
 
+    # ── Health at a glance: last/next release, 14-day volume, what needs attention ──
+    from app import health
+    runs = {}
+    for op in ("release", "feedcheck"):
+        try:
+            runs[op] = json.loads(get_value(db, f"{LAST_RUN_RESULT}:{op}") or "null")
+        except json.JSONDecodeError:
+            runs[op] = None
+    failed = next((r for r in runs.values() if r and r.get("error")), None)
+    last_release_at = status["last_drop"]
+    if runs["release"] and runs["release"].get("at"):  # the run record is stamped when it finished
+        try:
+            last_release_at = datetime.fromisoformat(runs["release"]["at"])
+        except ValueError:
+            pass
+    push_bad = sum(v["bad"] for v in push_view.values())
+    attention = health.attention_items(
+        db, book_notes=book_notes, last_skips=last_skips, fetch_progress=fetch_progress,
+        push_bad=push_bad, push_orphans=push_orphans, last_run=failed,
+        schedules_enabled=sum(1 for sc in schedules if sc.enabled), cycle_running=cycle is not None,
+    )
+    upcoming = [(r["next"], r["schedule"].name) for r in schedule_rows if r["schedule"].enabled and r["next"]]
+    next_release = min(upcoming, key=lambda t: t[0]) if upcoming else None
+
     return templates.TemplateResponse(request, "admin/index.html", {
         "active": active,
         "queued": queued,
@@ -91,6 +119,12 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "push_view": push_view,
         "push_orphans": push_orphans,
         "fetch_progress": fetch_progress,
+        "volume": health.volume_series(db),
+        "unread": health.unread_count(db),
+        "attention": attention,
+        "last_release": runs["release"],
+        "last_release_at": last_release_at,
+        "next_release": next_release,
         "cycle": cycle,
         "schedule_rows": schedule_rows,
     })

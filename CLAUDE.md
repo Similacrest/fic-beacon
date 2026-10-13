@@ -345,7 +345,15 @@ footnotes already resolve inside the dropped item. The note's own number/back-li
 unwrapped (links dropped, authored number kept); note images use the image route above.
 
 ### Admin UI
-- **Dashboard** (`/admin/`): per channel, slot cards with one row per story + its reason chip
+- **Dashboard** (`/admin/`): a **health card** on top (`app/health.py`) — "All healthy" or "N need
+  attention" (failed run, no enabled schedule, set-aside / fetch-failed / missing-from-Calibre /
+  stuck-download stories, stale push subscriptions; each links to the story), last and next release,
+  a 14-day words-per-day sparkline (days cut in `BEACON_TZ`), unread count — and the **run controls**
+  (▶ Run release with a schedule picker, 🔄 Check feeds). While a run is in flight the banner shows
+  its live stage (`app/progress.py`, set by the scheduler job and the planner per channel) and elapsed
+  time; every run — scheduled or manual — writes its outcome (chapters/words/downloads, duration, or
+  the error) to `app_state[last_run_result:release|feedcheck]` (`scheduler._record_run`). Below it,
+  per channel, slot cards with one row per story + its reason chip
   (`planner/explain.py`), the channel's queue ("Up next", ↑↓ reorder within the channel), fetches,
   system status, recently completed/dropped. Titles link to the story page.
 - **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the *one place* for a story's

@@ -7,41 +7,104 @@
 
 <h1>📡 Dashboard</h1>
 
-<p style="color:#888">
-  Per-channel feed URLs live on the <a href="/admin/channels">Channels</a> page.
-</p>
-
 {# In-place actions: forms below post via HTMX and swap only this #dash-main block, so the
    page never reloads or jumps to the top. Forms keep method/action so they still work without
    JS. Per-story controls live on the story page (/admin/books/{id}). #}
 <div id="dash-main" hx-target="#dash-main" hx-select="#dash-main" hx-swap="outerHTML scroll:none" hx-push-url="false">
-<div style="display:flex; gap:.6em; flex-wrap:wrap; align-items:center; margin-bottom:1.5em">
-  {% if cycle %}
-  {# A release cycle / feed check is running in the background. Show a live banner and disable
-     the triggers; this element re-fetches #dash-main every few seconds (inheriting the wrapper's
-     hx-target/hx-select/hx-swap) and vanishes once the run finishes, which stops the polling.
-     The work runs in the scheduler thread, so it is safe to close or refresh this tab. #}
-  <div class="cycle-banner" hx-get="/admin/" hx-trigger="load delay:3s">
-    <span class="spinner"></span>
-    <span>
-      {% if cycle.op == 'feedcheck' %}🔄 Checking feeds…{% else %}▶ Release cycle running…{% endif %}
-      <span class="muted" style="font-size:.85em">— running in the background; safe to close or refresh this tab.</span>
+
+{% if cycle %}
+{# A release cycle / feed check is running in the background. This banner re-fetches #dash-main
+   every few seconds (inheriting the wrapper's hx-target/hx-select/hx-swap) and vanishes once the
+   run finishes, which stops the polling. The work runs in the scheduler thread, so it is safe to
+   close or refresh this tab. #}
+<div class="cycle-banner" hx-get="/admin/" hx-trigger="load delay:3s" style="margin-bottom:1em">
+  <span class="spinner"></span>
+  <span>
+    <strong>{{ 'Checking feeds' if cycle.op == 'feedcheck' else 'Release running' }}</strong>
+    — {{ cycle.stage or 'starting…' }}
+    <span class="muted" style="font-size:.85em">· {{ cycle.elapsed|duration }} · safe to close or refresh this tab</span>
+  </span>
+</div>
+{% endif %}
+
+<section class="card health">
+  <div class="health-head">
+    {% if attention %}
+    <span class="health-pill health-warn">⚠ {{ attention|length }} {{ 'needs' if attention|length == 1 else 'need' }} attention</span>
+    {% else %}
+    <span class="health-pill health-ok">● All healthy</span>
+    {% endif %}
+    <span class="health-fact">
+      Last release
+      {% if last_release_at %}<strong title="{{ last_release_at|stamp }}">{{ last_release_at|ago }}</strong>{% else %}<strong>never</strong>{% endif %}
+      {% if last_release and not last_release.error %}
+        · {{ last_release.chapters }} chapter{{ '' if last_release.chapters == 1 else 's' }}{% if last_release.words %}, {{ last_release.words|compact }} words{% endif %}
+      {% endif %}
+    </span>
+    <span class="health-fact">
+      Next
+      {% if next_release %}<strong title="{{ next_release[0]|stamp }}">{{ next_release[0]|ago }}</strong> · {{ next_release[1] }}
+      {% else %}<strong>not scheduled</strong>{% endif %}
     </span>
   </div>
-  <button class="btn btn-primary" disabled aria-busy="true" title="Release cycle running…">▶</button>
-  <button class="btn" disabled aria-busy="true" title="Check feeds now">🔄</button>
-  {% else %}
-  <form method="post" action="/admin/release-now" hx-post="/admin/release-now">
-    <select name="schedule_id" title="Whose budget this release uses" style="width:auto">
-      {% for row in schedule_rows %}<option value="{{ row.schedule.id }}">{{ row.schedule.name }} ({{ '{:,}'.format(row.schedule.budget|round|int) }}{{ ' min' if row.schedule.budget_mode.value == 'minutes' else 'w' }}){{ '' if row.schedule.enabled else ' — disabled' }}</option>{% endfor %}
-    </select>
-    <button class="btn btn-primary" title="Run a release cycle now under the selected schedule's budget — polls feeds, then broadcasts pending chapters. Runs in the background." aria-label="Run release now">▶</button>
-  </form>
-  <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now">
-    <button class="btn" title="Check tracked feeds and queue background fetches for any with new chapters" aria-label="Check feeds now">🔄</button>
-  </form>
+
+  <div class="health-body">
+    <div class="health-chart">
+      {% set first = volume.bars[0].date %}
+      <div class="spark" role="img"
+           aria-label="Words released per day, last {{ volume.days }} days: {{ volume.total_words }} words in total">
+        {% for b in volume.bars %}
+        <div class="spark-col" title="{{ b.date.strftime('%a %b ') ~ b.date.day }}: {{ b.words|compact }} words, {{ b.chapters }} chapter{{ '' if b.chapters == 1 else 's' }}">
+          <div class="spark-bar{% if not b.words %} zero{% endif %}"{% if b.words %} style="height: {{ [b.pct, 6]|max }}%"{% endif %}></div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="spark-axis"><span>{{ first.strftime('%b ') ~ first.day }}</span><span>today</span></div>
+      <div class="spark-sum">
+        <strong>{{ volume.total_words|compact }}</strong> words · {{ volume.total_chapters }} chapter{{ '' if volume.total_chapters == 1 else 's' }} in {{ volume.days }} days
+        {% if volume.peak_date %}<span class="muted">· busiest {{ volume.peak_date.strftime('%a %b ') ~ volume.peak_date.day }} ({{ volume.peak_words|compact }})</span>{% endif %}
+        {% if unread %}<br><span title="Released in the last {{ volume.days }} days and not yet opened or ✓-marked">📭 {{ unread }} unread</span>{% endif %}
+      </div>
+    </div>
+
+    <div class="health-run">
+      {% if cycle %}
+      <button class="btn btn-lg btn-primary" disabled aria-busy="true">▶ Run release</button>
+      <button class="btn btn-lg" disabled aria-busy="true">🔄 Check feeds</button>
+      {% else %}
+      <form method="post" action="/admin/release-now" hx-post="/admin/release-now" class="run-form">
+        <select name="schedule_id" title="Whose budget this release uses" aria-label="Schedule to run">
+          {% for row in schedule_rows %}<option value="{{ row.schedule.id }}">{{ row.schedule.name }} ({{ '{:,}'.format(row.schedule.budget|round|int) }}{{ ' min' if row.schedule.budget_mode.value == 'minutes' else ' w' }}){{ '' if row.schedule.enabled else ' — disabled' }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-lg btn-primary" title="Check feeds, then release what fits the selected schedule's budget. Runs in the background.">▶ Run release</button>
+      </form>
+      <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now" class="run-form">
+        <button class="btn btn-lg" title="Check tracked feeds and queue downloads for any with new chapters">🔄 Check feeds</button>
+        <span class="muted" style="font-size:.85em">no release, just look for new chapters</span>
+      </form>
+      {% endif %}
+      {% if not cycle and last_release %}
+      <p class="muted run-result" title="{{ last_release_at|stamp }}">
+        {% if last_release.error %}⚠ Last run failed: {{ last_release.error }}
+        {% else %}Last run{% if last_release.schedule %}: {{ last_release.schedule }}{% endif %}
+          — {{ last_release.seconds|duration }}{% if last_release.downloads or last_release.feeds_changed %},
+          {{ (last_release.downloads or 0) + (last_release.feeds_changed or 0) }} download{{ '' if ((last_release.downloads or 0) + (last_release.feeds_changed or 0)) == 1 else 's' }} queued{% endif %}
+        {% endif %}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if attention %}
+  <ul class="attention">
+    {% for a in attention %}
+    <li class="attn-{{ a.tone }}">{{ '⛔' if a.tone == 'bad' else '⚠' }}
+      {% if a.href %}<a href="{{ a.href }}">{{ a.text }}</a>{% else %}{{ a.text }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
   {% endif %}
-</div>
+</section>
 
 {# ── Now broadcasting: per-channel slot feeds, one row per source with its *why* ── #}
 {% macro source_row(r, channel_id, draggable=True) %}

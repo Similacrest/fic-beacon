@@ -423,7 +423,24 @@ def cycle_status() -> dict | None:
         return None
     if _now() - op["started"] > _MANUAL_STALE_AFTER:  # stale (crashed mid-run) — treat as idle
         return None
-    return dict(op)
+    from app import progress
+    return {**op, "stage": progress.get_stage(),
+            "elapsed": int((_now() - op["started"]).total_seconds())}
+
+
+def _record_run(op: str, started, result: dict, error: str | None) -> None:
+    """Persist what a run did (or why it failed) so the dashboard can say so afterwards."""
+    import json
+
+    from app.state import LAST_RUN_RESULT, set_value
+    done = _now()
+    payload = {
+        "op": op, "at": done.isoformat(), "seconds": int((done - started).total_seconds()),
+        "error": error, **result,
+    }
+    with db_session() as session:
+        set_value(session, f"{LAST_RUN_RESULT}:{op}", json.dumps(payload))
+        session.commit()
 
 
 def _execute(op: str, fn) -> None:
@@ -433,50 +450,85 @@ def _execute(op: str, fn) -> None:
     are disabled while busy, but a scheduled cron and a manual click could still race).
     """
     global _active_op
+    from app import progress
     if not _cycle_lock.acquire(blocking=False):
         logger.info("A release cycle is already running — %s trigger skipped.", op)
         return
-    _active_op = {"op": op, "started": _now()}
+    started = _now()
+    _active_op = {"op": op, "started": started}
+    progress.set_stage("Starting…")
+    result: dict = {}
+    error: str | None = None
     try:
-        fn()
+        result = fn() or {}
+    except Exception as exc:  # recorded for the dashboard, then re-raised for the scheduler's log
+        logger.exception("%s run failed", op)
+        error = f"{type(exc).__name__}: {exc}"[:300]
+        raise
     finally:
+        try:
+            _record_run(op, started, result, error)
+        except Exception:
+            logger.exception("Could not record the %s run result", op)
+        progress.clear()
         _active_op = None
         _cycle_lock.release()
 
 
-def _run_release_cycle(schedule_id: int | None = None) -> None:
+def _run_release_cycle(schedule_id: int | None = None) -> dict:
+    from app import progress
     from app.ongoing.poller import fetch_pending, poll_all_feeds
-    from app.planner.planner import run_release_cycle
+    from app.planner.planner import resolve_schedule, run_release_cycle
     from app.websub.publisher import publish_in_background
     with db_session() as session:
+        progress.set_stage("Cleaning up stale downloads…")
         sweep_stale_fetch_jobs(session)  # un-stick anything a lost poll left at `fetching…`
         if ensure_fetch_polls(session):  # …and re-poll a live job whose poll went missing
             logger.warning("Re-registered orphaned fetch poll(s)")
         # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
         # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
-        poll_all_feeds(session)
+        progress.set_stage("Checking feeds for new chapters…")
+        feeds_changed = poll_all_feeds(session)
         # Backstop: (re)submit initial downloads for any tracked book still missing its EPUB —
         # self-heals a story whose one-shot add-time fetch was lost (restart/race) or whose feed
         # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
         # any submit land next cycle.
-        fetch_pending(session)
+        progress.set_stage("Queuing downloads…")
+        downloads = fetch_pending(session)
         # Commit the submitted fetches now, not after the (possibly minutes-long, cold-cache) drop
         # planning: their polls start on commit, and the open write transaction would otherwise
         # also block every poll's own commit until the cycle ends.
         session.commit()
-        drops = run_release_cycle(session, settings.calibre_library_path, schedule_id)
+        progress.set_stage("Planning releases…")
+        schedule = resolve_schedule(session, schedule_id)
+        schedule_name = schedule.name
+        drops = run_release_cycle(session, settings.calibre_library_path, schedule)
         session.commit()
+        progress.set_stage("Publishing to readers…")
+        summary = {
+            "schedule": schedule_name,
+            "chapters": sum((d.chapter_end - d.chapter_start + 1) for d in drops),
+            "drops": len(drops),
+            "words": sum(d.word_count for d in drops),
+            "channels": len({d.channel_id for d in drops}),
+            "feeds_changed": feeds_changed or 0,
+            "downloads": downloads or 0,
+        }
         publish_in_background(drops)
     logger.info("Release cycle complete — %d drop(s) created.", len(drops))
+    return summary
 
 
-def _run_feed_check() -> None:
+def _run_feed_check() -> dict:
     """Poll every tracked feed (the manual 'Check feeds now' action), off the request path."""
+    from app import progress
     from app.ongoing.poller import poll_all_feeds
     with db_session() as session:
-        poll_all_feeds(session)
+        progress.set_stage("Checking feeds for new chapters…")
+        changed = poll_all_feeds(session)
         session.commit()
     logger.info("Manual feed check complete.")
+    return {"feeds_changed": changed or 0}
 
 
 def _scheduled_release_cycle(schedule_id: int | None = None) -> None:
