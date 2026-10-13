@@ -463,8 +463,8 @@ class TestFeedbackOrigin:
         assert f'href="{FB}/fb/{drop.feedback_token}?action=up"' in html
         assert f'href="{FB}/fb/confirm/{drop.feedback_token}?action=extra"' in html
         assert "funnel.example/fb" not in html
-        # everything else stays on the public base
-        assert _permalink(drop) == f"https://funnel.example/read/{drop.reader_slug}"
+        # with no reader origin set, /read links follow the feedback origin
+        assert _permalink(drop) == f"{FB}/read/{drop.reader_slug}"
 
     def test_defaults_to_base_url(self, monkeypatch):
         from app.config import settings
@@ -473,6 +473,33 @@ class TestFeedbackOrigin:
         monkeypatch.setattr(settings, "feedback_base_url", None)
         drop = self._drop()
         assert f'href="https://funnel.example/fb/{drop.feedback_token}?action=up"' in _feedback_html(drop, False)
+
+    def test_reader_origin_overrides_and_defaults(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import _permalink
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", None)
+        monkeypatch.setattr(settings, "reader_base_url", None)
+        drop = self._drop()
+        assert _permalink(drop) == f"https://funnel.example/read/{drop.reader_slug}"
+        monkeypatch.setattr(settings, "reader_base_url", "https://read.example/")
+        assert _permalink(drop) == f"https://read.example/read/{drop.reader_slug}"
+        assert "https://read.example" in settings.image_alias_bases
+
+    def test_feed_keeps_public_images_and_hub_with_reader_origin(self, monkeypatch):
+        from app.config import settings
+        from app.feed.builder import build_feed
+        monkeypatch.setattr(settings, "base_url", "https://funnel.example")
+        monkeypatch.setattr(settings, "feedback_base_url", FB)
+        monkeypatch.setattr(settings, "reader_base_url", None)
+        drop = self._drop()
+        drop.content_html = f'<p>x</p><img src="{FB}/img/7/images/a.png">'
+        atom, _rss = build_feed([drop], secret="feedsecret")
+        text = atom.decode() if isinstance(atom, bytes) else atom
+        assert f"{FB}/read/{drop.reader_slug}" in text
+        assert "https://funnel.example/img/7/images/a.png?sig=" in text
+        assert f"{FB}/img/" not in text
+        assert "https://funnel.example/websub/hub" in text
 
     def test_feed_urls_do_not_move(self, monkeypatch):
         from app.config import settings
@@ -548,6 +575,22 @@ class TestFeedbackOrigin:
         in_memory_db.refresh(book)
         assert book.thumbs_up == 1
 
+    def test_read_page_on_the_reader_host_uses_relative_urls(self, gated_app):
+        client, in_memory_db = gated_app
+        _, drop = self._seed(in_memory_db)
+        drop.content_html = ('<p>x</p><img src="https://funnel.example/img/3/images/a.png">'
+                             '<img src="https://cdn.example/img/3/b.png">')
+        in_memory_db.commit()
+        page = client.get("/read/slug-fb", headers={"Host": "fb.ilac.rest"})
+        assert page.status_code == 200
+        assert 'src="/img/3/images/a.png?sig=' in page.text
+        assert 'src="https://cdn.example/img/3/b.png"' in page.text  # third party: untouched
+        assert 'href="/fb/tok-fb?action=up"' in page.text
+        assert "funnel.example" not in page.text and FB not in page.text
+        sig = page.text.split('src="/img/3/images/a.png?sig=')[1].split('"')[0]
+        assert client.get(f"/img/3/images/a.png?sig={sig}",
+                          headers={"Host": "fb.ilac.rest"}).status_code != 401
+
     def test_admin_stays_unreachable_through_the_feedback_host(self, gated_app):
         client, _ = gated_app
         resp = client.get("/admin/", headers={"Host": "fb.ilac.rest"})
@@ -576,6 +619,7 @@ class TestLegacyImageHosts:
         from app.config import settings
         monkeypatch.setattr(settings, "base_url", "https://funnel.example/")
         monkeypatch.setattr(settings, "feedback_base_url", FB)
+        monkeypatch.setattr(settings, "reader_base_url", None)
         monkeypatch.setattr(settings, "legacy_base_urls", "https://old.example/, https://funnel.example ,")
         assert settings.image_alias_bases == [FB, "https://old.example"]
 

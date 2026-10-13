@@ -376,8 +376,12 @@ Links render as **bare emoji** (no text label); the wording lives in each link's
   the cursor in the current EPUB (same check for backlog and tracked sources).
 - Tokens are per-drop and unguessable; a click binds to exactly one book/drop.
 - **Feedback links may live on their own origin** (`BEACON_FEEDBACK_BASE_URL`, default `base_url`):
-  `settings.feedback_base` is used only by `feed/builder.py:_feedback_html`. Feeds, `/read`, `/img` and
-  the hub stay on `base_url`. The confirm form posts to a *relative* `/fb/confirm/{token}` (CSP
+  `settings.feedback_base` is used only by `feed/builder.py:_feedback_html`. **`/read/` item links**
+  use `settings.reader_base` (`BEACON_READER_BASE_URL`, default the feedback origin), so everything
+  the user clicks can live on a host the feed reader's servers can't reach. Feeds, the hub and `/img`
+  URLs *inside feed items* stay on `base_url` (the reader's fetcher/image proxy needs them). The
+  `/read` page itself emits **root-relative** `/img/…?sig=` and `/fb/…` URLs (`sign_image_urls(…,
+  out_base="")`, `feedback_block(drop, base="")`), so it works on whichever origin serves it. The confirm form posts to a *relative* `/fb/confirm/{token}` (CSP
   `form-action 'self'`), and `/fb` is a public prefix so it isn't origin-checked — the origin that
   served the page receives the POST.
 

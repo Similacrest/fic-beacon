@@ -34,15 +34,17 @@ def reader_page(slug: str, db: Session = Depends(get_db)) -> HTMLResponse:
     title = f"{book.title} — {chapter_label}"
 
     # The same plain-GET feedback row the feed items carry, so votes/pause work from /read/ too.
+    # Image and feedback URLs are root-relative: the page may be served on the reader origin
+    # (BEACON_READER_BASE_URL) rather than base_url, and must not send the browser to another host.
     from app.feed.builder import feedback_block
     return HTMLResponse(
         _reader_html(
             title, book.author, drop.word_count,
             sign_image_urls(
                 sanitize_html(drop.content_html), current_feed_secret(db), settings.base_url,
-                settings.image_alias_bases,
+                settings.image_alias_bases, out_base="",
             ),
-            feedback_block(drop),
+            feedback_block(drop, base=""),
         ),
         headers=CSP_HEADERS,
     )

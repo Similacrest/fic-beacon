@@ -14,10 +14,13 @@ class Settings(BaseSettings):
 
     # Feed
     base_url: str = "http://localhost:8000"
-    # Origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links (in feed items and on /read pages). Unset → base_url.
-    # Feeds, /img, /read and the WebSub hub always stay on base_url; only /fb/* moves, so the proxy
-    # that serves this origin needs to pass nothing but /fb/*.
+    # Origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links in feed items. Unset → base_url.
     feedback_base_url: str | None = None
+    # Origin for feed items' `/read/{slug}` links. Unset → the feedback origin (so everything the
+    # user clicks lives on one host). Feeds, the WebSub hub and the /img URLs inside feed items stay
+    # on base_url (the reader's feed fetcher and image proxy must reach them). The /read page itself
+    # uses relative /img and /fb URLs, so it works on whichever origin serves it.
+    reader_base_url: str | None = None
     # Comma-separated origins that drops stored before a base-URL change still carry in their
     # baked-in image URLs (e.g. https://fb.ilac.rest). /img/ URLs on them are rewritten to base_url
     # and signed at render time. Only these (and feedback_base_url) are touched — never other hosts.
@@ -79,11 +82,16 @@ class Settings(BaseSettings):
         return (self.feedback_base_url or self.base_url).rstrip("/")
 
     @property
+    def reader_base(self) -> str:
+        """Origin for `/read/` links: `reader_base_url`, else the feedback origin (no trailing slash)."""
+        return (self.reader_base_url or self.feedback_base).rstrip("/")
+
+    @property
     def image_alias_bases(self) -> list[str]:
-        """Other origins whose `/img/…` URLs are really ours: the feedback origin (it doesn't serve
-        /img) and any legacy origins. Excludes `base_url` itself."""
+        """Other origins whose `/img/…` URLs are really ours: the feedback and reader origins and
+        any legacy origins. Excludes `base_url` itself."""
         own = self.base_url.rstrip("/")
-        found = [self.feedback_base] + [u.strip().rstrip("/") for u in self.legacy_base_urls.split(",")]
+        found = [self.feedback_base, self.reader_base] + [u.strip().rstrip("/") for u in self.legacy_base_urls.split(",")]
         out: list[str] = []
         for u in found:
             if u and u != own and u not in out:

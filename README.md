@@ -86,7 +86,8 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `FETCHER_CONFIG_PATH` | Host path holding the fetcher's `personal.ini` | `./fetcher/config` |
 | `FETCHER_UID` / `FETCHER_GID` | Run the fetcher as this uid/gid so new library files match your Calibre owner instead of `root:root` (`stat -c '%u:%g' "$CALIBRE_LIBRARY_PATH"`) | `0` / `0` |
 | `BEACON_BASE_URL` | Public base URL used in feed/links | `http://localhost:8000` |
-| `BEACON_FEEDBACK_BASE_URL` | Optional separate origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links (only `/fb/*` need be reachable there). Feeds, `/read`, `/img` and WebSub stay on `BEACON_BASE_URL` | = `BEACON_BASE_URL` |
+| `BEACON_FEEDBACK_BASE_URL` | Optional separate origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links in feed items (`/fb/*` must be reachable there). Default `BEACON_BASE_URL` |
+| `BEACON_READER_BASE_URL` | Optional origin for feed items' `/read/` links. Default `BEACON_FEEDBACK_BASE_URL`. Must serve `/read`, `/img` and `/fb` (the reader page uses relative URLs). Feeds, WebSub and images inside feed items stay on `BEACON_BASE_URL` | = `BEACON_BASE_URL` |
 | `BEACON_LEGACY_BASE_URLS` | Comma-separated origins older drops have baked into their image URLs (e.g. after a base-URL change); `/img/` URLs on them are rewritten to `BEACON_BASE_URL` and signed at render time. Other hosts are never touched | none |
 | `BEACON_PORT` | Host port to expose | `8000` |
 | `BEACON_FEED_SECRET` | Secret token gating the feeds. **Seeds the DB value on first run only — the database copy wins afterwards** (rotate on the Channels page); a warning is logged if they differ | random |

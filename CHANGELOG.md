@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-13
+
+### Added
+- **`BEACON_READER_BASE_URL`: feed items' `/read/` links on their own origin** (e.g. a tailnet
+  host). Defaults to `BEACON_FEEDBACK_BASE_URL` — so a deployment that already sets a feedback origin
+  gets its `/read/` links moved there too; that origin must now serve `/read`, `/img` and `/fb`, not
+  only `/fb`. Feeds, the WebSub hub/self/topic and the `/img` URLs inside feed items stay on
+  `BEACON_BASE_URL`.
+
+### Changed
+- The `/read` page now uses **root-relative** image (`/img/…?sig=`) and feedback (`/fb/…`) URLs, so
+  it works on whichever of our origins serves it instead of sending the browser to the public base.
+
 ## [0.15.0] — 2026-10-13
 
 ### Changed

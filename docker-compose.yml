@@ -20,6 +20,7 @@ services:
       # Optional, see README. Key-only: passed through from .env/the shell when set, and not
       # defined in the container at all when not — so it can't clobber a value set another way.
       BEACON_FEEDBACK_BASE_URL:
+      BEACON_READER_BASE_URL:
       BEACON_LEGACY_BASE_URLS:
       BEACON_CALIBRE_LIBRARY_PATH: "/calibre-library"
       BEACON_DATABASE_URL: "sqlite:////data/fic-beacon.db"

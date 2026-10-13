@@ -138,9 +138,10 @@ def _permalink(drop: Drop) -> str:
 
     Reading happens on the mirror — the drop's whole chapter as dropped, with its feedback links —
     and opening it is also what acknowledges the drop for the unread ramp. The per-chapter source
-    URL (`drop.source_url`) is still recorded, just not linked from the feed.
+    URL (`drop.source_url`) is still recorded, just not linked from the feed. It lives on the
+    reader origin (`BEACON_READER_BASE_URL`), which may differ from the feed's own base.
     """
-    return f"{settings.base_url}/read/{drop.reader_slug}"
+    return f"{settings.reader_base}/read/{drop.reader_slug}"
 
 
 def _extra_available(drop: Drop) -> bool:
@@ -155,17 +156,19 @@ def _extra_available(drop: Drop) -> bool:
     return book.total_chapters is None or book.cursor_chapter_index < book.total_chapters
 
 
-def _feedback_html(drop: Drop, extra_available: bool) -> str:
+def _feedback_html(drop: Drop, extra_available: bool, base: str | None = None) -> str:
     """Ordered actions: 🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop · ✓ read.
 
     up/down/pause/read are instant bare-GET links; extra/drop route through the confirm page.
     The 🪝 extra link is shown only when a next unit is available.
+    `base` overrides the origin; `""` gives root-relative links (the /read page).
     """
     token = drop.feedback_token
-    # Feedback links may live on their own origin (BEACON_FEEDBACK_BASE_URL); everything else
-    # about the item (permalink fallback, images, the feed itself) stays on base_url.
-    instant = f"{settings.feedback_base}/fb/{token}"
-    confirm = f"{settings.feedback_base}/fb/confirm/{token}"
+    # Feedback links may live on their own origin (BEACON_FEEDBACK_BASE_URL); the feed itself, its
+    # hub and its images stay on base_url.
+    origin = settings.feedback_base if base is None else base.rstrip("/")
+    instant = f"{origin}/fb/{token}"
+    confirm = f"{origin}/fb/confirm/{token}"
 
     links = []
     if extra_available:
@@ -197,7 +200,8 @@ def _feedback_html(drop: Drop, extra_available: bool) -> str:
     )
 
 
-def feedback_block(drop: Drop) -> str:
+def feedback_block(drop: Drop, base: str | None = None) -> str:
     """The feedback action row for a drop — shared by the feed items and the /read/ page so
-    both carry the identical set of plain-GET actions (extra/up/down/drop/…)."""
-    return _feedback_html(drop, _extra_available(drop))
+    both carry the identical set of plain-GET actions (extra/up/down/drop/…). The /read page
+    passes `base=""` so its links stay on whichever origin served it."""
+    return _feedback_html(drop, _extra_available(drop), base)

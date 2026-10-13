@@ -46,7 +46,9 @@ def verify_image_signature(secret: str, calibre_id: int, path: str, sig: str | N
     return secrets_equal(image_signature(secret, calibre_id, path), sig)
 
 
-def sign_image_urls(html: str, secret: str, base_url: str, alias_bases: Sequence[str] = ()) -> str:
+def sign_image_urls(
+    html: str, secret: str, base_url: str, alias_bases: Sequence[str] = (), out_base: str | None = None,
+) -> str:
     """Append `?sig=` to every `{base_url}/img/{id}/{path}` URL in rendered chapter HTML.
 
     `alias_bases` are other origins that are really ours — the feedback origin, and origins a
@@ -58,11 +60,15 @@ def sign_image_urls(html: str, secret: str, base_url: str, alias_bases: Sequence
     Signing happens at *render* time, not when a drop is materialised: stored `content_html`
     stays byte-stable, legacy (unsigned) drops keep working, and rotating the feed secret
     re-signs everything automatically.
+
+    `out_base` is the origin written into the signed URLs (default `base_url`); `""` makes them
+    root-relative, for pages that may be served on another of our origins (the /read page).
     """
     if not html or not secret:
         return html
     base = base_url.rstrip("/")
     origins = [base] + [a.rstrip("/") for a in alias_bases if a and a.rstrip("/") != base]
+    out = base if out_base is None else out_base.rstrip("/")
     prefix = "(?:" + "|".join(re.escape(o) for o in origins) + ")/img/"
     pattern = re.compile(rf"{prefix}(\d+)/([^\"'\s<>,)?#]+)")
 
@@ -70,7 +76,7 @@ def sign_image_urls(html: str, secret: str, base_url: str, alias_bases: Sequence
         raw = m.group(2)
         # The route verifies the percent-decoded, HTML-unescaped path.
         path = unquote(unescape(raw))
-        return f"{base}/img/{m.group(1)}/{raw}?sig={image_signature(secret, int(m.group(1)), path)}"
+        return f"{out}/img/{m.group(1)}/{raw}?sig={image_signature(secret, int(m.group(1)), path)}"
 
     return pattern.sub(_sub, html)
 
