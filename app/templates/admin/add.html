@@ -45,7 +45,7 @@
               display:flex; flex-wrap:wrap; gap:.6em; align-items:center">
     <label for="channel_id_top" style="font-weight:500; white-space:nowrap; margin:0">Channel</label>
     <select name="channel_id" id="channel_id_top" style="width:auto; display:inline-block">
-      <option value="">Auto — by genre (URLs → General)</option>
+      <option value="">Auto (by genre; URLs go to General)</option>
       {% for ch in channels %}
       <option value="{{ ch.id }}">{{ ch.name }}{% if ch.genre_match %} ({{ ch.genre_match }}){% endif %}</option>
       {% endfor %}
@@ -61,20 +61,19 @@
               style="width:100%; font-family:monospace; font-size:.85em"
               placeholder="https://royalroad.com/fiction/12345/&#10;https://forums.spacebattles.com/threads/…"></textarea>
     <p class="muted" style="font-size:.85em; margin:.4em 0 0">
-      Anything FanFicFare understands (RoyalRoad, SpaceBattles, SufficientVelocity, AO3, …). Each
-      becomes a <strong>tracked</strong> story downloaded into Calibre in the background; it starts at
-      chapter 1 (use “Only new chapters” on its page to skip ahead). The title fills in once it
-      downloads. Sites that need a login need it in the fetcher's <code>personal.ini</code>.
+      Any site FanFicFare supports (RoyalRoad, SpaceBattles, AO3, …). Each becomes a
+      <strong>tracked</strong> story, downloaded in the background from chapter 1; its title fills in
+      after the first download. Sites needing a login are set up in the fetcher's
+      <code>personal.ini</code>.
     </p>
   </section>
 
   <h2 style="margin-top:1.2em">From your Calibre library</h2>
   {% if books %}
   <p style="margin:.2em 0 .8em">
-    Each is routed by its Calibre <code>#status</code>: ongoing serials
-    (In-Progress / Incomplete / Hiatus) become <strong>tracked</strong> auto-updating sources;
-    everything else joins the <strong>backlog</strong> queue. A tracked book marked
-    <code>#read=Yes</code> starts at the current chapter end (only new chapters drop).
+    Routed by Calibre <code>#status</code>: In-Progress / Incomplete / Hiatus become
+    <strong>tracked</strong>; everything else joins the <strong>backlog</strong> queue. Tracked books
+    marked <code>#read=Yes</code> start at their latest chapter.
     <span style="color:#888; font-size:.9em">({{ books|length }} available, newest first)</span>
   </p>
   <div style="margin-bottom:1em; display:flex; gap:1em; align-items:center; flex-wrap:wrap">

@@ -13,7 +13,7 @@ that signals "new chapters exist". Fic-Beacon re-serializes all of it into synth
 RSS/Atom feeds so the backlog arrives with the same drip-fed hook as ongoing fiction — and so
 ongoing serials stop getting implicit priority over the backlog. A web admin page groups sources
 into **channels** (TV-style), sets a reading budget per release **schedule** (split across channels
-by weight), and each drop embeds
+by weight), and each release embeds
 feedback links to steer the rotation.
 
 ## Non-negotiable constraints
@@ -29,19 +29,17 @@ feedback links to steer the rotation.
   coexists with an external calibre-web pointed at the same library.)
 - **RSS is a trigger, not content.** Feed bodies are never read for chapter text (sites only
   syndicate previews). A feed only tells us a story updated; FanFicFare fetches the real chapters.
-- **Never split a chapter / unit.** A drop packs *whole* EPUB chapters. An oversized unit is
+- **Never split a chapter / unit.** A release packs *whole* EPUB chapters. An oversized unit is
   posted whole.
 
 ## Stack
 
 - **Python + FastAPI** (web/API + feeds + feedback + reader pages + WebSub hub)
 - **APScheduler** (in-process: one release-cycle job per enabled **schedule**, each polling feeds first; a daily
-  feedless sweep). There is **no hourly poll** — feeds are checked pre-drop. The admin
-  **"Run release cycle now" / "Check feeds now"** buttons run **off the request path** (a one-shot
-  scheduler job), so the POST returns immediately and the tab is safe to close/refresh — the work
-  runs in the scheduler thread. An **in-process lock** (`scheduler.cycle_status()`, single-worker)
-  refuses a second run while one is in flight; the dashboard disables the buttons and shows a live
-  progress banner (HTMX-polls `#dash-main` every 3s until the run clears).
+  feedless sweep). There is **no hourly poll** — feeds are checked just before each release. The
+  dashboard's **Run release / Check feeds** buttons run **off the request path** (a one-shot scheduler
+  job, so closing the tab is safe) under an **in-process lock** (`scheduler.cycle_status()`,
+  single-worker) that refuses a second run while one is in flight.
 - **SQLAlchemy + SQLite** (app state; schema is **Alembic-migration-owned** — `init_db()` runs
   `alembic upgrade head` on startup. **Never `create_all` in production and never hand-edit a
   deployed schema; add a migration** (`alembic revision --autogenerate -m "…"`, review it, ship
@@ -63,15 +61,18 @@ fic-beacon/
   app/
     main.py            # FastAPI app wiring
     config.py          # pydantic-settings (BEACON_* env, incl. BEACON_TZ)
-    routers/           # feed, feedback, reader, admin, ongoing, websub
+    routers/           # feed, feedback, reader, media (/img), admin, websub
     calibre/           # Calibre Adapter (metadata.db RO, identifiers, tags, EPUB paths)
     epub/              # Chapterizer (spine -> chapters + word counts, cached by book+mtime)
     planner/           # Drop Planner (per-release budget split by channel weight; slot round-robin)
-    ongoing/           # RSS update-detection poller + feed-URL inference (no content)
+    ongoing/           # RSS update-detection poller, feed-URL inference, add-by-URL (no content)
     fetch/             # async HTTP client to the fetcher (submit_fetch / poll_fetch / apply_result)
     feed/              # Feed Builder (feedgen)
     websub/            # WebSub publisher (push to subscribers)
-    scheduler.py       # APScheduler wiring (timezone-aware)
+    scheduler.py       # APScheduler wiring (timezone-aware); records every run's outcome
+    health.py          # dashboard health: attention items, 14-day volume
+    progress.py        # live stage of the running release cycle (banner)
+    timefmt.py         # relative/absolute times, compact numbers for the admin UI
     models.py          # SQLAlchemy models
     templates/         # Jinja + HTMX
   fetcher/             # SEPARATE container: FanFicFare + calibredb HTTP service (POST /fetch)
@@ -106,10 +107,10 @@ on weekday mornings, 10000 on weekday evenings and 20000 at weekends are three r
 schedule's `budget` is the **whole release's** allowance. `run_release_cycle` runs in three phases: (1)
 per channel assign slots, tick cooldowns and load each active source's next units; (2) **split the
 budget across the channels that have content, proportionally to `channel.weight`** (`split_budget` — a
-channel with nothing to drop is left out of the denominator, so its share goes to the others instead of
+channel with nothing to release is left out of the denominator, so its share goes to the others instead of
 being lost); (3) plan + materialise per channel under its share. Carried `budget_credit` is
 **re-clamped at the start of each release to that release's scale** (else a 20k weekend release's
-leftover would turn the next 5k release into 25k). The dashboard's **▶ Run** button takes a schedule
+leftover would turn the next 5k release into 25k). The dashboard's **▶ Run release** takes a schedule
 dropdown (a manual run must say whose budget to use; a disabled schedule can still be run by hand). The
 last schedule can't be deleted, and a cron is validated on save (`scheduler.validate_cron`). The
 migration turned the old `cadence_cron` into a `Default` schedule whose budget is the sum of the old
@@ -141,36 +142,37 @@ smallest — so the first release after upgrading is the same size and split as 
   single flag that distinguishes the two behaviours (there is no `kind`).
 - **Selection is slot-diverse** (see Drop Planner): slot assignment is a separate, sticky step
   that decides *which feed* each source lands in; the per-channel budget pass then **round-robins
-  across the occupied slots** so drops spread over the slot feeds instead of one slot hogging the
+  across the occupied slots** so releases spread over the slot feeds instead of one slot hogging the
   budget. `quota_weight` throttles a source's share *within* its slot; an idle slot's budget spills
   to the others.
-- Terminology: a scheduled **broadcast** is one **release cycle** (it emits `drop` rows);
-  **dropping** (❌) means *cancelling a source*. Don't conflate the two — the user-facing name is
-  deliberately "release cycle" (button, dashboard, `run_release_cycle`, the `release_cycle` cron
-  job, `last_release_run_at`) precisely to avoid the "run a drop cycle" vs "drop a source"
-  ambiguity. The `drop` **row/table** and the ❌ drop **action** keep the word "drop".
+- Terminology: a scheduled **release** (a.k.a. broadcast, `run_release_cycle`) emits `drop` rows;
+  **dropping** (❌) means *cancelling a source*. Don't conflate the two. In the **UI, say "release"**
+  for the act and for what it emits ("last release", "recent releases", "unread releases", "next
+  chapter to release") and keep "drop" only for cancelling a source (❌ Drop, Dropped, Bring back).
+  The `drop` **table/model** (`Drop`) and the feedback action `drop` keep the word internally.
 
 ### Sources & units (one unified, EPUB-backed model)
 - A **source** is a `book` row — always a Calibre EPUB (`calibre_id`). `tracked=True` marks one that
   auto-updates; it carries an optional `feed_url` (RSS trigger) and reuses `source_url` as the
   FanFicFare fetch URL. All sources hold `quota_weight`, votes, `status`, and live in a channel.
-- A **unit** is one drop-able chunk: a whole EPUB chapter (`chapterize(epub)[cursor]`). Unit shape:
+- A **unit** is one releasable chunk: a whole EPUB chapter (`chapterize(epub)[cursor]`). Unit shape:
   `{title, html, word_count, source_url}`. There is no separate ongoing-entry path.
 - **Library import (`import_library_books`, via `POST /admin/add`) is routed by Calibre `#status`** (see
   `app/calibre/status.py`): an *updating* status (In-Progress / Incomplete / Hiatus) → a **tracked**
   source; a *done* status (Completed / Abandoned / Published) or blank → a **backlog** queue entry.
   A tracked book marked **`#read=Yes`** starts its `cursor_chapter_index` at the current EPUB end
-  (caught up → only new chapters drop); otherwise it starts at chapter 1. **One Add page** (`/admin/add`):
-  a textarea of story URLs (one per line → tracked, fetched in the background) and the Calibre library
-  table share one channel picker and one **Add** button, and the redirect lists what happened to each
-  item (added / already here / invalid / gone from Calibre, with its live *why*). `/admin/library` and
-  `/admin/import` redirect there; `POST /admin/library/add` and `/admin/ongoing/add[-bulk]` remain as
-  compat endpoints. Nothing on the page needs a per-row track action.
+  (caught up → only new chapters are released); otherwise it starts at chapter 1. **One Add page**
+  (`/admin/add`): a textarea of story URLs (one per line → tracked, fetched in the background) and the
+  Calibre library table share one channel picker and one **Add** button; the redirect lists what
+  happened to each item (added / already here / invalid / gone from Calibre, with its live reason). A
+  Calibre book whose story is already a source (same `story_key`, e.g. pasted as a URL but not yet
+  downloaded) counts as "already here" and is hidden from the table — never a second row.
+  `/admin/library` redirects there.
   - **Tracked sources import at a higher default `quota_weight`** (`config.tracked_default_weight`,
     default **2.0**, tunable on the admin Settings page) vs **1.0** for backlog, so real ongoing
     serials get priority over the finite archive in the stochastic budget pass. This is a
     *default-weight* nudge, not a planner hardcode — weights stay per-source tunable/votable.
-- **Updates:** pre-drop, the poller reads each trigger feed's newest GUID; changed feeds are batched
+- **Updates:** just before each release, the poller reads each trigger feed's newest GUID; changed feeds are batched
   into one **async** fetch job (`scheduler.submit_and_track`) that downloads the new chapters into
   Calibre in the background. The triggering broadcast does **not** wait — new chapters land in the
   *next* one. **A trigger GUID is marked seen (`last_seen_guid`) only when its fetch lands chapters**
@@ -230,7 +232,7 @@ smallest — so the first release after upgrading is the same size and split as 
   each slot's turn a **weight-proportional** random source pinned to that slot (`_weighted_choice`
   by `quota_weight`) drops its next unit of size `w` if a stochastic roll `p = clamp((B − used)/w,
   0, 1)` passes. Included → emit + advance cursor; excluded → **roll over** whole to a later
-  broadcast. This spreads drops across the slot feeds (**diversity**), while `quota_weight` governs
+  broadcast. This spreads releases across the slot feeds (**diversity**), while `quota_weight` governs
   each source's share *within* a slot — so down-voting a source shrinks its slice relative to its
   slot-mates. A slot whose sources are all caught-up (or capped) **passes its turn, spilling its
   budget to slots that still have content** — no wasted budget, but when only one slot has content
@@ -254,7 +256,7 @@ smallest — so the first release after upgrading is the same size and split as 
 - **Otherwise pure stochastic:** no guaranteed first chapter — over budget, even a non-fresh source's
   first unit can defer; a low-share source may get nothing some cycles. **Never split a unit.**
 - **Oversized units accumulate, they don't force-post.** A unit larger than the channel's *base*
-  per-cycle budget can't fit in one cycle, so it is **not** dropped every cycle. Instead an
+  per-cycle budget can't fit in one cycle, so it is **not** released every cycle. Instead an
   accumulation pass (runs before the stochastic pass) posts it whole only once `B` (base +
   saved-up credit) can afford it — a 9k chapter on a 3k budget posts once every ~3 cycles, so its
   long-run rate still tracks the budget. It's posted whole (never split), at most one oversized
@@ -267,11 +269,11 @@ smallest — so the first release after upgrading is the same size and split as 
   `oversized`, `fresh`, unread `penalty`, weight `fade`, the channel's `budget`/`base`/`used`; a source
   whose Calibre entry is gone gets `missing`). **The dashboard's per-source reason chip**
   (`app/planner/explain.py:explain`, pure) combines that record (why it was held *last* release —
-  never recomputed from current state, which would lie once the user reads a drop) with live state
+  never recomputed from current state, which would lie once the user reads a release) with live state
   (paused, queued #n, cooling down, caught up, downloading, fetch error, weight 0, live unread
   streak — the forecast for the *next* one). Old entries without `book_id` match on title.
 - Each emitted `drop`'s `feed_key` is its source's pinned `slot_index`, so the chapter lands in
-  that slot's feed regardless of which other sources also dropped this broadcast.
+  that slot's feed regardless of which other sources were also released that cycle.
 - **Soft read-gating (transient unread ramp).** A source's stochastic acceptance is scaled by how
   many of its **most-recent drops in a row are unacknowledged** (`drop.acknowledged_at is None`):
   **0 or 1 unread → no penalty at all** (one unread drop is just "not read yet"), then **0.8× / 0.6× /
@@ -345,33 +347,38 @@ footnotes already resolve inside the dropped item. The note's own number/back-li
 unwrapped (links dropped, authored number kept); note images use the image route above.
 
 ### Admin UI
-- **Dashboard** (`/admin/`): a **health card** on top (`app/health.py`) — "All healthy" or "N need
-  attention" (failed run, no enabled schedule, set-aside / fetch-failed / missing-from-Calibre /
-  stuck-download stories, stale push subscriptions; each links to the story), last and next release,
-  a 14-day words-per-day sparkline (days cut in `BEACON_TZ`), unread count — and the **run controls**
-  (▶ Run release with a schedule picker, 🔄 Check feeds). While a run is in flight the banner shows
-  its live stage (`app/progress.py`, set by the scheduler job and the planner per channel) and elapsed
-  time; **find & act** sits under it: a search box + chips (needs attention / unread / paused / tracked
-  / backlog / queued) filter the rows client-side (`data-search`/`data-flags`, set per row in
-  `admin._build_slot_view`; state survives HTMX swaps), and **☑ Select** reveals row checkboxes and a
-  sticky bar → `POST /admin/books/batch` (`pause|resume|fetch|move|drop`, each skipped-and-counted when
-  it doesn't apply, redirecting with `?done=&n=&skipped=` for the one-line flash); every run — scheduled or manual — writes its outcome (chapters/words/downloads, duration, or
-  the error) to `app_state[last_run_result:release|feedcheck]` (`scheduler._record_run`). Below it,
-  per channel, slot cards with one row per story + its reason chip
-  (`planner/explain.py`), the channel's queue ("Up next", ↑↓ reorder within the channel), fetches,
-  system status, recently completed/dropped. Titles link to the story page.
-- **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the *one place* for a story's
-  controls: pause/resume, fetch now, drop / re-queue, cursor (⏮/⏭/exact), weight, track toggle,
-  channel, slot picker, queue position, source/fetch facts, recent drops (read/unread) and feedback.
-  Undo/recovery lives there too: **✓ Mark N read** (acks every unread drop → lifts the unread
-  slowdown, weight untouched), **↩ Undo** the last manual cursor move (`app_state[cursor_undo:{id}]`;
-  offered only while the cursor is still where the move left it, so it can't re-send chapters a
-  release has since delivered), and **↺ Bring back** for a dropped source (`POST …/restore`: same
-  chapter, weight and votes; a 0 weight resets to 1) vs **⏮ Start over** (`…/requeue`, resets).
-  Book action routes take an optional `next` form field (`admin._back`: only `/admin/…` paths, no
-  `//`) and redirect there, else to the dashboard; inline auto-saves still answer HTMX with 204.
-- Relative times (`|ago`) with the full timestamp in `title=` (`|stamp`, `app/timefmt.py`). Tablet
-  use matters: reasons and errors must be readable without hover.
+Pages: **Dashboard**, **Add**, **Channels**, **Schedules**, **Settings**, plus one **story page** per
+source. Built for a large touch screen as well as a desktop: reasons and errors are written out, not
+only in tooltips. Times are relative (`|ago`) with the full timestamp in `title=` (`app/timefmt.py`).
+- **Dashboard** (`/admin/`):
+  - *Health card* (`app/health.py`): "All healthy" or "N need attention" (failed run, no enabled
+    schedule, set-aside / fetch-failed / missing-from-Calibre / stuck-download stories, stale push
+    subscriptions — each links to the story), last and next release, a 14-day words-per-day sparkline
+    (days cut in `BEACON_TZ`), the unread count, and the run controls.
+  - *Runs:* ▶ Run release (schedule picker) and 🔄 Check feeds. While one is in flight the banner shows
+    its stage (`app/progress.py`, set by the scheduler job and by the planner per channel) and elapsed
+    time. Every run — scheduled or manual — records its outcome or error in
+    `app_state[last_run_result:release|feedcheck]` (`scheduler._record_run`).
+  - *Find & act:* a search box + chips (attention / unread / paused / tracked / backlog / queued)
+    filter rows client-side (`data-search`/`data-flags`, set in `admin._build_slot_view`; the state
+    survives HTMX swaps). **☑ Select** reveals row checkboxes and a sticky bar →
+    `POST /admin/books/batch` (`pause|resume|fetch|move|drop`; stories an action doesn't apply to are
+    skipped and counted in the `?done=&n=&skipped=` flash).
+  - *On air:* per channel, slot cards with one row per story and its reason chip
+    (`planner/explain.py`), the channel's queue ("Up next", ↑↓ within the channel), then fetches in
+    progress, system status, recently completed and dropped. Push state shows per slot feed.
+- **Add** (`/admin/add`): see Sources & units.
+- **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the one place for a story's
+  controls: pause/resume, fetch now, drop, cursor (⏮/⏭/exact), weight, track toggle, channel, slot
+  picker, queue position, source and fetch facts, recent releases (read/unread) and your feedback.
+  Recovery lives there: **✓ Mark N read** (acknowledges every unread release → lifts the unread
+  slowdown, weight untouched), **↩ Undo** of the last manual cursor move
+  (`app_state[cursor_undo:{id}]`; offered only while the cursor is still where the move left it, so
+  it can't re-send chapters a release has since delivered), **↺ Bring back** for a dropped source
+  (`POST …/restore`: same chapter, weight and votes; a weight of 0 resets to 1) vs **⏮ Start over** /
+  **↺ Read again** (`…/requeue`, resets).
+- Book action routes take an optional `next` form field (`admin._back`: only `/admin/…` paths, no
+  `//`) and redirect there, else to the dashboard; inline auto-saves answer HTMX with 204.
 
 ### Feedback contract (plain hyperlinks, any reader)
 Five ordered actions per drop: **🪝 extra · 👍 up · 👎 down · ⏸ pause · ❌ drop**.
@@ -405,7 +412,7 @@ Links render as **bare emoji** (no text label); the wording lives in each link's
   `_assign_slots` filter `paused`). **Resume is admin-UI-only** — a paused source emits no feed
   items, so the feed can't carry a resume link. Pause/resume is unified on `pause_book`/`resume_book`
   (`planner.py`): the feed ⏸ link, the story page's toggle (`POST /admin/books/{id}/pause|resume`), and
-  the **Tracked Stories** page toggle (`/admin/ongoing/{id}/toggle`, batch pause/resume) all call it.
+  and the dashboard's batch bar (`POST /admin/books/batch`) all call it.
 - `drop` (super-down) → set book `dropped` immediately. **Confirm page.**
 - `read` → neutral **✓ Mark read** acknowledgement: sets `drop.acknowledged_at`, no weight change,
   no side effects. **Instant bare GET.** Feeds the soft read-gate below.
@@ -460,12 +467,11 @@ the feed URL the reader holds, so advertising it inside the (already token-gated
 nothing new. The hub **rejects** any topic lacking a valid token (`safety.topic_status`: foreign → 404, missing/wrong
 token → 403) and the publisher only pushes to subscriptions whose stored topic carries the *current* token
 (extra query params are fine; token-free rows are pruned at startup — `safety.prune_subscriptions`).
-The admin dashboard lists current subscribers + last/next cron runs for diagnosing "feed not
-updating".
+The dashboard shows push state per slot feed (⚡ n subscribers / ⚠ stale / polling) for diagnosing
+"feed not updating".
 
 ### Public-exposure security (see CHANGELOG "Security")
-Everything is **deny-by-default** behind `app/security.py:ProxyTokenMiddleware`: only `/feed` `/read` `/fb` `/img` `/static` (+`/robots.txt`; `/websub` iff `BEACON_PUBLIC_WEBSUB`) are reachable without a valid `X-Beacon-Proxy-Token` (`BEACON_PROXY_TOKEN`); the rest 401, or 503 when the token is unset and `BEACON_BIND_HOST` isn't loopback. `X-Remote-User` is audit-only and honoured only with a valid token. New public routes must be added to `_PUBLIC_PREFIXES`. Non-GET admin requests are CSRF-checked (`Sec-Fetch-Site`/`Origin`). `BEACON_ADMIN_OPEN` is the explicit no-proxy opt-out. Chapter HTML is sanitised (`app/sanitize.py`) and `/read`+`/fb` pages carry a CSP and escape every story-derived string — keep it that way. Story URLs must pass `is_fetchable_url` (they reach FanFicFare argv); the fetcher is gated by `FETCHER_TOKEN`. URL secrets (`?token=`, `?sig=`, `/fb/{token}`) are masked in the uvicorn access log (`main._AccessLogSecretFilter`) — logs leave the host. The WebSub hub
-The WebSub hub requires the **tokened** topic and only https callbacks resolving to public IPs, connected by pinned IP with no
+Everything is **deny-by-default** behind `app/security.py:ProxyTokenMiddleware`: only `/feed` `/read` `/fb` `/img` `/static` (+`/robots.txt`; `/websub` iff `BEACON_PUBLIC_WEBSUB`) are reachable without a valid `X-Beacon-Proxy-Token` (`BEACON_PROXY_TOKEN`); the rest 401, or 503 when the token is unset and `BEACON_BIND_HOST` isn't loopback. `X-Remote-User` is audit-only and honoured only with a valid token. New public routes must be added to `_PUBLIC_PREFIXES`. Non-GET admin requests are CSRF-checked (`Sec-Fetch-Site`/`Origin`). `BEACON_ADMIN_OPEN` is the explicit no-proxy opt-out. Chapter HTML is sanitised (`app/sanitize.py`) and `/read`+`/fb` pages carry a CSP and escape every story-derived string — keep it that way. Story URLs must pass `is_fetchable_url` (they reach FanFicFare argv); the fetcher is gated by `FETCHER_TOKEN`. URL secrets (`?token=`, `?sig=`, `/fb/{token}`) are masked in the uvicorn access log (`main._AccessLogSecretFilter`) — logs leave the host. The WebSub hub requires the **tokened** topic and only https callbacks resolving to public IPs, connected by pinned IP with no
 redirects (`app/websub/safety.py`) — never loosen these. `/img` serves only `image/*` entries with a valid
 `?sig=` (HMAC keyed by the feed secret), signed at render time (`sign_image_urls`) not stored. The DB
 `config.feed_secret` is authoritative over `BEACON_FEED_SECRET`.
@@ -489,8 +495,8 @@ fetcher therefore reports each story's status and `apply_result` records it on *
 *first* download `apply_result` also adopts the canonical `story_url` as `source_url` (unless another
 source owns it) — the Calibre `url:` identifier the fetcher later searches by is the canonical one, so
 keeping the pasted URL made every later update miss the library entry and re-download a duplicate.
-The Tracked Stories tab shows the status next to the title, and reports a duplicate/blank add instead
-of silently ignoring it.
+The story page shows the status; the Add page reports a duplicate or invalid add instead of silently
+ignoring it.
 
 ### Fetcher contract (`app/fetch/client.py` ↔ `fetcher/app.py`) — batched & async
 FanFicFare runs can take **~15 min**, so fetches are batched and asynchronous; they never block a
@@ -609,6 +615,6 @@ stories at `fetching…` (see CHANGELOG).
 - Feedback links work as plain GET hyperlinks from within a reader; up/down are instant + idempotent.
 - The `beacon` container never writes the Calibre library (mount is `:ro`); the `fetcher` does.
 - Batching never splits a unit; oversized units post whole; stochastic mean tracks the budget.
-- A trigger feed's new GUID drives a FanFicFare fetch into Calibre; the chapters then drop via the
+- A trigger feed's new GUID drives a FanFicFare fetch into Calibre; the chapters are then released via the
   normal cursor path. A stub keeps labels continuous (`label_map`, per-chapter URL identity) and
   remaps the cursor to the first surviving chapter — no unread chapter is skipped, even mid-work.

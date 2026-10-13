@@ -4,10 +4,9 @@
 
 <h1>Schedules</h1>
 <p style="color:#888">
-  Each schedule is a release time (cron) plus how much it may release in total — e.g. 5,000 words on
-  weekday mornings, 10,000 on weekday evenings, 20,000 at the weekend. A release's budget is split
-  across the <a href="/admin/channels">channels</a> that have something to drop, in proportion to
-  their weight. Times use the server's timezone.
+  A schedule is a release time (cron) plus how much it may release in total — e.g. 5,000 words on
+  weekday mornings, 20,000 at the weekend. The budget is split across the
+  <a href="/admin/channels">channels</a> that have something to release, by their weight.
 </p>
 
 {% set error = request.query_params.get('error') %}

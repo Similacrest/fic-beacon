@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-13
+
+A clean-up pass over the admin UI built in 0.17–0.21: fixes, removals of what the user stories no
+longer need, and consistent wording. No schema change.
+
+### Fixed
+- **A Calibre book and the same story pasted as a URL became two sources.** Importing a Calibre book
+  now counts as "already here" when its story is already a source (matched by story identity), and the
+  Add page hides such books. Before, the URL source and the Calibre book both existed until the first
+  download landed, and then collided on the Calibre id.
+- **A story repeated within one paste was listed as both "Added" and "Already here".**
+- The single-story Drop could cancel a *finished* story; it now uses the same rule as batch drop.
+- A failed run was logged twice (once by the app, once by the scheduler).
+
+### Removed
+- **Tracked Stories page** and its routes (`/admin/ongoing/*`). Everything it did lives elsewhere:
+  adding is the Add page; pause / resume / fetch / move / drop are on the story page and the
+  dashboard's Select bar; the story page shows the feed and site status. Permanent removal of
+  dropped stories remains on the dashboard (*Clear dropped*).
+- Drag-and-drop between slot cards (the story page's slot picker does the same, and works on touch).
+- `POST /admin/library/add`, `/admin/ongoing/add[-bulk]` and the `/admin/import` redirect (all
+  superseded by `POST /admin/add`); unused dashboard script and the duplicated "Last release" and
+  "Stale push" rows in System status.
+
+### Changed
+- **"Release", not "drop", for what a release does.** *Recent releases*, *last release 5h ago*,
+  *unread releases*, *Next chapter to release*, *Nothing released yet*; "drop" now only means
+  cancelling a source (❌ Drop, Dropped, Bring back). "Broadcasting" is gone from the UI too (*On air*).
+- Shorter labels and help text on Add, Settings, Schedules, Channels, the dashboard banner and the
+  fetch list; the *Needs attention* chip is *Attention*.
+- *Stop tracking updates* moved from the Priority card to the Source card of the story page.
+- Docs: removed stale descriptions (Tracked Stories tab, the WebSub subscriber list, a duplicated
+  security sentence) and rewrote the Admin UI section of CLAUDE.md.
+
 ## [0.21.0] — 2026-10-13
 
 ### Added

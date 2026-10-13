@@ -462,7 +462,6 @@ def _execute(op: str, fn) -> None:
     try:
         result = fn() or {}
     except Exception as exc:  # recorded for the dashboard, then re-raised for the scheduler's log
-        logger.exception("%s run failed", op)
         error = f"{type(exc).__name__}: {exc}"[:300]
         raise
     finally:

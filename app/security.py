@@ -89,7 +89,7 @@ PROXY_TOKEN_HEADER = "x-beacon-proxy-token"
 REMOTE_USER_HEADER = "x-remote-user"
 
 # Paths reachable without the proxy token — mirrors nginx-public.conf. Everything else
-# (/admin, /admin/ongoing, any mutating POST, /docs, …) requires a valid token.
+# (/admin, any mutating POST, /docs, …) requires a valid token.
 # There is no KOReader-sync route in this app; if one is added, list it here.
 _PUBLIC_PREFIXES = ("/feed", "/read", "/fb", "/static", "/img")
 _PUBLIC_EXACT = ("/robots.txt",)

@@ -143,18 +143,18 @@ class TestUrlValidation:
         assert not is_fetchable_url(url)
         assert fetcher._is_http_url(url or "") == is_fetchable_url(url)
 
-    def test_add_story_rejects_option_like_url(self, in_memory_db):
-        from app.routers.ongoing import add_story
+    def test_add_rejects_option_like_url(self, in_memory_db):
+        from app.routers.admin import add_sources
         cid = in_memory_db.query(Channel.id).limit(1).scalar()
         with patch("app.scheduler.trigger_fetch_pending"):
-            resp = add_story(source_url="--config=/etc/x", title="", channel_id=cid, db=in_memory_db)
-        assert resp.headers["location"].endswith("?error=invalid")
+            resp = add_sources(urls="--config=/etc/x", calibre_ids=[], channel_id=cid, db=in_memory_db)
+        assert "invalid=1" in resp.headers["location"]
         assert in_memory_db.query(Book).count() == 0
 
-    def test_add_story_with_unknown_channel_falls_back(self, in_memory_db):
-        from app.routers.ongoing import add_story
+    def test_add_with_unknown_channel_falls_back(self, in_memory_db):
+        from app.routers.admin import add_sources
         with patch("app.scheduler.trigger_fetch_pending"):
-            add_story(source_url="https://s/x", title="", channel_id=9999, db=in_memory_db)
+            add_sources(urls="https://s/x", calibre_ids=[], channel_id=9999, db=in_memory_db)
         assert in_memory_db.query(Book).one().channel_id is not None
 
     def test_submit_and_track_skips_unsafe_urls(self, in_memory_db):

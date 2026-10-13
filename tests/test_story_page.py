@@ -73,7 +73,7 @@ class TestStoryPage:
         client, db = ctx
         b = _book(db, "Serial", tracked=True, slot_index=1, last_fetch_status="error: HTTP 503")
         t = client.get(f"/admin/books/{b.id}").text
-        assert "⤓ Fetch now" in t and f"/admin/ongoing/{b.id}/fetch-now" in t
+        assert "⤓ Fetch now" in t and f"/admin/books/{b.id}/fetch" in t
         assert "HTTP 503" in t and "Stop tracking updates" in t
 
     def test_queued_book_shows_position_and_arrows(self, ctx):
@@ -427,3 +427,39 @@ class TestFindAndBatch:
     def test_flash_ignores_unknown_actions(self, ctx):
         client, _ = ctx
         assert "role=\"status\"" not in client.get("/admin/?done=<script>&n=1").text
+
+
+class TestFetchRouteAndWording:
+    def test_single_fetch_queues_only_when_it_applies(self, ctx):
+        from unittest.mock import patch
+        client, db = ctx
+        t = _book(db, "T", calibre_id=1, tracked=True, slot_index=1)
+        busy = _book(db, "Busy", calibre_id=2, tracked=True, slot_index=1, last_fetch_status="fetching…")
+        plain = _book(db, "Plain", calibre_id=3, tracked=False, slot_index=1)
+        with patch("app.scheduler.submit_and_track") as sub:
+            for b in (t, busy, plain):
+                r = client.post(f"/admin/books/{b.id}/fetch", data={"next": f"/admin/books/{b.id}"},
+                                follow_redirects=False)
+                assert r.headers["location"] == f"/admin/books/{b.id}"
+        assert sub.call_count == 1 and sub.call_args[0][1][0].id == t.id
+
+    def test_single_drop_ignores_finished_books(self, ctx):
+        client, db = ctx
+        done = _book(db, "Done", calibre_id=1, tracked=False, status=BookStatus.completed)
+        client.post(f"/admin/books/{done.id}/drop")
+        db.refresh(done)
+        assert done.status == BookStatus.completed
+
+    def test_ui_says_release_not_drop_for_releases(self, ctx):
+        import re
+        client, db = ctx
+        b = _book(db, "Serial", calibre_id=1, tracked=True, slot_index=1, total_chapters=9,
+                  cursor_chapter_index=2)
+        TestUndoAndRestore()._drops(db, b, 2, acked=False)
+        text = client.get("/admin/").text + client.get(f"/admin/books/{b.id}").text
+        text = re.sub(r"<script.*?</script>|<style.*?</style>", "", text, flags=re.S)
+        visible = re.sub(r"<[^>]+>", " ", text)
+        for phrase in ("last drop", "Recent drops", "unread drop", "Nothing dropped", "chapter to drop",
+                       "Tracked Stories"):
+            assert phrase not in visible, phrase
+        assert "Recent releases" in visible and "last release" in visible

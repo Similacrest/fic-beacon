@@ -1,4 +1,4 @@
-"""End-to-end tests for the smart Library "Add" endpoint (/admin/library/add).
+"""Tests for importing Calibre books (`import_library_books`, behind the Add page).
 
 Verifies the routing rules and the cursor fix: an ongoing serial the user has caught up to
 (#status updating + #read=Yes) must start its cursor at the current EPUB end so only *new*
@@ -14,7 +14,7 @@ import pytest
 
 from app.config import settings
 from app.models import Book, BookStatus
-from app.routers.admin import add_from_library, cursor_latest, cursor_start
+from app.routers.admin import cursor_latest, cursor_start, import_library_books
 from tests.make_epub import make_epub
 
 _BOOK_DIR = "AuthorA/Story (1)"
@@ -67,7 +67,8 @@ def add(in_memory_db, tmp_path, monkeypatch):
     def _run(status, read):
         _build_library(tmp_path, status, read)
         monkeypatch.setattr(settings, "calibre_library_path", tmp_path)
-        add_from_library(calibre_ids=[1], channel_id=None, db=in_memory_db)
+        import_library_books(in_memory_db, [1], None)
+        in_memory_db.commit()
         return in_memory_db.query(Book).filter(Book.calibre_id == 1).one()
     return _run
 

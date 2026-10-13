@@ -1,4 +1,4 @@
-"""One-line "why" for each source on the dashboard: why it did or didn't drop.
+"""One-line "why" for each source on the dashboard: why it was or wasn't released.
 
 Two kinds of fact feed it, kept apart on purpose:
 
@@ -6,7 +6,7 @@ Two kinds of fact feed it, kept apart on purpose:
   These forecast the *next* release and are read from the book as it is now.
 * **The last release's record** — the planner's skip-log entry (`app_state[last_broadcast_skips]`),
   written when it decided: oversized and saving up, unread back-off, weight fade, budget ran out,
-  lost the roll. Recomputing those from current state would lie (e.g. reading two drops after the
+  lost the roll. Recomputing those from current state would lie (e.g. reading two releases after the
   release would turn "held back for unread drops" into "lost the roll").
 
 `explain()` is pure: the router gathers the inputs, this picks the one reason that matters most.
@@ -68,7 +68,7 @@ def explain(
     if book.paused:
         if note:  # set aside by the planner (e.g. an EPUB with no chapters) — that's the story
             return SourceStatus("warn", "⚠", note, "Paused until you resume it.")
-        return SourceStatus("off", "⏸", "Paused", "Resume it to broadcast again.")
+        return SourceStatus("off", "⏸", "Paused", "Resume it to start releasing again.")
     if note:
         return SourceStatus("warn", "⚠", note)
     if book.status == BookStatus.queued:
@@ -86,7 +86,7 @@ def explain(
 
     if last and last.get("missing"):
         return SourceStatus("warn", "⚠", "Missing from Calibre",
-                            "Its Calibre entry or EPUB is missing, so nothing can drop.")
+                            "Its Calibre entry or EPUB is missing, so nothing can be released.")
     if book.cooldown_remaining >= 2:
         return SourceStatus("off", "👎", "Sitting out next release",
                             "A 👎 makes a source skip one release.")
@@ -130,8 +130,8 @@ def explain(
             # The live streak may have reset since (reading clears it); say so if it has.
             if unread > 1:
                 return SourceStatus("wait", "📭", f"Slowed by {unread} unread · {waiting}",
-                                    f"Chance cut to ×{penalty:g}. Reading or ✓-marking a drop lifts it.")
-            return SourceStatus("wait", "📭", f"Slowed by unread drops · {waiting}",
+                                    f"Chance cut to ×{penalty:g}. Opening or ✓-marking a release lifts it.")
+            return SourceStatus("wait", "📭", f"Slowed by unread releases · {waiting}",
                                 "Since read, so no back-off next time.")
         fade = last.get("fade", 1.0)
         if fade < 1.0:
@@ -151,5 +151,5 @@ def explain(
         return SourceStatus("ok", "👎", f"Rested last release · {waiting}")
     if unread > 1:
         return SourceStatus("wait", "📭", f"Slowed by {unread} unread · {waiting}",
-                            "Reading or ✓-marking a drop lifts it.")
+                            "Opening or ✓-marking a release lifts it.")
     return SourceStatus("ok", "▶", f"On air · {waiting}")

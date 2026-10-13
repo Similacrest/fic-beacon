@@ -18,7 +18,7 @@
     <label for="vote_step">👍/👎 vote step</label>
     <input type="number" name="vote_step" id="vote_step"
            value="{{ cfg.vote_step }}" min="0.01" max="5" step="0.01">
-    <small style="color:#666">Each 👍 adds this to a source's weight and each 👎 subtracts it (weights sit around 0–3; hard cap 100). A 👎 that takes a source to <code>0</code> drops it.</small>
+    <small style="color:#666">Each 👍 adds this to a source's weight and each 👎 subtracts it (weights sit around 0–3; hard cap 100). A 👎 that takes a source to <code>0</code> drops it (cancels it).</small>
   </div>
   <div class="form-group">
     <label for="extra_boost_step">🪝 Extra boost step</label>
@@ -30,7 +30,7 @@
     <label for="extra_per_channel_per_cycle">🪝 Extra chapters per channel per release</label>
     <input type="number" name="extra_per_channel_per_cycle" id="extra_per_channel_per_cycle"
            value="{{ cfg.extra_per_channel_per_cycle }}" min="0" max="20">
-    <small style="color:#666">How many extra-chapter requests each channel honours between two releases, so you don't get hooked into binging. Over the limit, the 🪝 link explains and changes nothing. <code>0</code> disables extras.</small>
+    <small style="color:#666">Extra-chapter requests honoured per channel between two releases. Over the limit the 🪝 link explains and changes nothing. <code>0</code> disables extras.</small>
   </div>
   <div class="form-group">
     <label for="weight_skip_floor">Fade-out floor (weight)</label>
@@ -42,7 +42,7 @@
     <label for="unacked_penalty_floor">Unread back-off floor</label>
     <input type="number" name="unacked_penalty_floor" id="unacked_penalty_floor"
            value="{{ cfg.unacked_penalty_floor }}" min="0.05" max="1" step="0.05">
-    <small style="color:#666">One unread drop costs nothing; two in a row slow a source to 0.8×, then 0.6×, 0.4× … never below this fraction. Reading any drop resets it; weight is never touched.</small>
+    <small style="color:#666">One unread release costs nothing; two in a row slow a source to 0.8×, then 0.6×, 0.4× … never below this fraction. Opening any release resets it; weight is never touched.</small>
   </div>
   <div class="form-group">
     <label for="tracked_default_weight">📡 Tracked default weight</label>
@@ -54,7 +54,7 @@
     <label for="websub_max_push_bytes">📡 WebSub push size cap (bytes)</label>
     <input type="number" name="websub_max_push_bytes" id="websub_max_push_bytes"
            value="{{ cfg.websub_max_push_bytes }}" min="0" step="10000">
-    <small style="color:#666">Realtime push is trimmed to the newest chapters that fit this many bytes (always ≥1). Inoreader silently drops oversized fat pings, so keep this ~<code>100000</code> (100&nbsp;KB). <code>0</code> = no cap (push the whole feed). Polled feeds are unaffected.</small>
+    <small style="color:#666">Realtime pushes carry only the newest chapters that fit this many bytes (at least one). Keep ~<code>100000</code>: Inoreader ignores larger pushes. <code>0</code> = no cap. Polled feeds are unaffected.</small>
   </div>
   <button class="btn btn-primary" type="submit">Save</button>
 </form>
@@ -67,7 +67,7 @@
   </p>
   <div class="feed-url" style="margin-bottom:.6em">{{ cfg.feed_secret }}</div>
   <form method="post" action="/admin/config/regenerate-secret"
-        onsubmit="return confirm('Regenerate the feed secret?\n\nEVERY feed URL changes — all reader subscriptions (every channel) break until you re-add the new URLs from the Channels page. Per-drop feedback links keep working.')">
+        onsubmit="return confirm('Regenerate the feed secret?\n\nEVERY feed URL changes — all reader subscriptions (every channel) break until you re-add the new URLs from the Channels page. Feedback links in already-released items keep working.')">
     <button class="btn btn-danger" type="submit" title="Regenerate feed secret" aria-label="Regenerate feed secret">🔁</button>
   </form>
 </div>

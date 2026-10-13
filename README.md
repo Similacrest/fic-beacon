@@ -4,10 +4,10 @@ Turn your **completed** Calibre backlog *and* your **real ongoing web serials** 
 paced, weighted set of RSS/Atom feeds — so you read everything the same drip-fed way you already
 follow ongoing fiction, and your backlog stops losing to whatever updated today.
 
-Fic-Beacon re-serializes complete EPUBs into chapter drops. Ongoing web serials become real
+Fic-Beacon re-serializes complete EPUBs into chapter-by-chapter releases. Ongoing web serials become real
 Calibre books too: a separate **fetcher** container downloads new chapters with **FanFicFare**
 (RSS is used only to *notice* updates), and they're served from the same channels — batched to
-scheduled drop times instead of arriving all day. You steer the rotation from inside any RSS
+scheduled release times instead of arriving all day. You steer the rotation from inside any RSS
 reader with plain feedback links.
 
 > See [CHANGELOG.md](CHANGELOG.md) for what has landed.
@@ -16,10 +16,10 @@ reader with plain feedback links.
 
 - **Backlog gets a fair shake.** Ongoing serials normally feel more urgent than finished books;
   here they share one weighted budget, so completed works actually get read.
-- **No mid-day distractions.** New chapters are fetched and released only at your drop
+- **No mid-day distractions.** New chapters are fetched and released only at your release
   times (e.g. morning/evening), batched with the backlog.
-- **Steer from your reader.** Every drop has 🪝 extra · 👍 up · 👎 down · ❌ drop links that adjust
-  a source's weight or remove it — plain GET hyperlinks that work in any reader.
+- **Steer from your reader.** Every release has 🪝 extra · 👍 up · 👎 down · ❌ drop links that adjust
+  a source's weight or cancel it — plain GET hyperlinks that work in any reader.
 - **Reader-agnostic.** Standards-compliant RSS 2.0 + Atom; InoReader is just a reference client.
 
 ## How it works
@@ -36,13 +36,14 @@ reader with plain feedback links.
 - **One feed per slot** — `GET /feed/{channel}/{slot}` — a finite backlog book streams in a slot
   and rolls to the next when it finishes, while **tracked** (auto-updating) stories ride alongside
   it in the same slot feeds. There's no separate ongoing feed.
-- **Adding** is one page: paste story URLs and/or pick books already in Calibre, then press **Add**. Each Calibre book is routed by its
-  `#status`: ongoing serials (In-Progress / Incomplete / Hiatus) become **tracked** auto-updating
-  sources; finished/blank ones join the **backlog** queue. A tracked book you've marked `#read=Yes`
-  starts at the current end (only *new* chapters drop); an unread one starts at chapter 1.
-- **Tracked stories** can also be added by URL. The fetcher container runs FanFicFare to download
-  them into Calibre; if the URL has an RSS feed it's used only to *notice* updates fast (checked
-  pre-drop), otherwise a daily sweep refreshes it. From there they're ordinary EPUBs. Stories the
+- **Adding** is one page: paste story URLs and/or pick books already in Calibre, then press **Add**.
+  Each Calibre book is routed by its `#status`: ongoing serials (In-Progress / Incomplete / Hiatus)
+  become **tracked** auto-updating sources; finished/blank ones join the **backlog** queue. A tracked
+  book you've marked `#read=Yes` starts at the current end (only *new* chapters are released); an
+  unread one starts at chapter 1.
+- **Tracked stories** added by URL are downloaded into Calibre by the fetcher container (FanFicFare).
+  If the URL has an RSS feed it's used only to *notice* updates fast (checked just before each
+  release), otherwise a daily sweep refreshes it. From there they're ordinary EPUBs. Stories the
   source site marks done (`#status` Completed / Abandoned / Published) are skipped on fetch.
 - **Stochastic budget** packs whole chapters up to each release's word (or reading-minute) budget, split across channels by weight;
   the further over budget, the more likely a unit rolls to the next cycle. Votes bias the draw; the
@@ -74,8 +75,8 @@ network you trust, never the public internet — set `BEACON_ADMIN_OPEN=true` in
 Without either, `/admin` answers `503`.
 
 Then open the admin UI at `http://localhost:8000/admin/`, create channels (or use the auto-created
-**General** one), import books from Calibre into a channel, add tracked stories by URL on the
-**Tracked Stories** page, and copy each per-slot feed URL (with its `?token=`) into your RSS reader.
+**General** one), add stories on the **Add** page (story URLs and/or books from Calibre), and copy each
+per-slot feed URL (with its `?token=`) into your RSS reader.
 There is no single "all" feed — subscribe to each channel/slot feed you want.
 
 ### Configuration (`.env` / `BEACON_*` env)
@@ -88,7 +89,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_BASE_URL` | Public base URL used in feed/links | `http://localhost:8000` |
 | `BEACON_FEEDBACK_BASE_URL` | Optional separate origin for the 🪝 👍 👎 ⏸ ❌ ✓ feedback links in feed items (`/fb/*` must be reachable there). Default `BEACON_BASE_URL` |
 | `BEACON_READER_BASE_URL` | Optional origin for feed items' `/read/` links. Default `BEACON_FEEDBACK_BASE_URL`. Must serve `/read`, `/img` and `/fb` (the reader page uses relative URLs). Feeds, WebSub and images inside feed items stay on `BEACON_BASE_URL` | = `BEACON_BASE_URL` |
-| `BEACON_LEGACY_BASE_URLS` | Comma-separated origins older drops have baked into their image URLs (e.g. after a base-URL change); `/img/` URLs on them are rewritten to `BEACON_BASE_URL` and signed at render time. Other hosts are never touched | none |
+| `BEACON_LEGACY_BASE_URLS` | Comma-separated origins older releases have baked into their image URLs (e.g. after a base-URL change); `/img/` URLs on them are rewritten to `BEACON_BASE_URL` and signed at render time. Other hosts are never touched | none |
 | `BEACON_PORT` | Host port to expose | `8000` |
 | `BEACON_FEED_SECRET` | Secret token gating the feeds. **Seeds the DB value on first run only — the database copy wins afterwards** (rotate on the Channels page); a warning is logged if they differ | random |
 | `BEACON_PROXY_TOKEN` | Shared secret the reverse proxy sends as `X-Beacon-Proxy-Token`. Required on every route except `/feed` `/read` `/fb` `/img` `/static`; `X-Remote-User` is trusted (audit only) when it matches | unset |
@@ -98,7 +99,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_UID` / `BEACON_GID` | Optional: run the beacon container as this non-root user (chown the `/data` volume first) | `0` / `0` |
 | `BEACON_PUBLIC_WEBSUB` | Treat `/websub/*` as public (no proxy token) — set it together with the proxy publishing `/websub/` (the bundled `docker-compose.yml` does not pass it through — add it to the container environment). Feeds always advertise `rel=hub`; while the hub isn't reachable, readers just poll | `false` |
 | `BEACON_WEBSUB_CALLBACK_HOSTS` | Optional comma-separated allowlist of WebSub callback hosts (e.g. `incoming.inoreader.com`). Callbacks are always https and public-address only | any |
-| `BEACON_TZ` | Timezone for drop/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
+| `BEACON_TZ` | Timezone for release/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |
 | `BEACON_FETCHER_POLL_INTERVAL` | Seconds between polls of a running fetch job | `30` |
 | `BEACON_FETCHER_JOB_TIMEOUT` | Give up on a fetch job after this many seconds | `1200` |
@@ -138,7 +139,7 @@ pass `Host` (or `X-Forwarded-Host`) through unchanged, or set `BEACON_BASE_URL` 
 If you update EPUBs in the Calibre library *outside* the fetcher (e.g. a manual bulk transfer),
 run `scripts/refresh_cursors.py` inside the `beacon` container to recompute each source's max
 chapter count and clamp any cursor left pointing past the EPUB's end (reading positions still in
-range are untouched, so unread new chapters still drop):
+range are untouched, so unread new chapters are still released):
 
 ```bash
 docker exec fic-beacon-beacon-1 /app/.venv/bin/python /app/scripts/refresh_cursors.py          # dry-run

@@ -14,7 +14,6 @@ from feedparser.util import FeedParserDict
 from app.models import Book, BookStatus, Channel, absolute_chapter_number
 from app.ongoing.poller import _newest_guid, fetch_pending, poll_all_feeds, sweep_feedless
 from app.fetch.client import apply_result
-from app.routers.ongoing import batch_pause_sources, batch_resume_sources
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -297,32 +296,13 @@ class TestStubIdentity:
         assert "mapped" not in src.last_fetch_status
 
 
-class TestBatchActions:
-    def test_pause_then_resume(self, in_memory_db):
-        a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
-        b = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
-        batch_pause_sources(book_ids=[a.id, b.id], db=in_memory_db)
-        # Pause now uses the shared `paused` flag (same as the feed ⏸ / dashboard); tracked
-        # stories stay `active` — they're just excluded from broadcasting while paused.
-        assert a.paused and b.paused
-        assert a.status == BookStatus.active and b.status == BookStatus.active
-        batch_resume_sources(book_ids=[a.id], db=in_memory_db)
-        assert not a.paused and b.paused
-
-    def test_empty_selection_is_a_noop(self, in_memory_db):
-        # The HTMX path posts with no book_ids when nothing is selected; must not error.
-        a = _tracked(in_memory_db, calibre_id=next(_next_calibre_id))
-        batch_pause_sources(book_ids=None, db=in_memory_db)
-        assert not a.paused
-
-
 class TestAddTrackedStory:
     def test_url_added_story_gets_tracked_default_weight(self, in_memory_db):
         # A story added by URL must get the same priority nudge as a library-imported
         # serial (config.tracked_default_weight), not the 1.0 backlog default.
-        from app.routers.ongoing import _add_tracked_story
+        from app.ongoing.add import add_tracked_story
         cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
-        book = _add_tracked_story(in_memory_db, "https://s/story", "", cid)
+        book = add_tracked_story(in_memory_db, "https://s/story", "", cid)
         assert book.quota_weight == 2.0  # conftest Config uses the model default
         # Blank title falls back to the URL placeholder until the first fetch resolves it.
         assert book.title == "https://s/story"
@@ -395,31 +375,27 @@ class TestStoryStatusAndCanonicalUrl:
         assert src.source_url == "https://x/s/1"
 
 
-class TestAddStoryFeedback:
-    def test_duplicate_url_is_reported_not_silent(self, in_memory_db):
-        from app.routers.ongoing import add_story
-        cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
-        with patch("app.scheduler.trigger_fetch_pending"):
-            first = add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
-            dup = add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
-            blank = add_story(source_url="  ", title="", channel_id=cid, db=in_memory_db)
-        assert first.headers["location"].endswith("?added=1")
-        assert dup.headers["location"].endswith("?error=duplicate")
-        assert blank.headers["location"].endswith("?error=blank")
+class TestAddStories:
+    """Adding by URL goes through the Add page's single endpoint (`POST /admin/add`)."""
 
     def test_added_story_is_placed_in_a_slot_immediately(self, in_memory_db):
-        from app.routers.ongoing import add_story
+        from app.routers.admin import add_sources
         cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
         with patch("app.scheduler.trigger_fetch_pending"):
-            add_story(source_url="https://s/story", title="", channel_id=cid, db=in_memory_db)
+            add_sources(urls="https://s/story", calibre_ids=[], channel_id=cid, db=in_memory_db)
         book = in_memory_db.query(Book).filter(Book.source_url == "https://s/story").one()
         assert book.slot_index is not None
 
-    def test_bulk_add_reports_skipped_duplicates(self, in_memory_db):
-        from app.routers.ongoing import add_bulk
+    def test_outcome_counts_added_duplicate_and_invalid(self, in_memory_db):
+        from app.routers.admin import add_sources
         cid = in_memory_db.query(Channel.id).order_by(Channel.id).limit(1).scalar()
         with patch("app.scheduler.trigger_fetch_pending"):
-            add_bulk(urls="https://s/a\nhttps://s/b", channel_id=cid, db=in_memory_db)
-            resp = add_bulk(urls="https://s/a\nhttps://s/c\n\nhttps://s/b", channel_id=cid,
-                            db=in_memory_db)
-        assert resp.headers["location"].endswith("?added=1&skipped=2")
+            add_sources(urls="https://s/a\nhttps://s/b", calibre_ids=[], channel_id=cid, db=in_memory_db)
+            resp = add_sources(urls="https://s/a\nhttps://s/c\n\n--config=x\nhttps://s/c",
+                               calibre_ids=[], channel_id=cid, db=in_memory_db)
+        loc = resp.headers["location"]
+        assert "invalid=1" in loc
+        added = in_memory_db.query(Book).filter(Book.source_url == "https://s/c").one()
+        a = in_memory_db.query(Book).filter(Book.source_url == "https://s/a").one()
+        # /c is new (and not repeated as a duplicate of itself); /a was already tracked
+        assert f"added={added.id}" in loc and f"dupes={a.id}" in loc

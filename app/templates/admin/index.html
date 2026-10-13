@@ -22,7 +22,7 @@
   <span>
     <strong>{{ 'Checking feeds' if cycle.op == 'feedcheck' else 'Release running' }}</strong>
     — {{ cycle.stage or 'starting…' }}
-    <span class="muted" style="font-size:.85em">· {{ cycle.elapsed|duration }} · safe to close or refresh this tab</span>
+    <span class="muted" style="font-size:.85em">· {{ cycle.elapsed|duration }}</span>
   </span>
 </div>
 {% endif %}
@@ -32,7 +32,7 @@
 {% set n = request.query_params.get('n', '0') %}{% set sk = request.query_params.get('skipped', '0') %}
 <div class="flash" role="status">
   ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'drop': 'Dropped'}[done] }}
-  {{ n if n.isdigit() else 0 }} stor{{ 'y' if n == '1' else 'ies' }}{% if sk.isdigit() and sk != '0' %} · {{ sk }} skipped (didn't apply){% endif %}
+  {{ n if n.isdigit() else 0 }} stor{{ 'y' if n == '1' else 'ies' }}{% if sk.isdigit() and sk != '0' %} · {{ sk }} skipped{% endif %}
 </div>
 {% endif %}
 
@@ -88,8 +88,7 @@
         <button class="btn btn-lg btn-primary" title="Check feeds, then release what fits the selected schedule's budget. Runs in the background.">▶ Run release</button>
       </form>
       <form method="post" action="/admin/poll-now" hx-post="/admin/poll-now" class="run-form">
-        <button class="btn btn-lg" title="Check tracked feeds and queue downloads for any with new chapters">🔄 Check feeds</button>
-        <span class="muted" style="font-size:.85em">no release, just look for new chapters</span>
+        <button class="btn btn-lg" title="Look for new chapters now, without releasing anything">🔄 Check feeds</button>
       </form>
       {% endif %}
       {% if not cycle and last_release %}
@@ -115,16 +114,14 @@
   {% endif %}
 </section>
 
-{# ── Now broadcasting: per-channel slot feeds, one row per source with its *why* ── #}
-{% macro source_row(r, channel_id, draggable=True) %}
-<div class="src-row{% if draggable %} draggable-source{% endif %}" data-id="{{ r.book.id }}"
-     data-search="{{ (r.book.title ~ ' ' ~ (r.book.author or ''))|lower }}" data-flags="{{ r.flags }}"
-     {% if draggable %}draggable="true" data-book-id="{{ r.book.id }}" data-channel="{{ channel_id }}" title="Drag to another slot to repin"{% endif %}>
+{# ── On air: per-channel slot feeds, one row per source with its reason ── #}
+{% macro source_row(r) %}
+<div class="src-row" data-search="{{ (r.book.title ~ ' ' ~ (r.book.author or ''))|lower }}" data-flags="{{ r.flags }}">
   <input type="checkbox" class="sel-box" name="book_ids" value="{{ r.book.id }}" form="batch-form"
          aria-label="Select {{ r.book.title }}">
-  <a class="src-title" href="/admin/books/{{ r.book.id }}" draggable="false">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</a>
+  <a class="src-title" href="/admin/books/{{ r.book.id }}">{{ '📡' if r.book.tracked else '📖' }} {{ r.book.title }}</a>
   <span class="why why-{{ r.why.tone }}"{% if r.why.detail %} title="{{ r.why.detail }}"{% endif %}>{{ r.why.icon }} {{ r.why.text }}</span>
-  {% if r.last_drop %}<span class="src-meta" title="{{ r.last_drop|stamp }}">last drop {{ r.last_drop|ago }}</span>{% endif %}
+  {% if r.last_released %}<span class="src-meta" title="{{ r.last_released|stamp }}">last release {{ r.last_released|ago }}</span>{% endif %}
   {# Problems spell out their detail inline (tablets don't show tooltips); the rest keep it in title= #}
   {% if r.why.detail and r.why.tone == 'warn' %}<span class="why-detail">{{ r.why.detail }}</span>{% endif %}
 </div>
@@ -134,7 +131,7 @@
   <input type="search" id="story-filter" placeholder="🔍 Find a story or author…" autocomplete="off"
          aria-label="Find a story or author">
   <span class="chips" role="group" aria-label="Filter">
-    <button type="button" class="chip" data-flag="attention">⚠ Needs attention</button>
+    <button type="button" class="chip" data-flag="attention">⚠ Attention</button>
     <button type="button" class="chip" data-flag="unread">📭 Unread</button>
     <button type="button" class="chip" data-flag="paused">⏸ Paused</button>
     <button type="button" class="chip" data-flag="tracked">📡 Tracked</button>
@@ -157,18 +154,18 @@
   </select>
   <button class="btn" name="action" value="move">Move</button>
   <button class="btn btn-danger" name="action" value="drop"
-          onclick="return confirm('Drop the selected stories? They stop broadcasting; you can bring them back.')">❌ Drop</button>
+          onclick="return confirm('Drop the selected stories? They stop being released; you can bring them back.')">❌ Drop</button>
 </form>
 
-<details class="section" data-section="now-broadcasting" open>
-  <summary>📺 Now broadcasting <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
+<details class="section" data-section="on-air" open>
+  <summary>📺 On air <span class="count">— {{ slot_view|length }} channel(s)</span></summary>
   {% for cv in slot_view %}
   <div class="channel-block">
   <h3 style="margin:.6em 0 .2em">{{ cv.channel.name }}
     <span class="muted" style="font-size:.7em">/{{ cv.channel.slug }} · {{ cv.channel.parallel_slots }} slot(s)</span>
   </h3>
   {% for slot in cv.slots %}
-  <div class="slot-card" data-slot="{{ slot.n }}" data-channel="{{ cv.channel.id }}">
+  <div class="slot-card">
     <h4>Slot {{ slot.n }}
       <span class="muted" style="font-weight:normal; font-size:.8em">
         feed <code>/feed/{{ cv.channel.slug }}/{{ slot.n }}</code>
@@ -178,12 +175,12 @@
       {% if push and push.bad %}<span class="push push-bad" title="Unverified or expired — these won't get pushes">⚠ {{ push.bad }} stale</span>{% endif %}
       {% if not push %}<span class="push push-none" title="No reader subscribed for realtime push; it polls the feed instead">polling</span>{% endif %}
     </h4>
-    {% for r in slot.rows %}{{ source_row(r, cv.channel.id) }}{% else %}
-    <p class="muted" style="margin:.2em 0">empty — drag a source here</p>
+    {% for r in slot.rows %}{{ source_row(r) }}{% else %}
+    <p class="muted" style="margin:.2em 0">empty</p>
     {% endfor %}
     {% if slot.drops %}
     <details class="recent-drops">
-      <summary class="muted">Recent drops in this feed</summary>
+      <summary class="muted">Recent releases</summary>
       <table style="font-size:.85em">
         <tbody>
         {% for d in slot.drops %}
@@ -203,7 +200,7 @@
   {% if cv.unslotted %}
   <div class="slot-card">
     <h4>Not in a slot yet <span class="muted" style="font-weight:normal; font-size:.8em">— placed at the next release</span></h4>
-    {% for r in cv.unslotted %}{{ source_row(r, cv.channel.id, False) }}{% endfor %}
+    {% for r in cv.unslotted %}{{ source_row(r) }}{% endfor %}
   </div>
   {% endif %}
   {% if cv.queue %}
@@ -211,7 +208,7 @@
     <strong>Up next</strong>
     {% for r in cv.queue %}
     <div class="queue-item">
-      {{ source_row(r, cv.channel.id, False) }}
+      {{ source_row(r) }}
       <span class="queue-move">
         {% if not loop.first %}<form method="post" action="/admin/books/{{ r.book.id }}/move" hx-post="/admin/books/{{ r.book.id }}/move"><input type="hidden" name="direction" value="up"><button class="btn" title="Earlier in the queue" aria-label="Earlier in the queue">↑</button></form>{% endif %}
         {% if not loop.last %}<form method="post" action="/admin/books/{{ r.book.id }}/move" hx-post="/admin/books/{{ r.book.id }}/move"><input type="hidden" name="direction" value="down"><button class="btn" title="Later in the queue" aria-label="Later in the queue">↓</button></form>{% endif %}
@@ -230,10 +227,7 @@
 {% if fetch_progress %}
 <details class="section" data-section="fetches" open>
   <summary>⏳ Fetches in progress <span class="count">— {{ fetch_progress|length }}</span></summary>
-  <p class="muted" style="font-size:.85em">
-    FanFicFare downloads run in the background (up to ~15 min). Phase advances each poll;
-    fetched chapters drop on the next broadcast.
-  </p>
+  <p class="muted" style="font-size:.85em">Downloads take up to ~15 min; new chapters join the next release.</p>
   <table style="font-size:.9em">
     <thead><tr><th>Story</th><th>Phase</th><th>Elapsed</th></tr></thead>
     <tbody>
@@ -241,7 +235,7 @@
     <tr>
       <td>📡 {{ f.book.title }}</td>
       <td><span class="badge badge-queued">{{ f.status }}</span></td>
-      <td class="muted">{% if f.elapsed is not none %}{{ (f.elapsed // 60) }}m {{ (f.elapsed % 60) }}s{% else %}—{% endif %}</td>
+      <td class="muted">{% if f.elapsed is not none %}{{ f.elapsed|duration }}{% else %}—{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>
@@ -249,17 +243,15 @@
 </details>
 {% endif %}
 
-{# ── System status: cron last/next runs + WebSub subscribers ───────────────── #}
+{# ── System status: schedules' next runs, feed check, daily sweep ───────────── #}
 <details class="section" data-section="system-status">
   <summary>🛰 System status</summary>
   <div class="kv" style="margin:.5em 0 1em">
-    <span class="muted">Last release</span><span>{{ fmt_dt(status.last_drop) }}</span>
     {% for row in schedule_rows %}
     <span class="muted">Next: {{ row.schedule.name }}</span><span>{% if row.schedule.enabled %}{{ fmt_dt(row.next) }}{% else %}<span class="muted">disabled</span>{% endif %}</span>
     {% endfor %}
     <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
     <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
-    {% if push_orphans %}<span class="muted">Stale push</span><span>{{ push_orphans }} subscription(s) on feeds that no longer exist</span>{% endif %}
   </div>
 </details>
 
@@ -290,7 +282,7 @@
 <summary>🗑 Dropped <span class="count">— {{ dropped|length }}</span></summary>
 <p>
   <form method="post" action="/admin/dropped/clear" hx-post="/admin/dropped/clear" style="display:inline"
-        onsubmit="return confirm('Permanently remove all dropped sources and their drops?')">
+        onsubmit="return confirm('Permanently remove all dropped stories and their release history?')">
     <button class="btn btn-danger" style="font-size:.8em; padding:.15em .6em">Clear dropped</button>
   </form>
 </p>
@@ -316,20 +308,6 @@
 </div>{# /#dash-main #}
 
 <script>
-function batchConfirm(checkClass, msg) {
-  const checked = document.querySelectorAll('.' + checkClass + ':checked');
-  if (!checked.length) return false;
-  return confirm(msg);
-}
-// Delegated so it keeps working after HTMX swaps #dash-main in place. The check-all boxes
-// declare which row-checkbox class they control via data-check-all.
-document.addEventListener('change', (e) => {
-  const all = e.target.closest('input[data-check-all]');
-  if (all) {
-    const cls = all.getAttribute('data-check-all');
-    document.querySelectorAll('.' + cls).forEach(cb => cb.checked = all.checked);
-  }
-});
 // ── Find: client-side filter over [data-search] rows; survives #dash-main swaps ──────────
 const FILTER = { q: '', flag: '' };
 function applyFilter() {
@@ -422,40 +400,5 @@ document.addEventListener('htmx:afterSwap', restoreSections);
 // this runs on load only, never on an in-place swap).
 try { sessionStorage.removeItem('sec:completed'); sessionStorage.removeItem('sec:dropped'); } catch (e) {}
 restoreSections();
-
-// Drag a source pill between slot cards to repin it (same channel only). Delegated so it
-// survives #dash-main swaps; persists via POST /admin/books/{id}/set-slot then reloads.
-let _dragBook = null, _dragChannel = null;
-document.addEventListener('dragstart', (e) => {
-  const pill = e.target.closest && e.target.closest('.draggable-source');
-  if (!pill) return;
-  _dragBook = pill.dataset.bookId;
-  _dragChannel = pill.dataset.channel;
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-});
-document.addEventListener('dragover', (e) => {
-  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
-  if (card && _dragBook && card.dataset.channel === _dragChannel) {
-    e.preventDefault();                 // allow drop
-    card.classList.add('drag-over');
-  }
-});
-document.addEventListener('dragleave', (e) => {
-  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
-  if (card) card.classList.remove('drag-over');
-});
-document.addEventListener('drop', (e) => {
-  const card = e.target.closest && e.target.closest('.slot-card[data-slot]');
-  if (!card || !_dragBook || card.dataset.channel !== _dragChannel) return;
-  e.preventDefault();
-  card.classList.remove('drag-over');
-  const body = new URLSearchParams({ slot_index: card.dataset.slot });
-  fetch('/admin/books/' + _dragBook + '/set-slot', {
-    method: 'POST',
-    headers: { 'HX-Request': 'true', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  }).then((r) => { if (r.ok) location.reload(); });
-  _dragBook = null; _dragChannel = null;
-});
 </script>
 {% endblock %}

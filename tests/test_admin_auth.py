@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
-from app.routers import admin, feed, feedback, media, ongoing, reader, websub
+from app.routers import admin, feed, feedback, media, reader, websub
 from app.security import bind_is_loopback
 
 TOKEN = "proxy-shared-secret"
@@ -31,7 +31,7 @@ def _non_public_routes():
     from app.security import is_public_path
     out = []
     # (FastAPI defers included routers, so read them from the modules.)
-    for r in [r for mod in (admin, ongoing, feed, feedback, reader, media, websub) for r in mod.router.routes]:
+    for r in [r for mod in (admin, feed, feedback, reader, media, websub) for r in mod.router.routes]:
         if isinstance(r, APIRoute) and not is_public_path(re.sub(r"\{[^}]+\}", "1", r.path)):
             for m in r.methods - {"HEAD", "OPTIONS"}:
                 out.append((m, re.sub(r"\{[^}]+\}", "1", r.path)))
@@ -40,7 +40,7 @@ def _non_public_routes():
 
 def test_route_inventory_covers_admin_and_mutations():
     routes = _non_public_routes()
-    assert any(p.startswith("/admin/ongoing") for _, p in routes)
+    assert any(p.startswith("/admin/books") for _, p in routes)
     assert any(m == "POST" and p.startswith("/admin") for m, p in routes)
     assert not any(p.startswith(("/feed", "/read", "/fb", "/img")) for _, p in routes)
 

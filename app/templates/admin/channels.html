@@ -46,11 +46,11 @@
         <input type="number" name="parallel_slots" value="{{ ch.parallel_slots }}" min="1" style="width:70px">
       </div>
       <div style="min-width:90px">
-        <label style="font-size:.8em; display:block" title="Share of each release's budget, split over the channels that have something to drop. Weight 2 gets twice the words of weight 1.">Weight</label>
+        <label style="font-size:.8em; display:block" title="Share of each release's budget, split across channels that have something to release. Weight 2 gets twice the words of weight 1.">Weight</label>
         <input type="number" name="weight" value="{{ '%g'|format(ch.weight) }}" min="0.01" step="any" style="width:90px">
       </div>
       <div style="min-width:80px">
-        <label style="font-size:.8em; display:block" title="Max items each slot feed carries; older drops stay in the DB but drop off the feed tail">Feed items</label>
+        <label style="font-size:.8em; display:block" title="Most items each slot feed carries. Older releases stay readable but leave the feed.">Feed items</label>
         <input type="number" name="feed_item_limit" value="{{ ch.feed_item_limit }}" min="1" style="width:70px">
       </div>
       <div>
@@ -95,11 +95,11 @@
       <input type="number" name="parallel_slots" value="2" min="1" style="width:70px">
     </div>
     <div style="min-width:90px">
-      <label style="font-size:.8em; display:block" title="Share of each release's budget, split over the channels that have something to drop.">Weight</label>
+      <label style="font-size:.8em; display:block" title="Share of each release's budget, split across channels that have something to release.">Weight</label>
       <input type="number" name="weight" value="1" min="0.01" step="any" style="width:90px">
     </div>
     <div style="min-width:80px">
-      <label style="font-size:.8em; display:block" title="Max items each slot feed carries; older drops stay in the DB but drop off the feed tail">Feed items</label>
+      <label style="font-size:.8em; display:block" title="Most items each slot feed carries. Older releases stay readable but leave the feed.">Feed items</label>
       <input type="number" name="feed_item_limit" value="50" min="1" style="width:70px">
     </div>
     <div>

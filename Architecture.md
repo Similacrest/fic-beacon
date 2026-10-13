@@ -3,7 +3,7 @@
 ## 1. Problem & Goal
 
 The user reads a lot of fanfiction and web serials and stays engaged because they arrive as
-**ongoing chapter drops in an RSS reader**. Meanwhile a large backlog of *complete* books sits
+**ongoing chapter releases in an RSS reader**. Meanwhile a large backlog of *complete* books sits
 unread in a Calibre library — a finished work lacks the drip-fed "ongoing" hook. Worse, the real
 ongoing serials arrive whenever their authors post, so they always feel more urgent than the
 backlog and crowd it out.
@@ -11,12 +11,12 @@ backlog and crowd it out.
 **Fic-Beacon** makes itself the *single* batched reading queue for both. Everything is a Calibre
 EPUB: the backlog is imported, and ongoing serials are downloaded into Calibre by **FanFicFare**
 (their RSS feed used only as a *trigger* that new chapters exist). It re-serializes all of it into
-synthetic *ongoing* RSS/Atom feeds, grouped into **channels**, delivered only at scheduled drop
-times, and weighted so nothing gets implicit priority. Each drop carries inline feedback links so
-the reader can steer attention, pull an extra chapter on demand, up/down-vote, or drop a source.
+synthetic *ongoing* RSS/Atom feeds, grouped into **channels**, delivered only at scheduled release
+times, and weighted so nothing gets implicit priority. Each release carries inline feedback links so
+the reader can steer attention, pull an extra chapter on demand, up/down-vote, or drop (cancel) a source.
 
 Three goals this serves directly:
-- **(a)** ongoing updates arrive only at drop times (morning/evening), not as mid-day distractions;
+- **(a)** ongoing updates arrive only at release times (morning/evening), not as mid-day distractions;
 - **(b)** ongoings are votable and droppable, their weight tunable *relative to* the backlog;
 - **(c)** ongoings no longer outrank the completed backlog — the entire reason for the project.
 
@@ -46,10 +46,10 @@ SQLite, Jinja + HTMX.
 | Feed shape | **One feed per slot** (`/feed/{channel_slug}/{feed_key}`): numbered slots `1..N`. A slot is a feed *bucket* — it carries the one backlog book streaming in that slot **plus** the tracked stories pinned to it, interleaved. No all-channels union feed — subscribe per channel/slot. |
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
 | Sources | One unified model: every source is a Calibre EPUB (`book.calibre_id`). A `tracked` flag (no `kind`) marks the ones that auto-update; `feed_url?` is an optional RSS trigger and `source_url` doubles as the FanFicFare fetch URL. All are weighted, votable, droppable, and live in a channel. |
-| Tracked stories | RSS = **trigger only** (feed bodies are never read). Pre-drop, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
+| Tracked stories | RSS = **trigger only** (feed bodies are never read). Just before each release, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
 | Stubs | Site removed chapters → the fetcher archives the old EPUB, overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
 | Budgeting | **Per-release budget, split across channels by weight, then a per-channel slot round-robin.** A schedule's budget is the whole release's allowance, divided among the channels that have content in proportion to `weight`. The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
-| Feedback | Tokenized GET links per drop: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
+| Feedback | Tokenized GET links per released item: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
 | Reader compatibility | Standards-compliant RSS 2.0 + Atom; verified in ≥2 readers + W3C Feed Validator. |
 | Permalinks | Always our own reader page `/read/{slug}`, never the story site. `guid` always per-drop and independent of link. |
@@ -143,7 +143,7 @@ C4Component
   Rel(websub, db, "Subscriptions")
   Rel(websub, reader_app, "Push Atom")
   Rel(scheduler, planner, "Release cycle per schedule")
-  Rel(scheduler, poller, "Poll pre-drop")
+  Rel(scheduler, poller, "Poll before each release")
   Rel(adapter, calibre, "Read metadata.db + EPUBs", "RO")
 ```
 
@@ -176,7 +176,8 @@ C4Component
   `extra_boost_step`, `extra_per_channel_per_cycle`, `weight_skip_floor`, `unacked_penalty_floor`, `tracked_default_weight`, `feed_secret`. (Budgets and cron live on
   `schedule` rows, slots and weight per channel, not here.)
 - **`app_state`** — key/value runtime store (`key`, `value`, `updated_at`); holds
-  `last_release_run_at` / `last_poll_run_at` for the dashboard. A standalone table (schema is Alembic-owned; see `app/database.py:run_migrations`).
+  `last_release_run_at` / `last_poll_run_at` / `last_run_result:*` (each run's outcome), the skip log,
+  per-source notes and undo positions for the dashboard. A standalone table (schema is Alembic-owned; see `app/database.py:run_migrations`).
 
 ## 6. Core Flows
 
@@ -199,7 +200,7 @@ C4Component
    occupied slots; on each slot's turn a weight-proportional random source in that slot drops its
    next whole unit if `p = clamp((B − used)/w, 0, 1)` passes (scaled down by the weight fade below
    `weight_skip_floor` and by the transient unread-streak ramp — soft read-gating). An idle slot passes its turn, spilling its budget to
-   slots with content — so drops spread across the slot feeds (diversity) and weight throttles a
+   slots with content — so releases spread across the slot feeds (diversity) and weight throttles a
    source's share *within* its slot. Excluded units roll over whole; never split. Then
    `budget_credit += share − used`. (Cooldowns are ticked at the *start* of the channel's turn.)
 4. Materialize a `drop` per emitted unit (`feed_key` = source's pinned slot); advance cursors;
@@ -208,7 +209,7 @@ C4Component
    units rolled over are recorded in the per-broadcast skip log (`app_state`).
 5. WebSub push fires for each affected slot-feed (subscribers matched with or without the `?token=`).
 
-### 6.2 Update detection & fetch (pre-drop submit, async; daily sweep for feed-less)
+### 6.2 Update detection & fetch (submitted just before a release, async; daily sweep for feed-less)
 The poller reads each tracked, feed-backed source's `feed_url` and compares the newest entry GUID
 to `last_seen_guid`. Changed sources are **batched** and handed to `scheduler.submit_and_track`,
 which POSTs all their URLs (plus the Calibre entry each already reads, `calibre_ids`) to the fetcher in
@@ -226,14 +227,14 @@ build a piecewise `label_map` (labels exact past any gap, composing across repea
 remap `cursor_chapter_index`/`cursor_floor` to the first surviving chapter — preserving unread
 chapters. It falls back to bumping the scalar `chapter_label_offset` by `old − new` (cursor/floor →
 `new`) only when a body carries no per-chapter URLs.
-The triggering broadcast does **not** wait; fetched chapters drop on the **next** cycle. Tracked
+The triggering broadcast does **not** wait; fetched chapters are released in the **next** cycle. Tracked
 stories with **no** feed (auth-gated, fetchable only via `personal.ini`) are refreshed by a **daily
 sweep**. No feed body is ever stored — RSS is purely a trigger.
 
 Both the poller and the sweep **skip** tracked stories whose Calibre **`#status`** is done
 (Completed / Abandoned / Published — see `app/calibre/status.py`, read live via
 `CalibreAdapter.status_map`): their EPUBs are already complete, so re-fetching just burns fetcher
-time; already-downloaded chapters still drop through the cursor path.
+time; already-downloaded chapters are still released through the cursor path.
 
 ### 6.3 Library import — routed by `#status` / `#read`
 The Add page's single **Add** button (`POST /admin/add`, alongside pasted story URLs) routes each selected Calibre

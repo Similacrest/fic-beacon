@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 import re
 import secrets
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -71,7 +71,6 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     schedules = db.query(Schedule).order_by(Schedule.sort_order, Schedule.id).all()
     next_times = scheduler.next_release_times()
     status = {
-        "last_drop": get_run(db, LAST_RELEASE_RUN),
         "last_poll": get_run(db, LAST_POLL_RUN),
         "next_sweep": scheduler.next_sweep_time(),
     }
@@ -92,7 +91,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         except json.JSONDecodeError:
             runs[op] = None
     failed = next((r for r in runs.values() if r and r.get("error")), None)
-    last_release_at = status["last_drop"]
+    last_release_at = get_run(db, LAST_RELEASE_RUN)
     if runs["release"] and runs["release"].get("at"):  # the run record is stamped when it finished
         try:
             last_release_at = datetime.fromisoformat(runs["release"]["at"])
@@ -175,7 +174,7 @@ def _build_slot_view(db, channels, active, queued, last_skips=(), book_notes=Non
 
     last_skips = list(last_skips)
     book_notes = book_notes or {}
-    last_drop_at = dict(
+    last_released_at = dict(
         db.query(Drop.book_id, func.max(Drop.published_at)).group_by(Drop.book_id).all()
     )
 
@@ -200,7 +199,7 @@ def _build_slot_view(db, channels, active, queued, last_skips=(), book_notes=Non
             "why": why,
             "flags": " ".join(flags),
             "pending": pending_chapters(book),
-            "last_drop": last_drop_at.get(book.id),
+            "last_released": last_released_at.get(book.id),
         }
 
     view = []
@@ -328,7 +327,7 @@ def set_slot(
     next: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Manually pin an active source to a feed slot (drag-and-drop on the dashboard).
+    """Manually pin an active source to a feed slot (the picker on the story page).
 
     Slots are per-channel; this never changes a book's channel. Backlog (untracked) books
     are one-per-slot, so moving one onto an occupied slot **swaps** the two. Tracked stories
@@ -419,8 +418,15 @@ def add_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     """One place to add sources: paste story URLs and/or pick books already in Calibre."""
     adapter = CalibreAdapter(settings.calibre_library_path)
     calibre_books = adapter.list_books()
-    existing_ids = {b.calibre_id for b in db.query(Book.calibre_id).all()}
-    importable = [b for b in calibre_books if b.calibre_id not in existing_ids]
+    from app.ongoing.story_key import story_key
+    sources = db.query(Book.calibre_id, Book.source_url).all()
+    existing_ids = {cid for cid, _ in sources if cid is not None}
+    existing_keys = {k for _, url in sources if url and (k := story_key(url))}
+    importable = [
+        b for b in calibre_books
+        if b.calibre_id not in existing_ids
+        and not (b.source_url and story_key(b.source_url) in existing_keys)
+    ]
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.name).all()
     # Each book is routed by its #status (see classify_status); expose the verdict so the row
     # can show whether it will be tracked or queued.
@@ -454,9 +460,9 @@ def add_sources(
     channel chosen, Calibre books by genre and URLs into General. Redirects to the Add page with
     the outcome of every item."""
     from app import scheduler
+    from app.ongoing.add import add_tracked_story, existing_for_url, valid_channel_id
     from app.ongoing.feed_url import is_fetchable_url
     from app.planner.planner import assign_channel_slots
-    from app.routers.ongoing import _add_tracked_story, _valid_channel_id, existing_for_url
 
     lines = [ln.strip() for ln in urls.splitlines() if ln.strip()]
     if not lines and not calibre_ids:
@@ -465,18 +471,18 @@ def add_sources(
     added: list[Book] = []
     dupes: list[Book] = []
     invalid = 0
-    url_channel = _valid_channel_id(db, channel_id)
+    url_channel = valid_channel_id(db, channel_id)
     for line in lines:
         if not is_fetchable_url(line):
             invalid += 1
             continue
-        book = _add_tracked_story(db, line, "", url_channel)
+        book = add_tracked_story(db, line, "", url_channel)
         if book is not None:
             added.append(book)
-        else:
-            prior = existing_for_url(db, line)
-            if prior is not None and prior not in dupes:
-                dupes.append(prior)
+            continue
+        prior = existing_for_url(db, line)  # already registered (maybe earlier in this same paste)
+        if prior is not None and prior not in added and prior not in dupes:
+            dupes.append(prior)
     if lines:
         assign_channel_slots(db, url_channel)
     imported, present, missing = import_library_books(db, calibre_ids, channel_id) if calibre_ids else ([], [], 0)
@@ -501,14 +507,8 @@ def add_sources(
 
 @router.get("/library", response_class=HTMLResponse)
 def library_redirect() -> RedirectResponse:
-    """The Library page became part of Add."""
+    """Old bookmark: the Library page is now part of Add."""
     return RedirectResponse(url="/admin/add", status_code=303)
-
-
-# Backward-compatible redirect for old /admin/import bookmarks.
-@router.get("/import", response_class=HTMLResponse)
-def import_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/admin/add", status_code=301)
 
 
 def _epub_chapter_count(adapter: CalibreAdapter, cbook) -> int:
@@ -546,6 +546,7 @@ def import_library_books(
     cfg = db.get(Config, 1)
     tracked_weight = cfg.tracked_default_weight if cfg else 2.0
     channels = db.query(Channel).order_by(Channel.queue_order, Channel.id).all() if not channel_id else []
+    from app.ongoing.add import existing_for_url
     existing = {b.calibre_id: b for b in db.query(Book).filter(Book.calibre_id.isnot(None))}
     max_pos = db.query(func.max(Book.queue_position)).scalar() or 0
     touched_channels: set[int] = set()
@@ -559,6 +560,10 @@ def import_library_books(
         cbook = adapter.get_book(cid)
         if cbook is None:
             missing += 1
+            continue
+        same_story = existing_for_url(db, cbook.source_url) if cbook.source_url else None
+        if same_story is not None:  # e.g. added by URL and not downloaded yet — never a second row
+            present.append(same_story)
             continue
         if channel_id:
             target_id = channel_id
@@ -602,18 +607,6 @@ def import_library_books(
         assign_channel_slots(db, tid)
     db.flush()
     return added, present, missing
-
-
-@router.post("/library/add")
-def add_from_library(
-    calibre_ids: list[int] = Form(...),
-    channel_id: int | None = Form(None),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    """Add selected Calibre books (compat endpoint — the Add page posts to `/admin/add`)."""
-    import_library_books(db, calibre_ids, channel_id)
-    db.commit()
-    return RedirectResponse(url="/admin/add", status_code=303)
 
 
 @router.post("/books/{book_id}/track")
@@ -977,11 +970,25 @@ def _drop(db: Session, book: Book) -> bool:
 @router.post("/books/{book_id}/drop")
 def drop_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     book = db.get(Book, book_id)
-    if book:
-        book.status = BookStatus.dropped
-        book.slot_index = None
-        from app.planner.planner import _refill_book_channel
-        _refill_book_channel(db, book)
+    if book is not None and _drop(db, book):
+        db.commit()
+    return _back(next)
+
+
+def _can_fetch(book: Book) -> bool:
+    """A tracked, live story with no download already in flight."""
+    return (book.tracked and book.status in (BookStatus.active, BookStatus.queued)
+            and not (book.last_fetch_status or "").startswith("fetching"))
+
+
+@router.post("/books/{book_id}/fetch")
+def fetch_book(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
+    """Queue an async download of new chapters for one tracked story. Returns at once; the story's
+    status shows `fetching…` until the fetcher's result is folded in."""
+    from app import scheduler
+    book = db.get(Book, book_id)
+    if book is not None and _can_fetch(book):
+        scheduler.submit_and_track(db, [book])
         db.commit()
     return _back(next)
 
@@ -1024,8 +1031,7 @@ def batch_books(
             if ok:
                 resume_book(db, book)
         elif action == "fetch":
-            ok = (book.tracked and book.status in (BookStatus.active, BookStatus.queued)
-                  and not (book.last_fetch_status or "").startswith("fetching"))
+            ok = _can_fetch(book)
             if ok:
                 to_fetch.append(book)
         elif action == "move":

@@ -16,7 +16,7 @@ from app.fetch.client import apply_result
 from app.models import Book, BookStatus, Channel
 from app.ongoing import poller
 from app.ongoing.story_key import normalize_story_url, story_key
-from app.routers.ongoing import _add_tracked_story
+from app.ongoing.add import add_tracked_story
 from app.state import FETCH_JOB_PREFIX, TRIGGER_RETRY_PREFIX, get_value, set_value
 from tests.make_epub import make_epub
 
@@ -72,7 +72,7 @@ class TestTitleResolvesAfterFirstDownload:
     def test_title_from_calibre_even_though_canonical_url_was_adopted(self, in_memory_db, fold):
         # Paste /s/123; FanFicFare canonicalises to /s/123/1/Title. The adopted source_url no
         # longer equals the placeholder title, which used to make the title stick as the URL.
-        book = _add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "",
+        book = add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "",
                                   _channel_id(in_memory_db))
         assert book.title == "https://www.fanfiction.net/s/13051824"
         cbook = MagicMock(title="New Blood", author="artemisgirl")
@@ -87,7 +87,7 @@ class TestTitleResolvesAfterFirstDownload:
         assert book.author == "artemisgirl"
 
     def test_user_supplied_name_is_kept(self, in_memory_db, fold):
-        book = _add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "My Name",
+        book = add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "My Name",
                                   _channel_id(in_memory_db))
         cbook = MagicMock(title="New Blood", author="artemisgirl")
         with patch("app.calibre.adapter.CalibreAdapter.get_book", return_value=cbook):
@@ -138,17 +138,17 @@ class TestStoryIdentity:
 
     def test_same_story_other_spelling_is_a_duplicate(self, in_memory_db):
         cid = _channel_id(in_memory_db)
-        first = _add_tracked_story(in_memory_db, "https://www.royalroad.com/fiction/186926", "", cid)
+        first = add_tracked_story(in_memory_db, "https://www.royalroad.com/fiction/186926", "", cid)
         assert first is not None
         # pasted with the slug, or after the fetcher canonicalised an FFN url
-        assert _add_tracked_story(
+        assert add_tracked_story(
             in_memory_db, "https://www.royalroad.com/fiction/186926/leave-luck/", "", cid) is None
-        ffn = _add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824/1/New-Blood", "", cid)
+        ffn = add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824/1/New-Blood", "", cid)
         assert ffn is not None
-        assert _add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "", cid) is None
+        assert add_tracked_story(in_memory_db, "https://www.fanfiction.net/s/13051824", "", cid) is None
 
     def test_added_url_is_normalised_and_feed_inferred(self, in_memory_db):
-        b = _add_tracked_story(
+        b = add_tracked_story(
             in_memory_db, "https://forums.spacebattles.com/threads/crusader.1234/reader/", "",
             _channel_id(in_memory_db))
         assert b.source_url == "https://forums.spacebattles.com/threads/crusader.1234/"

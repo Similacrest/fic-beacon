@@ -93,7 +93,7 @@ class TestExplainLastRelease:
 
     def test_unread_backoff_since_read(self):
         # The reason is the recorded one, even though the streak has since cleared.
-        assert "Slowed by unread drops" in explain(_b(), _held(penalty=0.6)).text
+        assert "Slowed by unread releases" in explain(_b(), _held(penalty=0.6)).text
 
     def test_weight_fade(self):
         assert "Low weight" in explain(_b(), _held(fade=0.5)).text
@@ -199,6 +199,6 @@ class TestDashboardRendersWhy:
             app.dependency_overrides.pop(get_db, None)
         assert page.status_code == 200
         assert "Saving up for 9,000 words" in page.text
-        assert f'data-book-id="{a.id}"' in page.text  # still draggable
+        assert f'href="/admin/books/{a.id}"' in page.text
         assert "Queued #1" in page.text and q.title in page.text
         assert "Next broadcast — waiting" not in page.text

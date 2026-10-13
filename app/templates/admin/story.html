@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ book.title }} — Fic Beacon{% endblock %}
 {% block content %}
-{# One place per story (S6): status + why, every control, and history. Every action posts a
-   hidden `next` so it comes back here; plain forms, no JS needed (inputs also auto-save via HTMX). #}
+{# One place per story: status, every control, history. Actions post a hidden `next` so they come
+   back here; plain forms, no JS needed (number inputs also auto-save via HTMX). #}
 {% macro back() %}<input type="hidden" name="next" value="{{ here }}">{% endmacro %}
 {% set active = book.status.value == 'active' %}
 {% set queued = book.status.value == 'queued' %}
@@ -27,7 +27,7 @@
     <button class="btn btn-lg">{{ '▶ Resume' if book.paused else '⏸ Pause' }}</button>
   </form>
   {% if book.tracked %}
-  <form method="post" action="/admin/ongoing/{{ book.id }}/fetch-now">{{ back() }}
+  <form method="post" action="/admin/books/{{ book.id }}/fetch">{{ back() }}
     <button class="btn btn-lg" title="Check the site for new chapters now">⤓ Fetch now</button>
   </form>
   {% endif %}
@@ -51,7 +51,7 @@
   {% endif %}
   {% if unread and not gone %}
   <form method="post" action="/admin/books/{{ book.id }}/mark-read">{{ back() }}
-    <button class="btn btn-lg" title="Acknowledge every unread drop — lifts the unread slowdown; weight untouched">✓ Mark {{ unread }} read</button>
+    <button class="btn btn-lg" title="Mark every unread release as read. Lifts the unread slowdown; weight is untouched.">✓ Mark {{ unread }} read</button>
   </form>
   {% endif %}
 </div>
@@ -61,7 +61,7 @@
     <h2>Reading</h2>
     <form method="post" action="/admin/books/{{ book.id }}/set-cursor" class="inline-row"
           title="{% if book.cursor_floor %}Can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">{{ back() }}
-      <label for="cursor">Next chapter to drop</label>
+      <label for="cursor">Next chapter to release</label>
       <input id="cursor" type="number" name="chapter_index" value="{{ book.cursor_chapter_index }}"
              min="{{ book.cursor_floor }}" {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
              hx-post="/admin/books/{{ book.id }}/set-cursor" hx-trigger="change delay:500ms" hx-swap="none"
@@ -85,7 +85,7 @@
         <button class="btn" title="Read the whole work from chapter 1">⏮ From the start</button>
       </form>
       <form method="post" action="/admin/books/{{ book.id }}/cursor-latest">{{ back() }}
-        <button class="btn" title="Skip to the end — only new chapters drop">⏭ Only new chapters</button>
+        <button class="btn" title="Skip to the end — only chapters published from now on are released">⏭ Only new chapters</button>
       </form>
     </div>
   </section>
@@ -99,15 +99,9 @@
              class="autosave" style="width:5.5em">
     </form>
     <p class="muted" style="font-size:.85em; margin:.2em 0">
-      Higher weight wins more of its slot's turns. 👍 {{ book.thumbs_up }} · 👎 {{ book.thumbs_down }}
+      Higher weight is picked more often within its slot. 👍 {{ book.thumbs_up }} · 👎 {{ book.thumbs_down }}
       {% if book.cooldown_remaining %} · cooling down{% endif %}
     </p>
-    <form method="post" action="/admin/books/{{ book.id }}/track" class="inline-row">{{ back() }}
-      <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
-      <button class="btn" title="{{ 'Stop checking for new chapters; it becomes a finite backlog book' if book.tracked else 'Check for new chapters and keep it streaming' }}">
-        {{ '📴 Stop tracking updates' if book.tracked else '📡 Track updates' }}
-      </button>
-    </form>
   </section>
 
   {% if not gone %}
@@ -158,11 +152,19 @@
       <span class="muted">Calibre id</span><span>{{ book.calibre_id if book.calibre_id is not none else 'not downloaded yet' }}</span>
       <span class="muted">Added</span><span title="{{ book.added_at|stamp }}">{{ book.added_at|ago }}</span>
     </div>
+    {% if not gone %}
+    <form method="post" action="/admin/books/{{ book.id }}/track" class="inline-row">{{ back() }}
+      <input type="hidden" name="tracked" value="{{ 0 if book.tracked else 1 }}">
+      <button class="btn" title="{{ 'Stop checking for new chapters; it becomes a finite backlog book' if book.tracked else 'Check for new chapters and keep it streaming' }}">
+        {{ '📴 Stop tracking updates' if book.tracked else '📡 Track updates' }}
+      </button>
+    </form>
+    {% endif %}
   </section>
 </div>
 
 <section class="card">
-  <h2>Recent drops</h2>
+  <h2>Recent releases</h2>
   {% if drops %}
   <table style="font-size:.9em">
     <tbody>
@@ -176,7 +178,7 @@
     {% endfor %}
     </tbody>
   </table>
-  {% else %}<p class="muted">Nothing dropped yet.</p>{% endif %}
+  {% else %}<p class="muted">Nothing released yet.</p>{% endif %}
 
   {% if votes %}
   <h3 style="font-size:1em; margin:1em 0 .3em">Your feedback</h3>
