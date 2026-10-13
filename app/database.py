@@ -16,15 +16,16 @@ logger = logging.getLogger(__name__)
 def delete_book_cascade(session: Session, book: Book) -> None:
     """Delete a source and everything that hangs off it (drops → feedback events), FK-safe.
 
-    Shared by the admin "clear dropped" sweep and the tracked-story delete so the deletion
-    order (feedback_event before drops before book) lives in one place.
+    Shared by "Clear dropped" and the story page's "Remove permanently" so the deletion order
+    (feedback_event before drops before book) lives in one place.
     """
     from app.models import AppState
-    from app.state import BOOK_NOTE_PREFIX, TRIGGER_RETRY_PREFIX
+    from app.state import BOOK_NOTE_PREFIX, CURSOR_UNDO_PREFIX, TRIGGER_RETRY_PREFIX
     # Per-book runtime keys must not outlive the row (they are keyed by id, which is not reused
     # by SQLite's autoincrement, but a leftover is just dead weight on every dashboard load).
     session.query(AppState).filter(AppState.key.in_(
-        [f"{BOOK_NOTE_PREFIX}{book.id}", f"{TRIGGER_RETRY_PREFIX}{book.id}"]
+        [f"{BOOK_NOTE_PREFIX}{book.id}", f"{TRIGGER_RETRY_PREFIX}{book.id}",
+         f"{CURSOR_UNDO_PREFIX}{book.id}"]
     )).delete(synchronize_session=False)
     drop_ids = [d.id for d in session.query(Drop.id).filter(Drop.book_id == book.id)]
     if drop_ids:

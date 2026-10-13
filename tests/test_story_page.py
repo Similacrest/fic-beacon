@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models import BookStatus, Channel, Drop, FeedbackAction, FeedbackEvent
+from app.models import Book, BookStatus, Channel, Drop, FeedbackAction, FeedbackEvent
 
 
 @pytest.fixture
@@ -463,3 +463,41 @@ class TestFetchRouteAndWording:
                        "Tracked Stories"):
             assert phrase not in visible, phrase
         assert "Recent releases" in visible and "last release" in visible
+
+
+class TestRemovePermanently:
+    def test_dropped_story_and_its_history_are_removed_but_others_stay(self, ctx):
+        from app.models import FeedbackEvent
+        from app.state import CURSOR_UNDO_PREFIX, get_value, set_value
+        client, db = ctx
+        gone = _book(db, "Gone", calibre_id=1, tracked=False, status=BookStatus.dropped)
+        keep = _book(db, "Keep", calibre_id=2, tracked=False, slot_index=1)
+        TestUndoAndRestore()._drops(db, gone, 2, acked=True)
+        d = db.query(Drop).filter(Drop.book_id == gone.id).first()
+        db.add(FeedbackEvent(token="t", book_id=gone.id, drop_id=d.id, action=FeedbackAction.up))
+        set_value(db, f"{CURSOR_UNDO_PREFIX}{gone.id}", "{}")
+        db.commit()
+        page = client.get(f"/admin/books/{gone.id}").text
+        assert "🗑 Remove permanently" in page and "Calibre library is not touched" in page
+        r = client.post(f"/admin/books/{gone.id}/delete", follow_redirects=False)
+        assert r.headers["location"] == "/admin/?done=delete&n=1&skipped=0"
+        assert db.get(Book, gone.id) is None and db.get(Book, keep.id) is not None
+        assert db.query(Drop).filter(Drop.book_id == gone.id).count() == 0
+        assert db.query(FeedbackEvent).filter(FeedbackEvent.book_id == gone.id).count() == 0
+        assert get_value(db, f"{CURSOR_UNDO_PREFIX}{gone.id}") is None
+        assert client.get(f"/admin/books/{gone.id}").status_code == 404
+        assert "Removed 1 story" in " ".join(client.get(r.headers["location"]).text.split())
+
+    def test_live_story_cannot_be_deleted_in_one_click(self, ctx):
+        client, db = ctx
+        live = _book(db, "Live", calibre_id=1, tracked=True, slot_index=1)
+        assert "Remove permanently" not in client.get(f"/admin/books/{live.id}").text
+        client.post(f"/admin/books/{live.id}/delete")
+        assert db.get(Book, live.id) is not None
+
+    def test_finished_story_can_be_removed(self, ctx):
+        client, db = ctx
+        done = _book(db, "Done", calibre_id=1, tracked=False, status=BookStatus.completed)
+        assert "Remove permanently" in client.get(f"/admin/books/{done.id}").text
+        client.post(f"/admin/books/{done.id}/delete")
+        assert db.get(Book, done.id) is None

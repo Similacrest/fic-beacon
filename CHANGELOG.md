@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-10-13
+
+### Added
+- **🗑 Remove permanently** on the story page of a dropped or finished story: deletes that one story
+  and its release history and feedback from Fic-Beacon (Calibre is untouched; the book shows up on
+  the Add page again). A live story has to be dropped first. *Clear dropped* still removes all of
+  them at once.
+
+### Fixed
+- Removing a story now also clears its saved cursor-undo position.
+
 ## [0.22.0] — 2026-10-13
 
 A clean-up pass over the admin UI built in 0.17–0.21: fixes, removals of what the user stories no

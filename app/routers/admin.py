@@ -1070,9 +1070,21 @@ def resume_book_route(book_id: int, next: str | None = Form(None), db: Session =
     return _back(next)
 
 
+@router.post("/books/{book_id}/delete")
+def delete_book(book_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    """Permanently remove one finished or dropped source and its release history from Fic-Beacon
+    (never from Calibre). A live source must be dropped first, so one click can't erase it. It goes
+    to the dashboard: the story page no longer exists."""
+    book = db.get(Book, book_id)
+    if book is not None and book.status in (BookStatus.dropped, BookStatus.completed):
+        delete_book_cascade(db, book)
+        db.commit()
+    return RedirectResponse(url="/admin/?done=delete&n=1&skipped=0", status_code=303)
+
+
 @router.post("/dropped/clear")
 def clear_dropped(db: Session = Depends(get_db)) -> RedirectResponse:
-    """Permanently remove all dropped sources (and their drops/feedback)."""
+    """Permanently remove all dropped sources (and their release history/feedback)."""
     dropped = db.query(Book).filter(Book.status == BookStatus.dropped).all()
     for book in dropped:
         delete_book_cascade(db, book)

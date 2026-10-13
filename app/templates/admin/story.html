@@ -49,6 +49,12 @@
     <button class="btn btn-lg btn-primary">↺ Read again</button>
   </form>
   {% endif %}
+  {% if gone %}
+  <form method="post" action="/admin/books/{{ book.id }}/delete"
+        onsubmit="return confirm('Remove this story and its release history from Fic-Beacon for good? Your Calibre library is not touched.')">
+    <button class="btn btn-lg btn-danger" title="Delete it and its release history from Fic-Beacon (not from Calibre)">🗑 Remove permanently</button>
+  </form>
+  {% endif %}
   {% if unread and not gone %}
   <form method="post" action="/admin/books/{{ book.id }}/mark-read">{{ back() }}
     <button class="btn btn-lg" title="Mark every unread release as read. Lifts the unread slowdown; weight is untouched.">✓ Mark {{ unread }} read</button>

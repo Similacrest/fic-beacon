@@ -376,7 +376,9 @@ only in tooltips. Times are relative (`|ago`) with the full timestamp in `title=
   (`app_state[cursor_undo:{id}]`; offered only while the cursor is still where the move left it, so
   it can't re-send chapters a release has since delivered), **↺ Bring back** for a dropped source
   (`POST …/restore`: same chapter, weight and votes; a weight of 0 resets to 1) vs **⏮ Start over** /
-  **↺ Read again** (`…/requeue`, resets).
+  **↺ Read again** (`…/requeue`, resets). **🗑 Remove permanently** (`POST …/delete`, dropped or
+  finished stories only, so a live one needs a ❌ Drop first) deletes the source and its release
+  history from Fic-Beacon — never from Calibre — and sends you to the dashboard.
 - Book action routes take an optional `next` form field (`admin._back`: only `/admin/…` paths, no
   `//`) and redirect there, else to the dashboard; inline auto-saves answer HTMX with 204.
 

@@ -28,10 +28,10 @@
 {% endif %}
 
 {% set done = request.query_params.get('done') %}
-{% if done in ['pause', 'resume', 'fetch', 'move', 'drop'] %}
+{% if done in ['pause', 'resume', 'fetch', 'move', 'drop', 'delete'] %}
 {% set n = request.query_params.get('n', '0') %}{% set sk = request.query_params.get('skipped', '0') %}
 <div class="flash" role="status">
-  ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'drop': 'Dropped'}[done] }}
+  ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'drop': 'Dropped', 'delete': 'Removed'}[done] }}
   {{ n if n.isdigit() else 0 }} stor{{ 'y' if n == '1' else 'ies' }}{% if sk.isdigit() and sk != '0' %} · {{ sk }} skipped{% endif %}
 </div>
 {% endif %}
