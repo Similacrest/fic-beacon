@@ -8,7 +8,8 @@ Recurring jobs:
   - release_cycle:{id}: fires on that schedule's cron. Polls tracked feeds first (submitting async fetches
     for any with new chapters), then materialises chapter drops from the *current* EPUB
     state. It does NOT wait for fetches — a 15-minute FanFicFare run can't block the
-    broadcast, so freshly fetched chapters land in the next cycle.
+    broadcast, so freshly fetched chapters land in the next cycle. While releases are paused,
+    it does nothing; the one firing marked "skip next release" only checks feeds (_release_hold).
   - feedless_sweep: once a day, fetches tracked stories that have no RSS feed (auth-gated).
 
 Manual triggers (admin dashboard buttons) run the release cycle / feed check **off the
@@ -474,30 +475,38 @@ def _execute(op: str, fn) -> None:
         _cycle_lock.release()
 
 
-def _run_release_cycle(schedule_id: int | None = None) -> dict:
+def _check_feeds_for_cycle(session) -> tuple[int, int]:
+    """The first half of every release cycle: un-stick lost fetches, poll the trigger feeds and
+    queue downloads. Returns (feeds changed, downloads queued) and commits the submits."""
     from app import progress
     from app.ongoing.poller import fetch_pending, poll_all_feeds
+    progress.set_stage("Cleaning up stale downloads…")
+    sweep_stale_fetch_jobs(session)  # un-stick anything a lost poll left at `fetching…`
+    if ensure_fetch_polls(session):  # …and re-poll a live job whose poll went missing
+        logger.warning("Re-registered orphaned fetch poll(s)")
+    # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
+    # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
+    progress.set_stage("Checking feeds for new chapters…")
+    feeds_changed = poll_all_feeds(session)
+    # Backstop: (re)submit initial downloads for any tracked book still missing its EPUB —
+    # self-heals a story whose one-shot add-time fetch was lost (restart/race) or whose feed
+    # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
+    # any submit land next cycle.
+    progress.set_stage("Queuing downloads…")
+    downloads = fetch_pending(session)
+    # Commit the submitted fetches now, not after the (possibly minutes-long, cold-cache) drop
+    # planning: their polls start on commit, and the open write transaction would otherwise
+    # also block every poll's own commit until the cycle ends.
+    session.commit()
+    return feeds_changed or 0, downloads or 0
+
+
+def _run_release_cycle(schedule_id: int | None = None) -> dict:
+    from app import progress
     from app.planner.planner import resolve_schedule, run_release_cycle
     from app.websub.publisher import publish_in_background
     with db_session() as session:
-        progress.set_stage("Cleaning up stale downloads…")
-        sweep_stale_fetch_jobs(session)  # un-stick anything a lost poll left at `fetching…`
-        if ensure_fetch_polls(session):  # …and re-poll a live job whose poll went missing
-            logger.warning("Re-registered orphaned fetch poll(s)")
-        # Poll tracked feeds first: any with a new chapter has an async fetch submitted now.
-        # We do NOT wait for it — broadcast the current EPUB state; new chapters land next cycle.
-        progress.set_stage("Checking feeds for new chapters…")
-        feeds_changed = poll_all_feeds(session)
-        # Backstop: (re)submit initial downloads for any tracked book still missing its EPUB —
-        # self-heals a story whose one-shot add-time fetch was lost (restart/race) or whose feed
-        # first-sight was seeded without downloading. Skips in-flight fetches; new chapters from
-        # any submit land next cycle.
-        progress.set_stage("Queuing downloads…")
-        downloads = fetch_pending(session)
-        # Commit the submitted fetches now, not after the (possibly minutes-long, cold-cache) drop
-        # planning: their polls start on commit, and the open write transaction would otherwise
-        # also block every poll's own commit until the cycle ends.
-        session.commit()
+        feeds_changed, downloads = _check_feeds_for_cycle(session)
         progress.set_stage("Planning releases…")
         schedule = resolve_schedule(session, schedule_id)
         schedule_name = schedule.name
@@ -510,8 +519,8 @@ def _run_release_cycle(schedule_id: int | None = None) -> dict:
             "drops": len(drops),
             "words": sum(d.word_count for d in drops),
             "channels": len({d.channel_id for d in drops}),
-            "feeds_changed": feeds_changed or 0,
-            "downloads": downloads or 0,
+            "feeds_changed": feeds_changed,
+            "downloads": downloads,
         }
         publish_in_background(drops)
     logger.info("Release cycle complete — %d drop(s) created.", len(drops))
@@ -530,9 +539,113 @@ def _run_feed_check() -> dict:
     return {"feeds_changed": changed or 0}
 
 
+def _run_held_cycle(schedule_id: int | None, hold: str) -> dict:
+    """A scheduled firing that is on hold (`hold`: "paused" | "skipped"). Nothing is released — no
+    drops, no budget credit carried, no cooldown ticked. A skipped firing still checks feeds and
+    queues downloads (the next release has them); while paused nothing is fetched at all."""
+    from app.models import Schedule
+    with db_session() as session:
+        feeds_changed, downloads = (0, 0) if hold == "paused" else _check_feeds_for_cycle(session)
+        schedule = session.get(Schedule, schedule_id) if schedule_id is not None else None
+        name = schedule.name if schedule is not None else None
+    logger.info("Release %s (%s) — nothing released.", hold, name)
+    return {"schedule": name, "held": hold, "chapters": 0, "drops": 0, "words": 0, "channels": 0,
+            "feeds_changed": feeds_changed, "downloads": downloads}
+
+
 def _scheduled_release_cycle(schedule_id: int | None = None) -> None:
-    """Cron entry point — the guarded release cycle (shares the manual-trigger lock)."""
+    """Cron entry point — the guarded release cycle (shares the manual-trigger lock), unless
+    releases are paused or this firing was skipped. The skip is used up before the lock is taken,
+    so a firing that loses the lock to a manual run still counts as the skipped one."""
+    with db_session() as session:
+        hold = _release_hold(session, schedule_id)
+        session.commit()
+    if hold:
+        _execute("release", lambda: _run_held_cycle(schedule_id, hold))
+    else:
+        _execute("release", lambda: _run_release_cycle(schedule_id))
+
+
+def _manual_release_cycle(schedule_id: int | None = None) -> None:
+    """▶ Run release entry point: never held — a manual run is an explicit request to release."""
     _execute("release", lambda: _run_release_cycle(schedule_id))
+
+
+# ── Release holds: ⏸ pause all scheduled releases / ⏭ skip the next one ───────────────────
+# Both are app_state flags read when a cron fires (see _scheduled_release_cycle). A skip names the
+# exact firing (schedule id + fire time) it was set against.
+_SKIP_MATCH_EARLY = timedelta(minutes=2)  # a firing this close before the target is the target
+_SKIP_STALE_AFTER = timedelta(hours=1)    # target long past and never fired (app was down) → void
+
+
+def skip_target(session) -> dict | None:
+    """The skipped firing as {"schedule_id", "at" (tz-aware)}, or None (none set, or stale)."""
+    from app.state import SKIP_NEXT_RELEASE, get_value
+    try:
+        raw = json.loads(get_value(session, SKIP_NEXT_RELEASE) or "null")
+        at = datetime.fromisoformat(raw["at"])
+        schedule_id = int(raw["schedule_id"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if _now() - at > _SKIP_STALE_AFTER:
+        return None
+    return {"schedule_id": schedule_id, "at": at}
+
+
+def skip_next_release(session) -> dict | None:
+    """Skip the next scheduled firing (the earliest across enabled schedules). Returns the target,
+    or None when nothing is scheduled. Caller commits."""
+    from app.state import SKIP_NEXT_RELEASE, set_value
+    times = {sid: t for sid, t in next_release_times().items() if t is not None}
+    if not times:
+        return None
+    schedule_id = min(times, key=times.get)
+    set_value(session, SKIP_NEXT_RELEASE,
+              json.dumps({"schedule_id": schedule_id, "at": times[schedule_id].isoformat()}))
+    return {"schedule_id": schedule_id, "at": times[schedule_id]}
+
+
+def cancel_skip(session) -> None:
+    from app.state import SKIP_NEXT_RELEASE, delete_value
+    delete_value(session, SKIP_NEXT_RELEASE)
+
+
+def releases_paused_since(session):
+    """When scheduled releases were paused (tz-aware), or None while they run."""
+    from app.state import RELEASES_PAUSED, get_run
+    return get_run(session, RELEASES_PAUSED)
+
+
+def pause_releases(session) -> None:
+    """Hold scheduled releases. A pending skip is dropped: it would sit hidden while paused and
+    then silently swallow a release after the resume."""
+    from app.state import RELEASES_PAUSED, get_value, mark_run
+    cancel_skip(session)
+    if get_value(session, RELEASES_PAUSED) is None:
+        mark_run(session, RELEASES_PAUSED)
+
+
+def resume_releases(session) -> None:
+    from app.state import RELEASES_PAUSED, delete_value
+    delete_value(session, RELEASES_PAUSED)
+
+
+def _release_hold(session, schedule_id: int | None) -> str | None:
+    """Why this scheduled firing must not release — "paused", "skipped" — or None to release.
+
+    Uses up a skip aimed at this firing (also while paused: that firing is gone either way) and
+    clears a stale one. Caller commits."""
+    from app.state import SKIP_NEXT_RELEASE, get_value
+    skip = skip_target(session)
+    hit = (skip is not None and skip["schedule_id"] == schedule_id
+           and _now() >= skip["at"] - _SKIP_MATCH_EARLY)
+    if hit or (skip is None and get_value(session, SKIP_NEXT_RELEASE) is not None):
+        cancel_skip(session)
+    if releases_paused_since(session) is not None:
+        return "paused"
+    return "skipped" if hit else None
 
 
 def trigger_release_now(schedule_id: int | None = None) -> bool:
@@ -551,7 +664,7 @@ def trigger_release_now(schedule_id: int | None = None) -> bool:
         _execute("release", lambda: _run_release_cycle(schedule_id))
         return True
     _scheduler.add_job(
-        _scheduled_release_cycle, args=[schedule_id], trigger="date",
+        _manual_release_cycle, args=[schedule_id], trigger="date",
         run_date=_now() + timedelta(seconds=1), id="manual_release", replace_existing=True,
     )
     return True
@@ -576,6 +689,9 @@ def trigger_feed_check() -> bool:
 def _run_feedless_sweep() -> None:
     from app.ongoing.poller import sweep_feedless
     with db_session() as session:
+        if releases_paused_since(session) is not None:  # nothing to release them into
+            logger.info("Releases paused — feedless sweep skipped.")
+            return
         submitted = sweep_feedless(session)
         session.commit()
     logger.info("Feedless sweep complete — fetch submitted for %d source(s).", submitted)
@@ -680,6 +796,15 @@ def next_release_time():
     """When the next release fires across all schedules (tz-aware), or None."""
     times = [t for t in next_release_times().values() if t is not None]
     return min(times) if times else None
+
+
+def fire_time_after(schedule_id: int, after):
+    """The schedule's first fire time strictly after `after` (tz-aware), or None if it isn't
+    scheduled — e.g. the release that follows a skipped one."""
+    job = _scheduler.get_job(f"{_RELEASE_JOB_PREFIX}{schedule_id}") if _scheduler.running else None
+    if job is None:
+        return None
+    return job.trigger.get_next_fire_time(after, after + timedelta(seconds=1))
 
 
 def next_sweep_time():

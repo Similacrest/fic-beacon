@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-10-16
+
+### Added
+- **✓ Mark read** in the dashboard's Select bar: acknowledges every unread release of the ticked
+  stories at once (lifts the unread slowdown; weights untouched). With the 📭 Unread chip and
+  *All shown* it clears everything in two clicks.
+- **← Previous / Next →** on the reader page, between the same story's releases in release order.
+  Next stops at the latest released chapter.
+- **⏸ Pause releases** and **⏭ Skip next release** on the dashboard. Pausing holds every scheduled
+  release (and the scheduled fetching: feed checks and the daily sweep) until resumed; skipping
+  holds only the next one (↩ Don't skip undoes it) and still checks feeds. Pausing cancels a pending skip. Held releases carry no
+  budget over. ▶ Run release still works while paused. Paused releases show as needing attention.
+
+### Changed
+- **System status** lists its lines in time order (last feed check, then the soonest upcoming run),
+  and shows a skipped release struck through with the one after it.
+
 ## [0.23.0] — 2026-10-13
 
 ### Added

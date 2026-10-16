@@ -313,6 +313,9 @@ Reading happens on the mirror, and opening it acknowledges the drop (read-gating
 per-chapter canonical URL (`<meta name="chapterurl">`, read from the raw zip by
 `app/epub/chapterizer.py:_chapter_url_map`) is still recorded on `drop.source_url` and drives stub
 identity, but it is not linked from the feed.
+The reader page has **← Previous / Next →** links between the same story's releases in *release*
+order (`reader._neighbours`; not chapter index — a stub renumbers indices), so Next stops at the
+latest released chapter.
 **GUID ≠ link.** The item `guid`/`id` is always `urn:fic-beacon:drop:{reader_slug}` (per-drop
 uuid4) so multiple drops never collide on a shared work URL.
 
@@ -359,14 +362,20 @@ only in tooltips. Times are relative (`|ago`) with the full timestamp in `title=
     its stage (`app/progress.py`, set by the scheduler job and by the planner per channel) and elapsed
     time. Every run — scheduled or manual — records its outcome or error in
     `app_state[last_run_result:release|feedcheck]` (`scheduler._record_run`).
+  - *Holds:* **⏸ Pause releases** (`app_state[releases_paused]`) holds every *scheduled* release until
+    ▶ Resume; **⏭ Skip next release** (`app_state[skip_next_release]` = `{schedule_id, at}`) holds just
+    the earliest upcoming firing, used up when that firing comes (`scheduler._release_hold`; a target
+    over an hour past without firing is void). A skipped firing still checks feeds; while paused
+    nothing is fetched (the daily sweep is skipped too). A held firing releases nothing (no drops, no credit carried, no cooldown tick) and records `held` in its run
+    result; the manual ▶ Run release is never held.
   - *Find & act:* a search box + chips (attention / unread / paused / tracked / backlog / queued)
     filter rows client-side (`data-search`/`data-flags`, set in `admin._build_slot_view`; the state
     survives HTMX swaps). **☑ Select** reveals row checkboxes and a sticky bar →
-    `POST /admin/books/batch` (`pause|resume|fetch|move|drop`; stories an action doesn't apply to are
+    `POST /admin/books/batch` (`pause|resume|fetch|move|read|drop`; stories an action doesn't apply to are
     skipped and counted in the `?done=&n=&skipped=` flash).
   - *On air:* per channel, slot cards with one row per story and its reason chip
     (`planner/explain.py`), the channel's queue ("Up next", ↑↓ within the channel), then fetches in
-    progress, system status, recently completed and dropped. Push state shows per slot feed.
+    progress, system status (in time order), recently completed and dropped. Push state shows per slot feed.
 - **Add** (`/admin/add`): see Sources & units.
 - **Story page** (`GET /admin/books/{id}`, `admin/story.html`) is the one place for a story's
   controls: pause/resume, fetch now, drop, cursor (⏮/⏭/exact), weight, track toggle, channel, slot

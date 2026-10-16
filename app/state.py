@@ -16,6 +16,8 @@ TRIGGER_RETRY_PREFIX = "trigger_retry:"  # + book_id → JSON {guid, n}: fruitle
 LAST_RUN_RESULT = "last_run_result"  # + ":release" / ":feedcheck" → JSON: what that run did (or why it failed)
 CURSOR_UNDO_PREFIX = "cursor_undo:"  # + book_id → JSON {from, to}: the last manual cursor move, for one-step undo
 BOOK_NOTE_PREFIX = "book_note:"  # + book_id → why the app set this source aside (shown on the dashboard)
+RELEASES_PAUSED = "releases_paused"  # ISO time: scheduled releases are on hold since then (absent = running)
+SKIP_NEXT_RELEASE = "skip_next_release"  # JSON {schedule_id, at}: that one scheduled firing is skipped
 
 
 def set_value(session: Session, key: str, value: str) -> None:

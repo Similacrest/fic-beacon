@@ -86,3 +86,48 @@ def test_reader_page_acknowledges_drop(client):
     tc.get("/read/slug123")
     db.refresh(drop)
     assert drop.acknowledged_at is not None
+
+
+def _seed_series(db, n=3):
+    """`n` releases of one book, oldest first, plus one release of another book in between."""
+    from datetime import datetime, timedelta, timezone
+    channel_id = db.query(Channel.id).order_by(Channel.id).first()[0]
+    book = Book(calibre_id=1, title="Serial", author="A", status=BookStatus.active,
+                channel_id=channel_id, total_chapters=10, cursor_chapter_index=n)
+    other = Book(calibre_id=2, title="Other", author="B", status=BookStatus.active,
+                 channel_id=channel_id, total_chapters=10, cursor_chapter_index=1)
+    db.add_all([book, other])
+    db.flush()
+    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    for i in range(n):
+        db.add(Drop(book_id=book.id, word_count=100, chapter_start=i, chapter_end=i,
+                    chapter_titles=f"Chapter {i + 1}", content_html=f"<p>body {i + 1}</p>",
+                    feedback_token=f"tok{i}", reader_slug=f"s{i}", published_at=t0 + timedelta(days=i)))
+    db.add(Drop(book_id=other.id, word_count=100, chapter_start=0, chapter_end=0,
+                chapter_titles="Other 1", content_html="<p>other</p>", feedback_token="tokx",
+                reader_slug="sx", published_at=t0 + timedelta(hours=12)))
+    db.commit()
+
+
+def test_reader_prev_next_walk_the_story_releases(client):
+    tc, db = client
+    _seed_series(db)
+    first = tc.get("/read/s0").text
+    assert 'href="/read/s1"' in first and 'rel="prev"' not in first   # oldest: no previous
+    middle = tc.get("/read/s1").text
+    assert 'rel="prev" href="/read/s0"' in middle and 'rel="next" href="/read/s2"' in middle
+    assert "/read/sx" not in middle                                     # another story's release
+
+
+def test_reader_next_stops_at_latest_release(client):
+    tc, db = client
+    _seed_series(db)
+    latest = tc.get("/read/s2").text
+    assert 'rel="next"' not in latest and "latest released" in latest
+    assert 'rel="prev" href="/read/s1"' in latest
+
+
+def test_reader_single_release_has_no_nav(client):
+    tc, db = client
+    _seed_drop(db)
+    assert "chapnav" not in tc.get("/read/slug123").text.split("</style>")[1]

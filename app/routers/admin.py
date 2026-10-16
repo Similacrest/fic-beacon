@@ -70,11 +70,20 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     # ── System status: cron last/next runs + WebSub subscribers ───────────────
     schedules = db.query(Schedule).order_by(Schedule.sort_order, Schedule.id).all()
     next_times = scheduler.next_release_times()
-    status = {
-        "last_poll": get_run(db, LAST_POLL_RUN),
-        "next_sweep": scheduler.next_sweep_time(),
-    }
-    schedule_rows = [{"schedule": sc, "next": next_times.get(sc.id)} for sc in schedules]
+    paused_since = scheduler.releases_paused_since(db)
+    skip = scheduler.skip_target(db)
+    schedule_rows = []
+    for sc in schedules:
+        nxt = next_times.get(sc.id)
+        # The skip names one firing; it is this schedule's next one until that has fired.
+        skipped = bool(skip and nxt and skip["schedule_id"] == sc.id
+                       and abs((nxt - skip["at"]).total_seconds()) <= 120)
+        schedule_rows.append({
+            "schedule": sc, "next": nxt, "skipped": skipped,
+            "then": scheduler.fire_time_after(sc.id, nxt) if skipped else None,
+        })
+    status_rows = _build_status_rows(
+        schedule_rows, get_run(db, LAST_POLL_RUN), scheduler.next_sweep_time(), paused_since)
     # Manual release cycle / feed check currently running (drives the progress banner and
     # disables the trigger buttons). None when idle.
     cycle = scheduler.cycle_status()
@@ -92,7 +101,8 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             runs[op] = None
     failed = next((r for r in runs.values() if r and r.get("error")), None)
     last_release_at = get_run(db, LAST_RELEASE_RUN)
-    if runs["release"] and runs["release"].get("at"):  # the run record is stamped when it finished
+    # The run record is stamped when it finished — but a held (paused/skipped) run released nothing.
+    if runs["release"] and runs["release"].get("at") and not runs["release"].get("held"):
         try:
             last_release_at = datetime.fromisoformat(runs["release"]["at"])
         except ValueError:
@@ -102,9 +112,14 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         db, book_notes=book_notes, last_skips=last_skips, fetch_progress=fetch_progress,
         push_bad=push_bad, push_orphans=push_orphans, last_run=failed,
         schedules_enabled=sum(1 for sc in schedules if sc.enabled), cycle_running=cycle is not None,
+        releases_paused=paused_since,
     )
-    upcoming = [(r["next"], r["schedule"].name) for r in schedule_rows if r["schedule"].enabled and r["next"]]
-    next_release = min(upcoming, key=lambda t: t[0]) if upcoming else None
+    upcoming = [
+        (r["then"] if r["skipped"] else r["next"], r["schedule"].name)
+        for r in schedule_rows if r["schedule"].enabled and (r["then"] if r["skipped"] else r["next"])
+    ]
+    next_release = min(upcoming, key=lambda t: t[0]) if upcoming and paused_since is None else None
+    skipped_row = next((r for r in schedule_rows if r["skipped"]), None)
 
     return templates.TemplateResponse(request, "admin/index.html", {
         "active": active,
@@ -114,7 +129,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "cfg": cfg,
         "channels": channels,
         "slot_view": slot_view,
-        "status": status,
+        "status_rows": status_rows,
+        "paused_since": paused_since,
+        "skipped_row": skipped_row,
         "push_view": push_view,
         "push_orphans": push_orphans,
         "fetch_progress": fetch_progress,
@@ -127,6 +144,31 @@ def dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         "cycle": cycle,
         "schedule_rows": schedule_rows,
     })
+
+
+def _build_status_rows(schedule_rows, last_poll, next_sweep, paused_since) -> list[dict]:
+    """System status lines — each schedule's next release, the last feed check, the next feedless
+    sweep — in time order (past first, then soonest); lines without a time go last."""
+    rows = []
+    for r in schedule_rows:
+        sc = r["schedule"]
+        if not sc.enabled:
+            note = "disabled"
+        elif r["next"] is None:
+            note = "not scheduled"
+        elif paused_since is not None:
+            note = "paused"
+        elif r["skipped"]:
+            note = "skipped"
+        else:
+            note = None
+        rows.append({"label": f"Next: {sc.name}", "at": r["next"] if sc.enabled else None,
+                     "note": note, "then": r["then"]})
+    rows.append({"label": "Last feed check", "at": last_poll, "note": None if last_poll else "never",
+                 "then": None})
+    rows.append({"label": "Next feedless sweep", "at": next_sweep,
+                 "note": None if next_sweep else "not scheduled", "then": None})
+    return sorted(rows, key=lambda r: (r["at"] is None, r["at"].timestamp() if r["at"] else 0))
 
 
 def _build_fetch_progress(db) -> list[dict]:
@@ -930,14 +972,21 @@ def cursor_undo(book_id: int, next: str | None = Form(None), db: Session = Depen
 def mark_all_read(book_id: int, next: str | None = Form(None), db: Session = Depends(get_db)) -> RedirectResponse:
     """Acknowledge every unread drop of this source at once — lifts the unread slowdown (the
     streak is derived from the drop rows) without touching its weight."""
-    from app.models import utcnow
     book = db.get(Book, book_id)
     if book is not None:
-        now = utcnow()
-        for d in db.query(Drop).filter(Drop.book_id == book.id, Drop.acknowledged_at.is_(None)):
-            d.acknowledged_at = now
+        _mark_read(db, book)
         db.commit()
     return _back(next)
+
+
+def _mark_read(db: Session, book: Book) -> int:
+    """Acknowledge every unread drop of `book`; returns how many were unread. Caller commits."""
+    from app.models import utcnow
+    now = utcnow()
+    unread = db.query(Drop).filter(Drop.book_id == book.id, Drop.acknowledged_at.is_(None)).all()
+    for d in unread:
+        d.acknowledged_at = now
+    return len(unread)
 
 
 @router.post("/books/{book_id}/set-weight")
@@ -993,7 +1042,7 @@ def fetch_book(book_id: int, next: str | None = Form(None), db: Session = Depend
     return _back(next)
 
 
-BATCH_ACTIONS = ("pause", "resume", "fetch", "move", "drop")
+BATCH_ACTIONS = ("pause", "resume", "fetch", "move", "read", "drop")
 
 
 @router.post("/books/batch")
@@ -1037,6 +1086,8 @@ def batch_books(
         elif action == "move":
             ok = target is not None and book.status in (BookStatus.active, BookStatus.queued) \
                 and _move_to_channel(db, book, target)
+        elif action == "read":
+            ok = _mark_read(db, book) > 0
         else:  # drop
             ok = _drop(db, book)
         changed += 1 if ok else 0
@@ -1316,6 +1367,22 @@ def release_now(
     """Run a release now under the chosen schedule's budget (default: the first enabled one)."""
     from app import scheduler
     scheduler.trigger_release_now(schedule_id)  # no-op if a cycle is already running
+    return RedirectResponse(url="/admin/", status_code=303)
+
+
+@router.post("/releases/{op}")
+def release_hold(op: str, db: Session = Depends(get_db)) -> RedirectResponse:
+    """⏸ Pause / ▶ resume scheduled releases, ⏭ skip the next one or undo that skip. Manual
+    ▶ Run release is never held."""
+    from app import scheduler
+    actions = {
+        "pause": scheduler.pause_releases, "resume": scheduler.resume_releases,
+        "skip": scheduler.skip_next_release, "unskip": scheduler.cancel_skip,
+    }
+    if op not in actions:
+        raise HTTPException(status_code=404)
+    actions[op](db)
+    db.commit()
     return RedirectResponse(url="/admin/", status_code=303)
 
 

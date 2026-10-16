@@ -83,6 +83,7 @@ def attention_items(
     last_run: dict | None,
     schedules_enabled: int,
     cycle_running: bool,
+    releases_paused: datetime | None = None,
 ) -> list[dict]:
     """Things that need a human, most important first. Each: tone (bad|warn), text, href?.
 
@@ -93,6 +94,11 @@ def attention_items(
     if last_run and last_run.get("error") and not cycle_running:
         what = "Release" if last_run.get("op") == "release" else "Feed check"
         items.append({"tone": "bad", "text": f"{what} failed: {last_run['error']}", "href": None})
+
+    if releases_paused is not None:
+        items.append({"tone": "warn", "text": "Scheduled releases are paused — nothing is fetched or "
+                                              "released until you resume",
+                      "href": None})
 
     if schedules_enabled == 0:
         items.append({"tone": "bad", "text": "No release schedule is enabled — nothing will release",

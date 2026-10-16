@@ -28,10 +28,10 @@
 {% endif %}
 
 {% set done = request.query_params.get('done') %}
-{% if done in ['pause', 'resume', 'fetch', 'move', 'drop', 'delete'] %}
+{% if done in ['pause', 'resume', 'fetch', 'move', 'read', 'drop', 'delete'] %}
 {% set n = request.query_params.get('n', '0') %}{% set sk = request.query_params.get('skipped', '0') %}
 <div class="flash" role="status">
-  ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'drop': 'Dropped', 'delete': 'Removed'}[done] }}
+  ✓ {{ {'pause': 'Paused', 'resume': 'Resumed', 'fetch': 'Fetching', 'move': 'Moved', 'read': 'Marked read:', 'drop': 'Dropped', 'delete': 'Removed'}[done] }}
   {{ n if n.isdigit() else 0 }} stor{{ 'y' if n == '1' else 'ies' }}{% if sk.isdigit() and sk != '0' %} · {{ sk }} skipped{% endif %}
 </div>
 {% endif %}
@@ -52,7 +52,8 @@
     </span>
     <span class="health-fact">
       Next
-      {% if next_release %}<strong title="{{ next_release[0]|stamp }}">{{ next_release[0]|ago }}</strong> · {{ next_release[1] }}
+      {% if paused_since %}<strong title="Paused {{ paused_since|stamp }}">⏸ paused</strong>
+      {% elif next_release %}<strong title="{{ next_release[0]|stamp }}">{{ next_release[0]|ago }}</strong> · {{ next_release[1] }}
       {% else %}<strong>not scheduled</strong>{% endif %}
     </span>
   </div>
@@ -91,9 +92,37 @@
         <button class="btn btn-lg" title="Look for new chapters now, without releasing anything">🔄 Check feeds</button>
       </form>
       {% endif %}
+      {# Scheduled releases can be held; ▶ Run release above always releases. #}
+      <div class="hold-controls">
+        {% if paused_since %}
+        <form method="post" action="/admin/releases/resume" hx-post="/admin/releases/resume" class="run-form">
+          <button class="btn btn-primary" title="Scheduled releases run again from the next one">▶ Resume releases</button>
+        </form>
+        <span class="hold-note">⏸ Paused <span title="{{ paused_since|stamp }}">{{ paused_since|ago }}</span> —
+          nothing is fetched or released. ▶ Run release still works.</span>
+        {% else %}
+        {% if skipped_row %}
+        <span class="hold-note">⏭ Skipping {{ skipped_row.schedule.name }}
+          <span title="{{ skipped_row.next|stamp }}">{{ skipped_row.next|ago }}</span> (feeds are still checked)</span>
+        <form method="post" action="/admin/releases/unskip" hx-post="/admin/releases/unskip" class="run-form">
+          <button class="btn" title="Let that release happen after all">↩ Don't skip</button>
+        </form>
+        {% elif next_release %}
+        <form method="post" action="/admin/releases/skip" hx-post="/admin/releases/skip" class="run-form">
+          <button class="btn" title="Release nothing at {{ next_release[0]|stamp }} ({{ next_release[1] }}); feeds are still checked. Later releases run as usual.">⏭ Skip next release</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/admin/releases/pause" hx-post="/admin/releases/pause" class="run-form">
+          <button class="btn" title="Hold every scheduled release (and the scheduled fetching) until you resume">⏸ Pause releases</button>
+        </form>
+        {% endif %}
+      </div>
       {% if not cycle and last_release %}
       <p class="muted run-result" title="{{ last_release_at|stamp }}">
         {% if last_release.error %}⚠ Last run failed: {{ last_release.error }}
+        {% elif last_release.held %}Last run{% if last_release.schedule %}: {{ last_release.schedule }}{% endif %}
+          — {{ 'skipped' if last_release.held == 'skipped' else 'paused' }}, nothing released{% if last_release.downloads or last_release.feeds_changed %},
+          {{ (last_release.downloads or 0) + (last_release.feeds_changed or 0) }} download{{ '' if ((last_release.downloads or 0) + (last_release.feeds_changed or 0)) == 1 else 's' }} queued{% endif %}
         {% else %}Last run{% if last_release.schedule %}: {{ last_release.schedule }}{% endif %}
           — {{ last_release.seconds|duration }}{% if last_release.downloads or last_release.feeds_changed %},
           {{ (last_release.downloads or 0) + (last_release.feeds_changed or 0) }} download{{ '' if ((last_release.downloads or 0) + (last_release.feeds_changed or 0)) == 1 else 's' }} queued{% endif %}
@@ -149,6 +178,7 @@
   <button class="btn" name="action" value="pause">⏸ Pause</button>
   <button class="btn" name="action" value="resume">▶ Resume</button>
   <button class="btn" name="action" value="fetch" title="Check the site for new chapters (tracked stories)">⤓ Fetch now</button>
+  <button class="btn" name="action" value="read" title="Acknowledge every unread release of the selected stories — lifts the unread slowdown, weights untouched">✓ Mark read</button>
   <select name="channel_id" aria-label="Channel to move to">
     {% for ch in channels %}<option value="{{ ch.id }}">{{ ch.name }}</option>{% endfor %}
   </select>
@@ -243,15 +273,18 @@
 </details>
 {% endif %}
 
-{# ── System status: schedules' next runs, feed check, daily sweep ───────────── #}
+{# ── System status: schedules' next runs, feed check, daily sweep — in time order ── #}
 <details class="section" data-section="system-status">
   <summary>🛰 System status</summary>
   <div class="kv" style="margin:.5em 0 1em">
-    {% for row in schedule_rows %}
-    <span class="muted">Next: {{ row.schedule.name }}</span><span>{% if row.schedule.enabled %}{{ fmt_dt(row.next) }}{% else %}<span class="muted">disabled</span>{% endif %}</span>
+    {% for row in status_rows %}
+    <span class="muted">{{ row.label }}</span>
+    <span>
+      {% if row.at %}{% if row.note == 'skipped' %}<s>{{ fmt_dt(row.at) }}</s>{% else %}{{ fmt_dt(row.at) }}{% endif %}{% endif %}
+      {% if row.note %}<span class="muted">{{ row.note }}</span>{% endif %}
+      {% if row.then %}<span class="muted">· then {{ fmt_dt(row.then) }}</span>{% endif %}
+    </span>
     {% endfor %}
-    <span class="muted">Last feed check</span><span>{{ fmt_dt(status.last_poll) }}</span>
-    <span class="muted">Next feedless sweep</span><span>{{ fmt_dt(status.next_sweep) }}</span>
   </div>
 </details>
 

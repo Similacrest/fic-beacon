@@ -501,3 +501,29 @@ class TestRemovePermanently:
         assert "Remove permanently" in client.get(f"/admin/books/{done.id}").text
         client.post(f"/admin/books/{done.id}/delete")
         assert db.get(Book, done.id) is None
+
+
+class TestBatchMarkRead:
+    def test_marks_every_unread_release_and_skips_stories_with_none(self, ctx):
+        client, db = ctx
+        a = _book(db, "A", calibre_id=1, tracked=True, slot_index=1, quota_weight=1.5)
+        b = _book(db, "B", calibre_id=2, tracked=True, slot_index=1)
+        d1 = _drop(db, a, acked=False)
+        d2 = Drop(book_id=a.id, channel_id=a.channel_id, feed_key="1", word_count=1, chapter_start=1,
+                  chapter_end=1, chapter_titles="Two", content_html="x", feedback_token="ta2",
+                  reader_slug="sa2")
+        db.add(d2)
+        _drop(db, b, acked=True)
+        db.commit()
+        r = client.post("/admin/books/batch", data={"action": "read", "book_ids": [a.id, b.id]},
+                        follow_redirects=False)
+        assert r.headers["location"] == "/admin/?done=read&n=1&skipped=1"
+        db.refresh(d1), db.refresh(d2), db.refresh(a)
+        assert d1.acknowledged_at is not None and d2.acknowledged_at is not None
+        assert a.quota_weight == 1.5                                    # weight untouched
+        assert "✓ Marked read: 1 story" in " ".join(client.get(r.headers["location"]).text.split())
+
+    def test_dashboard_offers_it(self, ctx):
+        client, db = ctx
+        _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
+        assert 'value="read"' in client.get("/admin/").text
