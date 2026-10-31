@@ -54,6 +54,8 @@ class FetchResult:
     # Set by apply_result: did this fetch land chapters the app didn't have (a first download, a
     # longer EPUB, or a stub)? Drives whether the RSS trigger GUID counts as "dealt with".
     new_chapters: bool = False
+    # "flaresolverr" when the fetcher had to route this fetch through FlareSolverr (shown in the status).
+    via: str | None = None
 
 
 def _headers() -> dict[str, str]:
@@ -112,7 +114,7 @@ def poll_fetch(job_id: str) -> dict | None:
 def _to_result(raw: dict) -> FetchResult:
     """Turn one per-URL dict from the fetcher into a FetchResult."""
     if raw.get("error"):
-        return FetchResult(ok=False, error=str(raw["error"]))
+        return FetchResult(ok=False, error=str(raw["error"]), via=raw.get("via"))
     stub = raw.get("stub")
     return FetchResult(
         ok=True,
@@ -120,6 +122,7 @@ def _to_result(raw: dict) -> FetchResult:
         chapter_count=raw.get("chapter_count"),
         story_url=raw.get("story_url"),
         story_status=raw.get("story_status"),
+        via=raw.get("via"),
         stub=StubInfo(
             old=int(stub["old"]), new=int(stub["new"]),
             old_urls=stub.get("old_urls"), new_urls=stub.get("new_urls"),
@@ -138,7 +141,7 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
     book.last_fetch_at = utcnow()
 
     if not result.ok:
-        book.last_fetch_status = f"error: {result.error}"
+        book.last_fetch_status = f"error: {result.error}" + _via_note(result)
         return result
 
     if book.calibre_id is None and result.calibre_id is not None:
@@ -186,9 +189,14 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
         book.fresh_from_index = None  # indices were remapped; the flag no longer points anywhere
         result.new_chapters = True  # the site changed under us — the trigger has been acted on
     else:
-        book.last_fetch_status = "ok"
+        book.last_fetch_status = "ok" + _via_note(result)
 
     return result
+
+
+def _via_note(result: FetchResult) -> str:
+    """Why a fetch was slow: a source Cloudflare keeps blocking is fetched through FlareSolverr."""
+    return f" (via {result.via}: slower, the site blocks direct requests)" if result.via else ""
 
 
 def _calibre_adapter():

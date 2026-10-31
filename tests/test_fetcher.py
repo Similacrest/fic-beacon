@@ -108,8 +108,9 @@ def fake_tools(monkeypatch):
     """Replace the subprocess wrappers. `script` maps a call number to (files_to_write, output)."""
     state = {"calls": [], "script": [], "next_id": 100}
 
-    def fanficfare(*args, cwd):
+    def fanficfare(*args, cwd, flare=False):
         call = len(state["calls"])
+        state.setdefault("flare", []).append(flare)
         state["calls"].append(args)
         files, output = state["script"][min(call, len(state["script"]) - 1)]
         for name, url, status in files:
@@ -503,3 +504,110 @@ def test_writer_skip_is_an_error_not_ok(calibre, monkeypatch):
     assert transient is None
     assert "skipped writing" in entry["error"] and "more recently than Story" in entry["error"]
     assert not any(c[0] == "add_format" for c in fake.calls)  # Calibre entry left as it was
+
+
+# ---- FlareSolverr fallback -------------------------------------------------------------------
+_403 = "HTTPErrorFFF: Giving up on https://www.royalroad.com/fiction/83080 403 Client Error: Forbidden"
+_RR = "https://www.royalroad.com/fiction/83080"
+
+
+@pytest.fixture
+def flare(fake_tools, monkeypatch, tmp_path):
+    ini = tmp_path / "flaresolverr.ini"
+    ini.write_text("[defaults]\n")
+    monkeypatch.setattr(fetcher, "FLARE_INI", str(ini))
+    monkeypatch.setattr(fetcher, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(fetcher, "_state", None)
+    fake_tools["script"] = [([], _403)]
+    return fake_tools
+
+
+def _run_ff(tmp_path):
+    return fetcher._ff([_RR], "-u", "x.epub", cwd=str(tmp_path))
+
+
+def test_first_403_is_not_escalated(flare, tmp_path):
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [False] and res.via_flare is False
+
+
+def test_second_consecutive_403_retries_through_flaresolverr(flare, tmp_path):
+    _run_ff(tmp_path)
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [False, True] and res.via_flare is True
+
+
+def test_non_403_error_resets_the_streak(flare, tmp_path):
+    _run_ff(tmp_path)
+    flare["script"] = [([], "some other failure")]
+    _run_ff(tmp_path)
+    flare["script"] = [([], _403)]
+    flare["flare"].clear()
+    _run_ff(tmp_path)
+    assert flare["flare"] == [False]  # count restarted at 1
+
+
+def test_flagged_source_goes_straight_to_flaresolverr_and_state_survives_restart(
+        flare, tmp_path, monkeypatch):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    monkeypatch.setattr(fetcher, "_state", None)  # restart: reload from disk
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [True] and res.via_flare is True
+
+
+def test_daily_probe_clears_the_flag_when_direct_works(flare, tmp_path, monkeypatch):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    key = fetcher._story_key(_RR)
+    fetcher._state[key]["probed_at"] -= fetcher.FLARE_PROBE_SECONDS + 1
+    flare["script"] = [([], "all good")]
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [False] and res.via_flare is False
+    assert key not in fetcher._state
+
+
+def test_failed_probe_falls_back_in_the_same_run_and_waits_another_day(flare, tmp_path):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    key = fetcher._story_key(_RR)
+    fetcher._state[key]["probed_at"] -= fetcher.FLARE_PROBE_SECONDS + 1
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [False, True] and res.via_flare is True
+    flare["flare"].clear()
+    _run_ff(tmp_path)
+    assert flare["flare"] == [True]  # probed just now: no second direct try
+
+
+def test_batch_403_is_not_attributed_to_any_source(flare, tmp_path):
+    for _ in range(3):
+        fetcher._ff([_RR, "https://www.royalroad.com/fiction/1"], "-i", "u.txt", cwd=str(tmp_path))
+    assert flare["flare"] == [False] * 3 and fetcher._state == {}
+
+
+def test_missing_flaresolverr_ini_degrades_to_the_plain_error(flare, tmp_path, monkeypatch):
+    monkeypatch.setattr(fetcher, "FLARE_INI", str(tmp_path / "nope.ini"))
+    _run_ff(tmp_path)
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [False, False] and res.via_flare is False
+
+
+def test_flaresolverr_timeout_is_not_retried():
+    msg = f"flaresolverr fetch timed out after 5400s {fetcher._NO_RETRY}"
+    assert fetcher._transient("connection reset by peer") is True
+    assert fetcher._transient(msg) is False
+
+
+def test_403_regex_needs_fanficfare_error_not_just_no_epub():
+    assert fetcher._403_RE.search(_403)
+    assert not fetcher._403_RE.search("fanficfare produced no epub")
+    assert not fetcher._403_RE.search("fetched chapter 403 of the story")
+
+
+def test_job_result_records_via_flaresolverr(flare, tmp_path):
+    flare["script"] = [([], _403), ([("a.epub", _RR, "In-Progress")], "ok")]
+    entry = _entry(_RR)
+    fetcher._state_load()[fetcher._story_key(_RR)] = {"count": 1}
+    fetcher._download_new([_RR], {_RR: entry})
+    assert entry["via"] == "flaresolverr" and entry["phase"] == "done"

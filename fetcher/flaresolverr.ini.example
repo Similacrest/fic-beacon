@@ -1,0 +1,10 @@
+# Second FanFicFare config, used only when a source keeps getting 403s (see CHANGELOG).
+# Mount as /config/flaresolverr.ini. It is layered over personal.ini (later -c wins), so it holds
+# only these keys. Do NOT put site logins here: FlareSolverr logs full POST bodies.
+[defaults]
+use_flaresolverr_proxy: directimages
+flaresolverr_proxy_address: flaresolverr
+flaresolverr_proxy_port: 8191
+flaresolverr_proxy_protocol: http
+# Milliseconds; keep below connect_timeout (FanFicFare defaults.ini).
+# flaresolverr_proxy_timeout: 60000

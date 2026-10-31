@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-31
+
+### Added
+- **FlareSolverr fallback in the fetcher.** A source that gets two 403s in a row from a site
+  (Cloudflare) is retried, and from then on fetched, through FlareSolverr using a second FanFicFare
+  config (`/config/flaresolverr.ini`, layered over `personal.ini`; no logins in it). The flagged
+  source is tried directly again once a day; a direct success switches it back automatically. The
+  story page shows `ok (via flaresolverr: …)`. Counters persist in `FETCHER_STATE_DIR` (`/state`).
+  A FlareSolverr-routed run gets its own, longer cap (`FETCHER_FLARESOLVERR_TIMEOUT`, 90 min) and a
+  timeout there is not retried; two such runs never overlap (single fetcher worker).
+
+### Changed
+- `BEACON_FETCHER_JOB_TIMEOUT` now defaults to 6300 s so the app waits longer than a slow
+  FlareSolverr fetch.
+
 ## [0.24.0] — 2026-10-16
 
 ### Added

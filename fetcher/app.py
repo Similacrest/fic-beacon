@@ -44,6 +44,7 @@ import os
 import posixpath
 import re
 import subprocess
+import threading
 import tempfile
 import time
 import uuid
@@ -69,6 +70,17 @@ JOB_TTL_SECONDS = 3600  # keep a finished job's result available for an hour, th
 # socket would block the lone worker thread forever (and every queued job behind it).
 FANFICFARE_TIMEOUT = float(os.environ.get("FETCHER_FANFICFARE_TIMEOUT", "1200"))  # 20 min
 CALIBREDB_TIMEOUT = float(os.environ.get("FETCHER_CALIBREDB_TIMEOUT", "600"))  # 10 min
+
+# FlareSolverr fallback (see `_ff`). A source that gets FLARE_AFTER consecutive 403s is fetched
+# through FlareSolverr (config file layered over personal.ini; it holds no logins). The solve costs
+# ~20 s *per request*, so a many-chapter story needs far more than FANFICFARE_TIMEOUT: the flat cap
+# below (default 90 min, ~200 chapters) replaces it for those runs. A flagged source is probed
+# directly again every FLARE_PROBE_SECONDS (24 h), and the flag clears when the probe works.
+FLARE_INI = os.environ.get("FANFICFARE_FLARE_INI", "/config/flaresolverr.ini")
+FLARE_TIMEOUT = float(os.environ.get("FETCHER_FLARESOLVERR_TIMEOUT", "5400"))
+FLARE_AFTER = int(os.environ.get("FETCHER_FLARESOLVERR_AFTER", "2"))
+FLARE_PROBE_SECONDS = float(os.environ.get("FETCHER_FLARESOLVERR_PROBE_SECONDS", "86400"))
+STATE_DIR = Path(os.environ.get("FETCHER_STATE_DIR", "/state"))
 
 FETCHER_TOKEN = os.environ.get("FETCHER_TOKEN", "")
 
@@ -108,6 +120,12 @@ _TRANSIENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A Cloudflare/site refusal. Matched on FanFicFare's own error line, never on a bare "no epub".
+_403_RE = re.compile(r"HTTPErrorFFF[^\n]*\b403\b|\b403\b[^\n]*Forbidden", re.IGNORECASE)
+# Marker on a FlareSolverr-run timeout: it is not retried (a retry would hit the same limit and
+# tie FlareSolverr up for another long stretch).
+_NO_RETRY = "(not retried)"
+
 # One worker → calibredb writes never overlap (single-writer invariant).
 _executor = ThreadPoolExecutor(max_workers=1)
 # job_id -> {"status": "running"|"done", "results": [ {...}, ... ], "finished_at": float|None}
@@ -139,14 +157,111 @@ def _calibredb(*args: str) -> subprocess.CompletedProcess:
     return _run(["calibredb", "--with-library", LIBRARY, *args], timeout=CALIBREDB_TIMEOUT)
 
 
-def _fanficfare(*args: str, cwd: str) -> subprocess.CompletedProcess:
+def _fanficfare(*args: str, cwd: str, flare: bool = False) -> subprocess.CompletedProcess:
     base = ["fanficfare", "--non-interactive"]
     if Path(PERSONAL_INI).exists():
         base += ["-c", PERSONAL_INI]
-    return _run([*base, *args], cwd=cwd, timeout=FANFICFARE_TIMEOUT)
+    if not flare:
+        return _run([*base, *args], cwd=cwd, timeout=FANFICFARE_TIMEOUT)
+    # Later -c files override earlier ones, so the flaresolverr keys win and logins stay in personal.ini.
+    res = _run([*base, "-c", FLARE_INI, *args], cwd=cwd, timeout=FLARE_TIMEOUT)
+    if res.returncode == 124:
+        res.stderr = f"flaresolverr fetch timed out after {FLARE_TIMEOUT:.0f}s {_NO_RETRY}"
+    return res
 
 
-def _fanficfare_update(epub: Path, *opts: str, cwd: str) -> subprocess.CompletedProcess:
+def _transient(text: str) -> bool:
+    """Worth a retry: a transient site/network error, but not a FlareSolverr-run timeout."""
+    return bool(_TRANSIENT_RE.search(text or "")) and _NO_RETRY not in (text or "")
+
+
+# ---- per-source 403 state (survives restarts) ------------------------------------------------
+_state_lock = threading.Lock()
+_state: dict[str, dict] | None = None
+
+
+def _state_load() -> dict[str, dict]:
+    global _state
+    if _state is None:
+        try:
+            _state = json.loads((STATE_DIR / "flaresolverr.json").read_text())
+        except (OSError, ValueError):
+            _state = {}
+    return _state
+
+
+def _state_save() -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_DIR / "flaresolverr.json.tmp"
+        tmp.write_text(json.dumps(_state))
+        tmp.replace(STATE_DIR / "flaresolverr.json")
+    except OSError as exc:  # keep working from memory; the counter just won't survive a restart
+        logger.warning("could not persist flaresolverr state in %s: %s", STATE_DIR, exc)
+
+
+def _ff(urls: list[str], *args: str, cwd: str) -> subprocess.CompletedProcess:
+    """Run FanFicFare directly, falling back to FlareSolverr for a source that keeps getting 403s.
+
+    - FLARE_AFTER consecutive 403s on a source flag it: that run, and later ones, go through
+      FlareSolverr. Any other outcome (success, or a non-403 error) resets the count.
+    - A flagged source is probed directly at most every FLARE_PROBE_SECONDS. A probe that works
+      clears the flag; one that 403s falls straight back to FlareSolverr in the same run.
+    - A 403 *through* FlareSolverr is recorded as an ordinary error: no loop, the next cycle's
+      attempt (and the existing give-up cap on the app side) applies.
+    The result carries `.via_flare`. Counting is per source, so it is only attributed when `urls`
+    is a single story; a batch is just run direct (its failures are re-run alone by the caller).
+    """
+    keys = [_story_key(u) for u in urls]
+    now = time.time()
+    with _state_lock:
+        st = _state_load()
+        flagged = [k for k in keys if st.get(k, {}).get("flare")]
+        stay_on_flare = any(now - st[k].get("probed_at", 0) < FLARE_PROBE_SECONDS for k in flagged)
+    can_flare = Path(FLARE_INI).exists()
+
+    def finish(res, via):
+        res.via_flare = via
+        return res
+
+    if stay_on_flare and can_flare:
+        res = _fanficfare(*args, cwd=cwd, flare=True)
+        logger.info("fetched via flaresolverr: %s", " ".join(urls))
+        return finish(res, True)
+
+    res = _fanficfare(*args, cwd=cwd)
+    out = (res.stdout or "") + (res.stderr or "")
+    if not _403_RE.search(out):
+        with _state_lock:  # success or a non-403 error: the 403 streak is over, a probe worked
+            if any(k in st for k in keys):
+                if flagged:
+                    logger.info("direct fetch works again, flaresolverr off: %s", " ".join(urls))
+                for k in keys:
+                    st.pop(k, None)
+                _state_save()
+        return finish(res, False)
+    if len(keys) != 1:
+        return finish(res, False)
+
+    k = keys[0]
+    with _state_lock:
+        rec = st.setdefault(k, {"count": 0})
+        rec["count"] = rec.get("count", 0) + 1
+        escalate = bool(rec.get("flare")) or rec["count"] >= FLARE_AFTER
+        if escalate:
+            rec["flare"], rec["probed_at"] = True, now
+        _state_save()
+    if not escalate:
+        return finish(res, False)
+    if not can_flare:
+        logger.warning("%s: 403s, but %s is missing - cannot use flaresolverr", urls[0], FLARE_INI)
+        return finish(res, False)
+    logger.info("%s: %d consecutive 403s - retrying through flaresolverr", urls[0], rec["count"])
+    res = _fanficfare(*args, cwd=cwd, flare=True)
+    return finish(res, True)
+
+
+def _fanficfare_update(epub: Path, *opts: str, cwd: str, url: str) -> subprocess.CompletedProcess:
     """`fanficfare -u` an exported EPUB in place, without the writer's mtime short-circuit.
 
     `calibredb export` stamps the file with mtime=now, and FanFicFare skips writing when that date
@@ -155,7 +270,7 @@ def _fanficfare_update(epub: Path, *opts: str, cwd: str) -> subprocess.Completed
     their own; both are applied so a lost personal.ini line or a changed FanFicFare check can't
     bring it back. Re-backdated before every call: a previous pass wrote the file at mtime=now."""
     os.utime(epub, (0, 0))
-    return _fanficfare("-u", f"./{epub.name}", "-o", "always_overwrite=true", *opts, cwd=cwd)
+    return _ff([url], "-u", f"./{epub.name}", "-o", "always_overwrite=true", *opts, cwd=cwd)
 
 
 def _with_retry(label: str, fn):
@@ -435,7 +550,7 @@ def fetch(req: FetchRequest) -> dict:
         "pinned": {u: i for u, i in req.calibre_ids.items() if u in urls},
         "results": [{"url": u, "phase": "queued", "calibre_id": None,
                      "chapter_count": None, "stub": None, "error": None,
-                     "story_url": None, "story_status": None} for u in urls],
+                     "story_url": None, "story_status": None, "via": None} for u in urls],
     }
     _executor.submit(_run_job, job_id)
     return {"job_id": job_id}
@@ -521,7 +636,10 @@ def _download_new(urls: list[str], by_url: dict[str, dict]) -> str:
         work = Path(tmp)
         infile = work / "urls.txt"
         infile.write_text("\n".join(urls) + "\n")
-        res = _fanficfare("-i", str(infile), cwd=str(work))
+        res = _ff(urls, "-i", str(infile), cwd=str(work))
+        if getattr(res, "via_flare", False):
+            for u in urls:
+                by_url[u]["via"] = "flaresolverr"
         output = (res.stdout or "") + (res.stderr or "")
         matched: set[str] = set()
         for epub in sorted(work.glob("*.epub")):
@@ -586,7 +704,7 @@ def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
         ran = len(pending)
         output = _download_new(pending, by_url)
         pending = _pending()
-        if not pending or not _TRANSIENT_RE.search(output):
+        if not pending or not _transient(output):
             break
         if attempt < RETRY_ATTEMPTS - 1:
             delay = RETRY_BASE_SECONDS * (2 ** attempt)
@@ -600,9 +718,9 @@ def _process_new_batch(urls: list[str], by_url: dict[str, dict]) -> None:
         for u in list(pending):
             single = _download_new([u], by_url)
             if by_url[u]["phase"] not in ("done", "error"):
-                _no_epub(by_url[u], single, transient=bool(_TRANSIENT_RE.search(single)))
+                _no_epub(by_url[u], single, transient=_transient(single))
         return
-    _no_epub(by_url[pending[0]], output, transient=bool(_TRANSIENT_RE.search(output)),
+    _no_epub(by_url[pending[0]], output, transient=_transient(output),
              attempts=RETRY_ATTEMPTS)
 
 
@@ -647,11 +765,11 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
     if calibre_id is None:  # vanished between split and now → treat as new
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            res = _fanficfare("--", url, cwd=str(work))
+            res = _ff([url], "--", url, cwd=str(work))
             epub = _only_epub(work)
             if epub is None:
                 combined = (res.stdout or "") + (res.stderr or "")
-                return entry, combined if _TRANSIENT_RE.search(combined) else _fail(entry, combined)
+                return entry, combined if _transient(combined) else _fail(entry, combined)
             add = _calibredb("add", str(epub))
             entry["calibre_id"] = _added_id(add) or _find_calibre_id(url)
             entry["chapter_count"] = _count_chapters(epub)
@@ -668,7 +786,9 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
         if epub is None:
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
-        upd = _fanficfare_update(epub, cwd=str(work))
+        upd = _fanficfare_update(epub, cwd=str(work), url=url)
+        if getattr(upd, "via_flare", False):
+            entry["via"] = "flaresolverr"
         combined = (upd.stdout or "") + (upd.stderr or "")
 
         stub = None
@@ -677,16 +797,16 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             old, new = int(m.group(1)), int(m.group(2))
             _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
-            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work))
+            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
             if _SKIPPED_RE.search((forced.stdout or "") + (forced.stderr or "")):
                 return entry, _fail(entry, "fanficfare skipped writing the stub re-download: "
                                     + _tail((forced.stdout or "") + (forced.stderr or "")))
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
             stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
-            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work))
+            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
             combined = (forced.stdout or "") + (forced.stderr or "")
-        elif upd.returncode != 0 and _TRANSIENT_RE.search(combined):
+        elif upd.returncode != 0 and _transient(combined):
             return entry, combined  # retryable
         if not stub and _SKIPPED_RE.search(combined):
             # New chapters were found but not written. Reporting the unchanged EPUB as `ok` is what

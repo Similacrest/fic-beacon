@@ -102,8 +102,12 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `BEACON_TZ` | Timezone for release/sweep schedules (e.g. `Europe/Tallinn`) | system / UTC |
 | `BEACON_FETCHER_URL` | URL of the fetcher service | `http://fetcher:8080` |
 | `BEACON_FETCHER_POLL_INTERVAL` | Seconds between polls of a running fetch job | `30` |
-| `BEACON_FETCHER_JOB_TIMEOUT` | Give up on a fetch job after this many seconds | `1200` |
+| `BEACON_FETCHER_JOB_TIMEOUT` | Give up on a fetch job after this many seconds (keep it above `FETCHER_FLARESOLVERR_TIMEOUT`) | `6300` |
 | `FETCHER_FANFICFARE_TIMEOUT` | Per-FanFicFare-call wall-clock cap, seconds (set in the **fetcher** container) | `1200` |
+| `FETCHER_FLARESOLVERR_TIMEOUT` | Wall-clock cap for a FanFicFare run routed through FlareSolverr (~20 s per request), seconds (**fetcher**) | `5400` |
+| `FETCHER_FLARESOLVERR_AFTER` | Consecutive 403s on one source before it is fetched through FlareSolverr (**fetcher**) | `2` |
+| `FETCHER_FLARESOLVERR_PROBE_SECONDS` | How often a FlareSolverr source is tried directly again; a direct success switches it back (**fetcher**) | `86400` |
+| `FETCHER_STATE_DIR` | Where the fetcher keeps its per-source 403 counters (**fetcher**) | `/state` |
 | `FETCHER_CALIBREDB_TIMEOUT` | Per-`calibredb`-call wall-clock cap, seconds (set in the **fetcher** container) | `600` |
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 

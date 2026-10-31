@@ -56,8 +56,9 @@ class Settings(BaseSettings):
     fetcher_timeout: float = 30.0
     # How often to poll a running fetch job for completion (seconds).
     fetcher_poll_interval: float = 30.0
-    # Give up on a fetch job after this many seconds (mark the books as errored).
-    fetcher_job_timeout: float = 1200.0
+    # Give up on a fetch job after this many seconds (mark the books as errored). Must outlast the
+    # fetcher's own limits: FETCHER_FLARESOLVERR_TIMEOUT (default 5400 s) plus a direct probe.
+    fetcher_job_timeout: float = 6300.0
 
     # Scheduling timezone for drop/poll cron (e.g. "Europe/Tallinn").
     # Unset → APScheduler uses the machine local tz, which is UTC in a stock container.

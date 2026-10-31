@@ -64,6 +64,9 @@ services:
       - ${CALIBRE_LIBRARY_PATH:-.}:/calibre-library
       # personal.ini (site logins) — edit it directly in this container/host path.
       - ${FETCHER_CONFIG_PATH:-./fetcher/config}:/config
+      # Per-source 403 counters for the FlareSolverr fallback; must be writable by FETCHER_UID
+      # (if not, the counters only live in memory and reset on restart).
+      - fetcher-state:/state
     environment:
       HOME: /tmp
       FETCHER_TOKEN: "${FETCHER_TOKEN:-}"
@@ -72,4 +75,5 @@ services:
       - "8080"
 
 volumes:
+  fetcher-state:
   beacon-data:
