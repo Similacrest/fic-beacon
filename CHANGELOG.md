@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.2] — 2026-11-01
+
+### Changed
+- **FlareSolverr routing is per host, not per story.** Cloudflare blocks the host, so two
+  consecutive 403/418s from `royalroad.com` (from any stories) flag the host and every story on it,
+  including new ones, is fetched through FlareSolverr. The daily direct probe and the switch back are
+  per host too. The old per-story `flaresolverr.json` entries are folded into their host on load.
+- **The flagged hosts are visible.** The fetcher mirrors them into `/state/flaresolverr-sites.ini`
+  (one section per host, the routing keys from `flaresolverr.ini`, never logins), passed to FanFicFare
+  as the last `-c`. It is regenerated from `flaresolverr.json`; un-flag a host there.
+- **AO3's HTTP 418** (its anti-bot answer) counts as a block like 403.
+- A failed fetch's `last_fetch_status` leads with the exception line (`…HTTPErrorFFF: … 418 …`)
+  instead of a cut-off traceback tail.
+
+### Fixed
+- **A `%` in a title crashed updates** (`invalid interpolation syntax`): FanFicFare stores the
+  exported EPUB's file name as a config value. The export is renamed (`%` → `_`) before the update.
+
 ## [0.25.1] — 2026-11-01
 
 ### Fixed

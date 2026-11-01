@@ -107,7 +107,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `FETCHER_FLARESOLVERR_TIMEOUT` | Wall-clock cap for a FanFicFare run routed through FlareSolverr (~20 s per request), seconds (**fetcher**) | `5400` |
 | `FETCHER_FLARESOLVERR_AFTER` | Consecutive 403s on one source before it is fetched through FlareSolverr (**fetcher**) | `2` |
 | `FETCHER_FLARESOLVERR_PROBE_SECONDS` | How often a FlareSolverr source is tried directly again; a direct success switches it back (**fetcher**) | `86400` |
-| `FETCHER_STATE_DIR` | Where the fetcher keeps its per-source 403 counters (**fetcher**) | `/state` |
+| `FETCHER_STATE_DIR` | Where the fetcher keeps its per-host 403 counters and `flaresolverr-sites.ini` (**fetcher**) | `/state` |
 | `FETCHER_CALIBREDB_TIMEOUT` | Per-`calibredb`-call wall-clock cap, seconds (set in the **fetcher** container) | `600` |
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 

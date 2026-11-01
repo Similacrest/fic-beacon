@@ -459,7 +459,7 @@ def test_new_story_that_adds_nothing_is_an_error_not_a_phantom_success(fake_tool
 
 # ── `-u` must not be short-circuited by the exported file's mtime ────────────────────────────
 
-def _update_with(calibre, monkeypatch, outputs, returncode=0):
+def _update_with(calibre, monkeypatch, outputs, returncode=0, name="book.epub"):
     """Run _update_one on 4629 with a scripted FanFicFare; returns (entry, transient, ff calls, mtimes)."""
     fake = calibre({4629: {"url": RR}})
     calls, mtimes = [], []
@@ -467,14 +467,14 @@ def _update_with(calibre, monkeypatch, outputs, returncode=0):
 
     def fanficfare(*args, cwd):
         calls.append(args)
-        mtimes.append((Path(cwd) / "book.epub").stat().st_mtime)
+        mtimes.append((Path(cwd) / name.replace("%", "_")).stat().st_mtime)
         return subprocess.CompletedProcess(args, returncode, stdout=next(outputs, ""), stderr="")
     monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
     real_calibredb = fetcher._calibredb
 
     def calibredb(*args):
         if args[0] == "export":
-            _fff_epub(Path(args[args.index("--to-dir") + 1]) / "book.epub", RR, "In-Progress")
+            _fff_epub(Path(args[args.index("--to-dir") + 1]) / name, RR, "In-Progress")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         return real_calibredb(*args)
     monkeypatch.setattr(fetcher, "_calibredb", calibredb)
@@ -569,7 +569,7 @@ def test_flagged_source_goes_straight_to_flaresolverr_and_state_survives_restart
 
 def test_daily_probe_clears_the_flag_when_direct_works(flare, tmp_path, monkeypatch):
     _run_ff(tmp_path); _run_ff(tmp_path)
-    key = fetcher._story_key(_RR)
+    key = fetcher._host_key(_RR)
     fetcher._state[key]["probed_at"] -= fetcher.FLARE_PROBE_SECONDS + 1
     flare["script"] = [([], "all good")]
     flare["flare"].clear()
@@ -580,7 +580,7 @@ def test_daily_probe_clears_the_flag_when_direct_works(flare, tmp_path, monkeypa
 
 def test_failed_probe_falls_back_in_the_same_run_and_waits_another_day(flare, tmp_path):
     _run_ff(tmp_path); _run_ff(tmp_path)
-    key = fetcher._story_key(_RR)
+    key = fetcher._host_key(_RR)
     fetcher._state[key]["probed_at"] -= fetcher.FLARE_PROBE_SECONDS + 1
     flare["flare"].clear()
     res = _run_ff(tmp_path)
@@ -590,9 +590,9 @@ def test_failed_probe_falls_back_in_the_same_run_and_waits_another_day(flare, tm
     assert flare["flare"] == [True]  # probed just now: no second direct try
 
 
-def test_batch_403_is_not_attributed_to_any_source(flare, tmp_path):
+def test_batch_403_across_hosts_is_not_attributed_to_any_host(flare, tmp_path):
     for _ in range(3):
-        fetcher._ff([_RR, "https://www.royalroad.com/fiction/1"], "-i", "u.txt", cwd=str(tmp_path))
+        fetcher._ff([_RR, "https://archiveofourown.org/works/1"], "-i", "u.txt", cwd=str(tmp_path))
     assert flare["flare"] == [False] * 3 and fetcher._state == {}
 
 
@@ -618,6 +618,65 @@ def test_403_regex_needs_fanficfare_error_not_just_no_epub():
 def test_job_result_records_via_flaresolverr(flare, tmp_path):
     flare["script"] = [([], _403), ([("a.epub", _RR, "In-Progress")], "ok")]
     entry = _entry(_RR)
-    fetcher._state_load()[fetcher._story_key(_RR)] = {"count": 1}
+    fetcher._state_load()[fetcher._host_key(_RR)] = {"count": 1}
     fetcher._download_new([_RR], {_RR: entry})
     assert entry["via"] == "flaresolverr" and entry["phase"] == "done"
+
+
+_RR2 = "https://www.royalroad.com/fiction/99999"
+
+
+def test_403s_from_different_stories_on_one_host_flag_the_host(flare, tmp_path):
+    fetcher._ff([_RR], "-u", "x.epub", cwd=str(tmp_path))
+    flare["flare"].clear()
+    fetcher._ff([_RR2], "-u", "y.epub", cwd=str(tmp_path))  # second 403 from the host
+    assert flare["flare"] == [False, True]
+    flare["flare"].clear()
+    res = fetcher._ff(["https://www.royalroad.com/fiction/5"], "-u", "z.epub", cwd=str(tmp_path))
+    assert flare["flare"] == [True] and res.via_flare is True  # a never-seen story rides along
+
+
+def test_sites_ini_lists_flagged_hosts_without_logins(flare, tmp_path):
+    (tmp_path / "flaresolverr.ini").write_text(
+        "[defaults]\nuse_flaresolverr_proxy: directimages\nflaresolverr_proxy_address: flaresolverr\n"
+        "[www.royalroad.com]\npassword: hunter2\n")
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    txt = fetcher._sites_ini().read_text()
+    assert "[royalroad.com]" in txt and "[www.royalroad.com]" in txt
+    assert "use_flaresolverr_proxy: directimages" in txt and "hunter2" not in txt
+
+
+def test_unflagging_removes_the_section(flare, tmp_path):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    key = fetcher._host_key(_RR)
+    fetcher._state[key]["probed_at"] -= fetcher.FLARE_PROBE_SECONDS + 1
+    flare["script"] = [([], "all good")]
+    _run_ff(tmp_path)
+    assert "royalroad" not in fetcher._sites_ini().read_text()
+
+
+def test_old_per_story_state_folds_into_its_host(flare, tmp_path):
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "flaresolverr.json").write_text(
+        '{"royalroad.com|83080": {"count": 2, "flare": true, "probed_at": 1}, "royalroad.com|1": {"count": 1}}')
+    st = fetcher._state_load()
+    assert list(st) == ["royalroad.com"] and st["royalroad.com"]["flare"] is True
+
+
+def test_418_is_a_block_like_403():
+    assert fetcher._403_RE.search("HTTPErrorFFF: HTTP Error in FFF '418 Client Error: I'm a teapot'")
+
+
+def test_tail_leads_with_the_exception_line():
+    out = "\n".join(["Traceback (most recent call last):", "  File \"a.py\", line 1, in x",
+                      "    raise exceptions.HTTPErrorFFF(", "    ^^^^^^^^^", "      ^^^^^",
+                      "fanficfare.exceptions.HTTPErrorFFF: HTTP Error in FFF '418 Client'", "   ^^^^"])
+    assert fetcher._tail(out).startswith("fanficfare.exceptions.HTTPErrorFFF: HTTP Error in FFF '418")
+
+
+def test_percent_in_the_export_name_is_not_passed_to_fanficfare(calibre, monkeypatch):
+    """FanFicFare stores the EPUB name as a config value; a bare % crashes configparser."""
+    _, entry, transient, calls, _ = _update_with(
+        calibre, monkeypatch, ["Do update - epub(17) vs url(27)"], name="snipers solve 99% of all.epub")
+    assert transient is None and not entry.get("error")
+    assert calls[0][1] == "./snipers solve 99_ of all.epub"
