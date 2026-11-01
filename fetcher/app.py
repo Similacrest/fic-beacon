@@ -210,6 +210,8 @@ def _state_load() -> dict[str, dict]:
             if rec.get("flare"):
                 cur["flare"] = True
                 cur["probed_at"] = max(cur.get("probed_at", 0), rec.get("probed_at", 0))
+        if any("|" in k for k in raw):  # persist the fold now: the ini must exist before any flare run
+            _state_save()
     return _state
 
 
@@ -249,6 +251,43 @@ def _state_save() -> None:
         logger.warning("could not persist flaresolverr state in %s: %s", STATE_DIR, exc)
 
 
+def _ensure_sites_ini(hosts) -> str | None:
+    """Make sure the sites ini has a section for every host (call with _state_lock held).
+
+    FanFicFare silently ignores a missing `-c` file, so a flare run without the routing keys goes out
+    direct. Returns None when the ini is in place, else the reason it could not be written."""
+    try:
+        txt = _sites_ini().read_text()
+    except OSError:
+        txt = ""
+    if all(f"[{h}]" in txt and f"[www.{h}]" in txt for h in hosts):
+        return None
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _write_atomic(_sites_ini(), _sites_ini_text(_state_load()))
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def _flare_run(hosts, args, cwd: str) -> subprocess.CompletedProcess:
+    """A FlareSolverr run, but only with the routing in place; otherwise a clear error, never a
+    silent direct run labelled as flaresolverr."""
+    with _state_lock:
+        err = _ensure_sites_ini(hosts)
+    if err:
+        logger.error("cannot write %s: %s", _sites_ini(), err)
+        res = subprocess.CompletedProcess(
+            list(args), 1, stdout="",
+            stderr=f"flaresolverr routing file {_sites_ini()} could not be written ({err}); "
+                   f"not fetching direct {_NO_RETRY}")
+        res.via_flare = False
+        return res
+    res = _fanficfare(*args, cwd=cwd, flare=True)
+    res.via_flare = True
+    return res
+
+
 def _ff(urls: list[str], *args: str, cwd: str) -> subprocess.CompletedProcess:
     """Run FanFicFare directly, falling back to FlareSolverr for a host that keeps getting 403s.
 
@@ -275,9 +314,9 @@ def _ff(urls: list[str], *args: str, cwd: str) -> subprocess.CompletedProcess:
         return res
 
     if flagged and stay_on_flare and can_flare:
-        res = _fanficfare(*args, cwd=cwd, flare=True)
+        res = _flare_run(flagged, args, cwd)
         logger.info("fetched via flaresolverr: %s", " ".join(urls))
-        return finish(res, True)
+        return res
 
     res = _fanficfare(*args, cwd=cwd)
     out = (res.stdout or "") + (res.stderr or "")
@@ -307,8 +346,7 @@ def _ff(urls: list[str], *args: str, cwd: str) -> subprocess.CompletedProcess:
         logger.warning("%s: blocked, but %s is missing - cannot use flaresolverr", h, FLARE_INI)
         return finish(res, False)
     logger.info("%s: %d consecutive blocks - retrying through flaresolverr", h, rec["count"])
-    res = _fanficfare(*args, cwd=cwd, flare=True)
-    return finish(res, True)
+    return _flare_run([h], args, cwd)
 
 
 def _fanficfare_update(epub: Path, *opts: str, cwd: str, url: str) -> subprocess.CompletedProcess:

@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.4] — 2026-11-01
+
+### Fixed
+- **A FlareSolverr run can no longer go out direct while labelled `via flaresolverr`.** After the 0.25.2
+  upgrade the folded per-host state was never saved, so `/state/flaresolverr-sites.ini` did not exist;
+  FanFicFare silently ignores a missing `-c` file, so the "flare" run was a plain 403. The fold is now
+  saved on load, and every flare run first makes sure the ini lists the host (regenerating it), failing
+  with a clear error if it cannot be written. `via_flare` is only set when the routing was in place.
+
 ## [0.25.3] — 2026-11-01
 
 ### Changed

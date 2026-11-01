@@ -680,3 +680,50 @@ def test_percent_in_the_export_name_is_not_passed_to_fanficfare(calibre, monkeyp
         calibre, monkeypatch, ["Do update - epub(17) vs url(27)"], name="snipers solve 99% of all.epub")
     assert transient is None and not entry.get("error")
     assert calls[0][1] == "./snipers solve 99_ of all.epub"
+
+
+def test_legacy_state_is_saved_and_ini_exists_before_a_flare_run(flare, tmp_path):
+    import time as _t
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "flaresolverr.json").write_text(
+        '{"royalroad.com|83080": {"count": 2, "flare": true, "probed_at": %d}}' % int(_t.time()))
+    seen = {}
+    orig = fetcher._fanficfare
+
+    def spy(*a, cwd, flare=False):
+        if flare:
+            seen["ini"] = fetcher._sites_ini().read_text() if fetcher._sites_ini().exists() else None
+        return orig(*a, cwd=cwd, flare=flare)
+
+    fetcher._state = None
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(fetcher, "_fanficfare", spy)
+    try:
+        res = _run_ff(tmp_path)
+    finally:
+        mp.undo()
+    assert res.via_flare is True and "[royalroad.com]" in seen["ini"]
+    assert "royalroad.com|" not in (tmp_path / "state" / "flaresolverr.json").read_text()
+
+
+def test_deleted_ini_is_regenerated_before_a_flare_run(flare, tmp_path):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    fetcher._sites_ini().unlink()
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [True] and res.via_flare is True
+    assert "[www.royalroad.com]" in fetcher._sites_ini().read_text()
+
+
+def test_unwritable_ini_fails_clearly_instead_of_running_direct(flare, tmp_path, monkeypatch):
+    _run_ff(tmp_path); _run_ff(tmp_path)
+    fetcher._sites_ini().unlink()
+
+    def boom(path, text):
+        raise OSError("read-only file system")
+    monkeypatch.setattr(fetcher, "_write_atomic", boom)
+    flare["flare"].clear()
+    res = _run_ff(tmp_path)
+    assert flare["flare"] == [] and res.via_flare is False
+    assert "could not be written" in res.stderr and "read-only" in res.stderr
