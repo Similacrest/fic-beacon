@@ -663,8 +663,8 @@ def test_old_per_story_state_folds_into_its_host(flare, tmp_path):
     assert list(st) == ["royalroad.com"] and st["royalroad.com"]["flare"] is True
 
 
-def test_418_is_a_block_like_403():
-    assert fetcher._403_RE.search("HTTPErrorFFF: HTTP Error in FFF '418 Client Error: I'm a teapot'")
+def test_418_is_an_outage_not_a_block():
+    assert not fetcher._403_RE.search("HTTPErrorFFF: HTTP Error in FFF '418 Client Error: I'm a teapot'")
 
 
 def test_tail_leads_with_the_exception_line():
