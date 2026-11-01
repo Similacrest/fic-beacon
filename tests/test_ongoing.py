@@ -399,3 +399,89 @@ class TestAddStories:
         a = in_memory_db.query(Book).filter(Book.source_url == "https://s/a").one()
         # /c is new (and not repeated as a duplicate of itself); /a was already tracked
         assert f"added={added.id}" in loc and f"dupes={a.id}" in loc
+
+
+# ── drift: an EPUB that is behind a feed whose newest GUID we have already "seen" ──────────────
+
+RR_BASE = "https://www.royalroad.com/fiction/1/s/chapter"
+
+
+def _links_feed(*ids):
+    """Newest-first feed whose entries link to RoyalRoad-style chapter URLs."""
+    parsed = MagicMock()
+    parsed.entries = [FeedParserDict(id=f"guid-{i}", link=f"{RR_BASE}/{i}/c-{i}", title=str(i)) for i in ids]
+    return parsed
+
+
+def _epub_urls(*ids):
+    return [f"{RR_BASE}/{i}/c-{i}" for i in ids]
+
+
+class TestFeedDrift:
+    def _poll(self, db, feed, urls):
+        with patch("app.ongoing.poller._fetch_feed", return_value=feed), \
+             patch("app.ongoing.poller._epub_chapter_urls", return_value=urls), \
+             patch("app.scheduler.submit_and_track") as submit:
+            queued = poll_all_feeds(db)
+        return queued, submit
+
+    def test_epub_behind_a_seen_guid_is_refetched(self, in_memory_db):
+        src = _tracked(in_memory_db, last_seen_guid="guid-5000")
+        queued, submit = self._poll(in_memory_db, _links_feed(5000, 4999, 4998), _epub_urls(4998))
+        assert queued == 1
+        assert submit.call_args[0][2] == {src.id: "guid-5000"}  # settled like any trigger
+
+    def test_epub_with_the_newest_entry_is_left_alone(self, in_memory_db):
+        _tracked(in_memory_db, last_seen_guid="guid-5000")
+        queued, submit = self._poll(in_memory_db, _links_feed(5000, 4999), _epub_urls(4999, 5000))
+        assert queued == 0
+        submit.assert_not_called()
+
+    def test_incomparable_links_are_not_drift(self, in_memory_db):
+        """No feed entry matches any chapter URL → we can't tell, so don't refetch forever."""
+        _tracked(in_memory_db, last_seen_guid="guid-5000")
+        queued, _ = self._poll(in_memory_db, _links_feed(5000, 4999), _epub_urls(1, 2, 3))
+        assert queued == 0
+
+    def test_unreadable_epub_is_not_drift(self, in_memory_db):
+        _tracked(in_memory_db, last_seen_guid="guid-5000")
+        queued, _ = self._poll(in_memory_db, _links_feed(5000, 4999), [])
+        assert queued == 0
+
+    def test_given_up_guid_is_not_retried(self, in_memory_db):
+        from app.state import FETCH_GIVEUP_PREFIX, set_value
+        src = _tracked(in_memory_db, last_seen_guid="guid-5000")
+        set_value(in_memory_db, FETCH_GIVEUP_PREFIX + str(src.id), '{"guid": "guid-5000"}')
+        queued, _ = self._poll(in_memory_db, _links_feed(5000, 4999, 4998), _epub_urls(4998))
+        assert queued == 0
+
+    def test_new_entry_after_a_giveup_is_tried_again(self, in_memory_db):
+        from app.state import FETCH_GIVEUP_PREFIX, set_value
+        src = _tracked(in_memory_db, last_seen_guid="guid-4999")
+        set_value(in_memory_db, FETCH_GIVEUP_PREFIX + str(src.id), '{"guid": "guid-4999"}')
+        queued, _ = self._poll(in_memory_db, _links_feed(5000, 4999), _epub_urls(4999))
+        assert queued == 1
+
+
+class TestGiveUpIsRecorded:
+    def _fruitless(self, db, book, guid="g"):
+        from app import scheduler
+        res = MagicMock(ok=True, new_chapters=0)
+        for _ in range(scheduler.TRIGGER_MAX_ATTEMPTS):
+            scheduler._settle_trigger(db, book, res, guid)
+
+    def test_giving_up_leaves_a_record_for_the_dashboard(self, in_memory_db):
+        from app.state import FETCH_GIVEUP_PREFIX, get_value
+        src = _tracked(in_memory_db, last_seen_guid="old")
+        self._fruitless(in_memory_db, src)
+        assert '"g"' in get_value(in_memory_db, FETCH_GIVEUP_PREFIX + str(src.id))
+
+    def test_landing_chapters_clears_it_even_for_a_manual_fetch(self, in_memory_db):
+        from app import scheduler
+        from app.state import FETCH_GIVEUP_PREFIX, get_value
+        src = _tracked(in_memory_db, last_seen_guid="old")
+        self._fruitless(in_memory_db, src)
+        in_memory_db.flush()  # a later cycle: the record is committed by then
+        scheduler._settle_trigger(in_memory_db, src, MagicMock(ok=True, new_chapters=2), None)  # Fetch now
+        in_memory_db.flush()
+        assert get_value(in_memory_db, FETCH_GIVEUP_PREFIX + str(src.id)) is None

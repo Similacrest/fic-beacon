@@ -179,7 +179,11 @@ smallest — so the first release after upgrading is the same size and split as 
   (`scheduler._settle_trigger`; the GUID rides in the `fetch_job` mapping): a failed fetch, or one that
   finds nothing new, leaves it unseen so the next cycle retries — capped at `TRIGGER_MAX_ATTEMPTS` (3)
   fetches per GUID (`app_state[trigger_retry:{book_id}]`) so a GUID that never yields a chapter (a
-  skipped threadmark category, RSS running ahead of the site) can't refetch forever. A book with a
+  skipped threadmark category, RSS running ahead of the site) can't refetch forever. Giving up writes
+  `app_state[fetch_giveup:{book_id}]` (dashboard attention item; cleared when any fetch lands chapters).
+  **Drift check:** with an unchanged GUID the poller still refetches if the feed's newest link is
+  missing from the EPUB's chapter URLs while older entries are present (`poller._feed_behind_epub`),
+  unless that GUID was given up on. A fetcher update that fails is an `error`, never `ok`. A book with a
   fetch in flight is skipped by the poller. A `304` from a trigger feed means "no change".
   Feed-less tracked stories are refreshed by a daily sweep. Both the poller and sweep
   **skip** stories whose `#status` is done (Completed / Abandoned / Published) — their EPUBs are

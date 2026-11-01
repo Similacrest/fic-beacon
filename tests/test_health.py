@@ -192,3 +192,14 @@ class TestDashboardHealth:
             progress.clear()
         assert "Release running" in t and "Planning Fantasy (1/2)…" in t
         assert "disabled" in t
+
+
+class TestGaveUpAttention:
+    def test_gave_up_feed_entry_is_surfaced_until_chapters_land(self, in_memory_db):
+        from app.state import FETCH_GIVEUP_PREFIX, set_value
+        b = _book(in_memory_db, "AGARES", calibre_id=1, tracked=True, last_fetch_status="ok")
+        assert _attn(in_memory_db) == []
+        set_value(in_memory_db, FETCH_GIVEUP_PREFIX + str(b.id), '{"guid": "g", "at": "2026-11-01T00:00:00+00:00"}')
+        items = _attn(in_memory_db)
+        assert len(items) == 1 and items[0]["href"] == f"/admin/books/{b.id}"
+        assert "AGARES" in items[0]["text"] and "gave up" in items[0]["text"]

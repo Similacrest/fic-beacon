@@ -17,6 +17,7 @@ only via FanFicFare's personal.ini) have no RSS signal and are handled by the da
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -105,6 +106,66 @@ def _newest_guid(parsed) -> str | None:
     return None
 
 
+def _norm_url(url: str) -> str:
+    return url.split("#", 1)[0].split("?", 1)[0].rstrip("/").lower()
+
+
+def _tail_id(url: str) -> str | None:
+    """The last purely numeric path segment of 4+ digits (a chapter/post id), if any."""
+    for seg in reversed(_norm_url(url).split("/")):
+        if seg.isdigit() and len(seg) >= 4:
+            return seg
+    return None
+
+
+def _epub_chapter_urls(book: Book) -> list[str]:
+    """Per-chapter canonical URLs of the EPUB beacon reads for `book` ([] if unknown/unreadable)."""
+    if book.calibre_id is None:
+        return []
+    try:
+        from app.epub.chapterizer import chapterize
+        adapter = CalibreAdapter(settings.calibre_library_path)
+        cbook = adapter.get_book(book.calibre_id)
+        path = adapter.epub_path(cbook) if cbook is not None else None
+        if path is None or not path.exists():
+            return []
+        return [c.source_url for c in chapterize(path) if c.source_url]
+    except Exception:
+        logger.debug("Could not read the chapter URLs of calibre %s", book.calibre_id, exc_info=True)
+        return []
+
+
+def _feed_behind_epub(book: Book, parsed) -> bool:
+    """True when the feed's newest entry is a chapter the EPUB lacks while older entries are there.
+
+    The "older entries are there" half is what makes the comparison trustworthy: it proves the
+    feed's links look like the EPUB's chapter URLs. If none match (a site whose feed links to the
+    story page, a non-FanFicFare EPUB, an EPUB too far behind to overlap) we can't tell, so this
+    says no rather than refetching forever."""
+    links = [e.get("link") for e in parsed.entries if e.get("link")]
+    if len(links) < 2:
+        return False
+    urls = _epub_chapter_urls(book)
+    if not urls:
+        return False
+    have = {_norm_url(u) for u in urls}
+    have_ids = {i for i in map(_tail_id, urls) if i}
+
+    def present(link: str) -> bool:
+        return _norm_url(link) in have or (_tail_id(link) in have_ids if _tail_id(link) else False)
+
+    return not present(links[0]) and any(present(link) for link in links[1:])
+
+
+def _gave_up_on(session: Session, book: Book, guid: str) -> bool:
+    from app.state import FETCH_GIVEUP_PREFIX, get_value
+    try:
+        rec = json.loads(get_value(session, FETCH_GIVEUP_PREFIX + str(book.id)) or "null")
+    except ValueError:
+        return False
+    return isinstance(rec, dict) and rec.get("guid") == guid
+
+
 def poll_all_feeds(session: Session) -> int:
     """Check every feed-backed tracked book; submit a batch fetch for those showing something new.
 
@@ -127,7 +188,19 @@ def poll_all_feeds(session: Session) -> int:
         try:
             parsed = _fetch_feed(source.feed_url)
             newest = _newest_guid(parsed) if parsed is not None else None
-            if newest is None or newest == source.last_seen_guid:
+            if newest is None:
+                continue
+            if newest == source.last_seen_guid:
+                # Seen, but is the EPUB really caught up? A book added with chapters missing (or one
+                # whose fetches silently failed) never sees a *different* GUID again. Bounded: a
+                # fruitless attempt counts against TRIGGER_MAX_ATTEMPTS, then the entry is given up on.
+                if (parsed is None or _gave_up_on(session, source, newest)
+                        or not _feed_behind_epub(source, parsed)):
+                    continue
+                logger.info("'%s': EPUB is behind its feed (newest entry %s missing) - refetching",
+                            source.title, newest)
+                changed.append(source)
+                newest_guid[source.id] = newest
                 continue
             if source.last_seen_guid is None:  # first sight: seed only, it was downloaded at add time
                 source.last_seen_guid = newest

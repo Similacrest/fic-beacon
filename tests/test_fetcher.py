@@ -459,7 +459,7 @@ def test_new_story_that_adds_nothing_is_an_error_not_a_phantom_success(fake_tool
 
 # ── `-u` must not be short-circuited by the exported file's mtime ────────────────────────────
 
-def _update_with(calibre, monkeypatch, outputs):
+def _update_with(calibre, monkeypatch, outputs, returncode=0):
     """Run _update_one on 4629 with a scripted FanFicFare; returns (entry, transient, ff calls, mtimes)."""
     fake = calibre({4629: {"url": RR}})
     calls, mtimes = [], []
@@ -468,7 +468,7 @@ def _update_with(calibre, monkeypatch, outputs):
     def fanficfare(*args, cwd):
         calls.append(args)
         mtimes.append((Path(cwd) / "book.epub").stat().st_mtime)
-        return subprocess.CompletedProcess(args, 0, stdout=next(outputs, ""), stderr="")
+        return subprocess.CompletedProcess(args, returncode, stdout=next(outputs, ""), stderr="")
     monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
     real_calibredb = fetcher._calibredb
 
@@ -504,6 +504,16 @@ def test_writer_skip_is_an_error_not_ok(calibre, monkeypatch):
     assert transient is None
     assert "skipped writing" in entry["error"] and "more recently than Story" in entry["error"]
     assert not any(c[0] == "add_format" for c in fake.calls)  # Calibre entry left as it was
+
+
+def test_failed_update_is_an_error_not_ok(calibre, monkeypatch):
+    """A non-zero FanFicFare exit that isn't transient (e.g. a 403) used to fall through to
+    add_format of the unchanged EPUB and report ok."""
+    out = "HTTPErrorFFF: Giving up on https://www.royalroad.com/fiction/83080 403 Client Error: Forbidden"
+    fake, entry, transient, _, _ = _update_with(calibre, monkeypatch, [out], returncode=1)
+    assert transient is None
+    assert "403" in entry["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)
 
 
 # ---- FlareSolverr fallback -------------------------------------------------------------------

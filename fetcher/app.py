@@ -806,8 +806,16 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
             forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
             combined = (forced.stdout or "") + (forced.stderr or "")
+            upd = forced  # the exit status that matters is the forced run's
         elif upd.returncode != 0 and _transient(combined):
             return entry, combined  # retryable
+        if not stub and upd.returncode != 0 and not _SKIPPED_RE.search(combined):
+            # FanFicFare failed (a 403, a login wall, a traceback…) and wrote nothing. Falling through
+            # would add_format the *unchanged* EPUB and report `ok`, hiding the failure for good — and
+            # the 403 streak (which escalates to FlareSolverr) only counts if the app sees an error.
+            if _transient(combined):
+                return entry, combined  # the forced re-run hit a transient error: retry
+            return entry, _fail(entry, "fanficfare update failed: " + _tail(combined))
         if not stub and _SKIPPED_RE.search(combined):
             # New chapters were found but not written. Reporting the unchanged EPUB as `ok` is what
             # hid this — fail loudly instead, and leave the Calibre entry as it was.

@@ -119,6 +119,20 @@ def attention_items(
             items.append({"tone": "warn", "text": f"{b.title}: fetch failed — {msg}"[:160],
                           "href": f"/admin/books/{b.id}"})
 
+    from app.models import AppState
+    from app.state import FETCH_GIVEUP_PREFIX
+    for row in db.query(AppState).filter(AppState.key.like(FETCH_GIVEUP_PREFIX + "%")):
+        try:
+            bid = int(row.key.removeprefix(FETCH_GIVEUP_PREFIX))
+        except ValueError:
+            continue
+        b = by_id.get(bid)
+        if b is not None and not b.paused and bid not in book_notes:
+            items.append({"tone": "warn",
+                          "text": f"{b.title}: gave up on a new feed entry — repeated fetches found no new "
+                                  "chapters (the story may be behind its feed). Try Fetch now."[:200],
+                          "href": f"/admin/books/{b.id}"})
+
     missing = {e.get("book_id") for e in last_skips if e.get("missing")}
     for bid in missing:
         b = by_id.get(bid)

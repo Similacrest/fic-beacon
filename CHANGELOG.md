@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.1] — 2026-11-01
+
+### Fixed
+- **A failed update was reported `ok`.** When FanFicFare exited non-zero on an update without a
+  transient-looking error (a Cloudflare 403 above all), the fetcher still `add_format`-ed the
+  unchanged EPUB and returned success, so nothing showed in the app, the 403 streak never reached
+  the FlareSolverr fallback, and the trigger GUID was written off. It is now
+  `error: fanficfare update failed: …` and the Calibre entry is left as it was.
+- **A story whose EPUB was behind its feed was never refetched.** The first poll seeds
+  `last_seen_guid` with the newest entry, so a book added with chapters missing never saw a
+  different GUID. The poller now also checks, while the GUID is unchanged, whether the feed's
+  newest chapter link is absent from the EPUB while older ones are present, and queues a fetch.
+  Feeds whose links don't resemble the EPUB's chapter URLs are not judged.
+
+### Added
+- **Gave-up feed entries are visible.** After `TRIGGER_MAX_ATTEMPTS` fruitless fetches for one
+  entry the dashboard's attention list says so (`app_state[fetch_giveup:{id}]`, cleared when any
+  fetch lands chapters). The same record stops the drift check re-queuing that entry.
+
 ## [0.25.0] — 2026-10-31
 
 ### Added

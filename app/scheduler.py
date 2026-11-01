@@ -247,8 +247,10 @@ def _settle_trigger(session, book, result, guid: str | None) -> None:
     nothing new, leaves `last_seen_guid` alone so the next cycle's poll retries — up to
     TRIGGER_MAX_ATTEMPTS fetches for the same GUID, after which it is marked seen anyway.
     """
-    from app.state import TRIGGER_RETRY_PREFIX, delete_value, get_value, set_value
+    from app.state import FETCH_GIVEUP_PREFIX, TRIGGER_RETRY_PREFIX, delete_value, get_value, set_value
 
+    if result.ok and result.new_chapters:  # chapters landed (a manual Fetch now too): not stuck any more
+        delete_value(session, FETCH_GIVEUP_PREFIX + str(book.id))
     if guid is None:
         return
     key = TRIGGER_RETRY_PREFIX + str(book.id)
@@ -270,6 +272,10 @@ def _settle_trigger(session, book, result, guid: str | None) -> None:
         )
         book.last_seen_guid = guid
         delete_value(session, key)
+        # Kept (not just logged) so the dashboard can say so, and so the poller's drift check
+        # doesn't queue the same entry again every few cycles.
+        set_value(session, FETCH_GIVEUP_PREFIX + str(book.id),
+                  json.dumps({"guid": guid, "at": datetime.now(timezone.utc).isoformat()}))
     else:
         set_value(session, key, json.dumps({"guid": guid, "n": attempts}))
 
