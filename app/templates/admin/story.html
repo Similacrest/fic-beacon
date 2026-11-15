@@ -66,19 +66,54 @@
   <section class="card">
     <h2>Reading</h2>
     <form method="post" action="/admin/books/{{ book.id }}/set-cursor" class="inline-row"
-          title="{% if book.cursor_floor %}Can't rewind below {{ book.cursor_floor }} (chapters removed by a stub){% endif %}">{{ back() }}
+          title="{% if cursor_floor %}Can't rewind below {{ cursor_floor }} (chapters removed by a stub){% endif %}">{{ back() }}
       <label for="cursor">Next chapter to release</label>
       <input id="cursor" type="number" name="chapter_index" value="{{ book.cursor_chapter_index }}"
-             min="{{ book.cursor_floor }}" {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
+             min="{{ cursor_floor }}" {% if book.total_chapters %}max="{{ book.total_chapters }}"{% endif %}
              hx-post="/admin/books/{{ book.id }}/set-cursor" hx-trigger="change delay:500ms" hx-swap="none"
              class="autosave" style="width:5.5em">
       <span class="muted">of {{ book.total_chapters if book.total_chapters is not none else '?' }}</span>
     </form>
-    {% if book.chapter_label_offset or book.label_map %}
+    {% if book.chapter_label_offset or book.label_map or book.segments %}
     <p class="muted" style="font-size:.85em; margin:.2em 0">Author's numbering: ≈ chapter {{ abs_chapter(book, book.cursor_chapter_index) }}</p>
     {% endif %}
+    {% if bar %}
+    <style>
+      .segbar { display:flex; height:22px; border-radius:6px; overflow:hidden; position:relative; background:#0002; margin-top:.6em }
+      .segbar i { display:block; height:100% }
+      .seg-archive { background:#c9852b } .seg-archive_short_live { background:#e6c48f } .seg-live { background:#2f7fc1 }
+      .segpin { position:absolute; top:-4px; bottom:-4px; width:3px; background:#d6336c; border-radius:2px }
+      .segticks { position:relative; height:1.2em; font-size:.7em; margin-top:3px }
+      .segticks span { position:absolute; transform:translateX(-50%); white-space:nowrap }
+      .segticks span:first-child { transform:none } .segticks span:last-child { transform:translateX(-100%) }
+      .segkey { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.85em; margin-top:6px }
+      .segkey b { display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:4px; vertical-align:-1px }
+    </style>
+    {% set tot = book.total_chapters or 1 %}
+    <div class="segbar" role="img" aria-label="Where each chapter is served from">
+      {% for sp in bar %}<i class="seg-{{ sp.kind }}" style="width:{{ '%.2f'|format(sp.width_pct) }}%"
+        title="{{ 'old EPUB' if sp.kind != 'live' else 'live EPUB' }}{{ ' (live copy is a short stub)' if sp.kind == 'archive_short_live' else '' }}: chapters {{ sp.start_label }}–{{ sp.end_label }}"></i>{% endfor %}
+      <span class="segpin" style="left:{{ '%.2f'|format([book.cursor_chapter_index / tot * 100, 100]|min) }}%"></span>
+    </div>
+    <div class="segticks">
+      <span style="left:0">{{ bar[0].start_label }}</span>
+      {% set acc = namespace(pos=0) %}
+      {% for sp in bar[:-1] %}{% set acc.pos = acc.pos + (sp.end_pos - sp.start_pos + 1) %}
+      <span style="left:{{ '%.2f'|format(acc.pos / tot * 100) }}%">{{ sp.end_label }}|{{ bar[loop.index].start_label }}</span>{% endfor %}
+      <span style="left:100%">{{ bar[-1].end_label }}</span>
+    </div>
+    <div class="segkey">
+      <span><b class="seg-archive"></b>old EPUB (site no longer has it)</span>
+      <span><b class="seg-archive_short_live"></b>old EPUB (live copy is a short stub)</span>
+      <span><b class="seg-live"></b>live EPUB</span>
+      <span><b style="background:#d6336c"></b>cursor</span>
+    </div>
+    <p class="muted" style="font-size:.85em; margin:.5em 0 0">
+      {% for src in sources %}calibre {{ src.calibre_id }} ({{ 'live EPUB' if src.role == 'live' else 'old EPUB' }}, serves {{ src.serves }} chapter{{ '' if src.serves == 1 else 's' }}){{ ' · ' if not loop.last }}{% endfor %}
+    </p>
+    {% endif %}
     {% if book.total_chapters %}
-    <div class="bar"><span style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%"></span></div>
+    {% if not bar %}<div class="bar"><span style="width: {{ [(book.cursor_chapter_index / book.total_chapters * 100)|int, 100]|min }}%"></span></div>{% endif %}
     <p class="muted" style="font-size:.85em; margin:.3em 0">{{ pending }} chapter{{ '' if pending == 1 else 's' }} waiting</p>
     {% endif %}
     {% if undo %}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 from datetime import datetime
@@ -19,6 +20,7 @@ from app.calibre.genre import effective_genres, pick_channel_id
 from app.calibre.status import classify_status
 from app.config import settings
 from app.epub.chapterizer import chapterize
+from app.segments_view import effective_cursor_floor, segment_bar
 from app.database import delete_book_cascade, ensure_default_channel, get_db
 from app import timefmt
 from app.models import (
@@ -31,6 +33,8 @@ from app.state import (
     list_with_prefix,
 )
 from app.version import __version__
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
@@ -346,8 +350,12 @@ def story_page(book_id: int, request: Request, db: Session = Depends(get_db)) ->
         .filter(FeedbackEvent.book_id == book.id, FeedbackEvent.action != FeedbackAction.read)
         .order_by(FeedbackEvent.created_at.desc()).limit(15).all()
     )
+    bar, sources = _segment_view(book)
     return templates.TemplateResponse(request, "admin/story.html", {
         "book": book,
+        "bar": bar,
+        "sources": sources,
+        "cursor_floor": effective_cursor_floor(book),
         "channel": channel,
         "channels": channels,
         "why": why,
@@ -359,6 +367,32 @@ def story_page(book_id: int, request: Request, db: Session = Depends(get_db)) ->
         "votes": votes,
         "here": f"/admin/books/{book.id}",
     })
+
+
+def _segment_view(book: Book) -> tuple[list, list[dict]]:
+    """(bar spans, source rows) for a stubbed story; ([], []) for a plain one or when its EPUBs
+    can't be read (the page then just omits the bar)."""
+    if not book.segments:
+        return [], []
+    try:
+        from app.epub.unified import load_unified
+        adapter = CalibreAdapter(settings.calibre_library_path)
+        res = load_unified(book, adapter)
+    except Exception:
+        logger.debug("segment view unavailable for book %s", book.id, exc_info=True)
+        return [], []
+    if res.unreadable:
+        return [], []
+    served: dict[int, int] = {}
+    for c in res.chapters:
+        served[c.calibre_id] = served.get(c.calibre_id, 0) + 1
+    ids = [s.calibre_id for s in book.segments] + ([book.calibre_id] if book.calibre_id else [])
+    sources = [
+        {"calibre_id": cid, "role": "live" if cid == book.calibre_id else "archive",
+         "serves": served.get(cid, 0)}
+        for cid in ids
+    ]
+    return segment_bar(book, res.chapters), sources
 
 
 @router.post("/books/{book_id}/set-slot")
@@ -901,23 +935,22 @@ def set_cursor(
     book = db.get(Book, book_id)
     if book is not None:
         upper = book.total_chapters if book.total_chapters is not None else chapter_index
-        # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling).
+        # cursor_floor blocks rewinding into a stub-rewritten body (see stub handling); a book with
+        # segments still has those chapters in its archives, so it has no floor.
         old = book.cursor_chapter_index
-        book.cursor_chapter_index = max(book.cursor_floor, min(chapter_index, upper))
+        book.cursor_chapter_index = max(effective_cursor_floor(book), min(chapter_index, upper))
         _remember_cursor(db, book, old)
         db.commit()
     return _saved(request, next)
 
 
 def _book_chapter_count(book: Book) -> int | None:
-    """Content-chapter count of a book's current EPUB, computed on demand (None if no EPUB)."""
+    """Chapter count of a book's unified chapter list (all segments), computed on demand (None if unreadable)."""
     if book.calibre_id is None:
         return None
-    adapter = CalibreAdapter(settings.calibre_library_path)
-    cbook = adapter.get_book(book.calibre_id)
-    if cbook is None:
-        return None
-    return _epub_chapter_count(adapter, cbook)
+    from app.epub.unified import load_unified
+    res = load_unified(book, CalibreAdapter(settings.calibre_library_path))
+    return None if res.unreadable else len(res.chapters)
 
 
 @router.post("/books/{book_id}/cursor-latest")
@@ -933,7 +966,7 @@ def cursor_latest(book_id: int, next: str | None = Form(None), db: Session = Dep
         if count is not None:
             book.total_chapters = count
             old = book.cursor_chapter_index
-            book.cursor_chapter_index = max(book.cursor_floor, count)
+            book.cursor_chapter_index = max(effective_cursor_floor(book), count)
             _remember_cursor(db, book, old)
             db.commit()
     return _back(next)
@@ -948,7 +981,7 @@ def cursor_start(book_id: int, next: str | None = Form(None), db: Session = Depe
         if count is not None:  # populate the count so the UI can show progress
             book.total_chapters = count
         old = book.cursor_chapter_index
-        book.cursor_chapter_index = book.cursor_floor
+        book.cursor_chapter_index = effective_cursor_floor(book)
         _remember_cursor(db, book, old)
         db.commit()
     return _back(next)
@@ -962,7 +995,7 @@ def cursor_undo(book_id: int, next: str | None = Form(None), db: Session = Depen
     book = db.get(Book, book_id)
     undo = _cursor_undo(db, book) if book else None
     if book is not None and undo is not None:
-        book.cursor_chapter_index = max(book.cursor_floor, undo["from"])
+        book.cursor_chapter_index = max(effective_cursor_floor(book), undo["from"])
         delete_value(db, f"{CURSOR_UNDO_PREFIX}{book.id}")
         db.commit()
     return _back(next)
@@ -1190,7 +1223,7 @@ def requeue_book(book_id: int, next: str | None = Form(None), db: Session = Depe
         book.slot_index = None
         # Restart from the beginning of the *current* body — but never below cursor_floor (a stub
         # rewrote the body; chapters under the floor no longer exist).
-        book.cursor_chapter_index = book.cursor_floor
+        book.cursor_chapter_index = effective_cursor_floor(book)
         book.fresh_from_index = None
         book.paused = False
         book.thumbs_down = 0

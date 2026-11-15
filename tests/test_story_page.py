@@ -527,3 +527,55 @@ class TestBatchMarkRead:
         client, db = ctx
         _book(db, "A", calibre_id=1, tracked=True, slot_index=1)
         assert 'value="read"' in client.get("/admin/").text
+
+
+class TestSegmentedStory:
+    @pytest.fixture
+    def segmented(self, ctx, monkeypatch):
+        import os
+        from unittest.mock import patch
+        from app.models import BookSegment
+        from tests.test_segments_apply import FakeAdapter, _epub
+        client, db = ctx
+        arch = _epub([f"a{i}" for i in range(8)])
+        live = _epub(["a0", "a1", "a2", "n1", "n2"])
+        b = _book(db, "Stubbed", calibre_id=20, tracked=True, slot_index=1, cursor_chapter_index=5,
+                  total_chapters=10, cursor_floor=5, label_map="[[0, 0], [3, 2]]")
+        db.add(BookSegment(book_id=b.id, ordinal=0, calibre_id=10))
+        db.commit()
+        with patch("app.routers.admin.CalibreAdapter", return_value=FakeAdapter({10: arch, 20: live})):
+            yield client, db, b
+        os.unlink(arch)
+        os.unlink(live)
+
+    def test_page_shows_bar_sources_and_text_legend(self, segmented):
+        client, db, b = segmented
+        t = client.get(f"/admin/books/{b.id}").text
+        assert 'class="segbar"' in t and "old EPUB" in t and "live EPUB" in t
+        assert "calibre 10" in t and "calibre 20" in t
+        assert "Author's numbering" in t
+
+    def test_unsegmented_page_has_no_segment_ui(self, ctx):
+        client, db = ctx
+        b = _book(db, "Plain", slot_index=1, total_chapters=20, cursor_chapter_index=5)
+        t = client.get(f"/admin/books/{b.id}").text
+        assert "segbar" not in t and "old EPUB" not in t
+
+    def test_rewind_below_old_floor_is_allowed_with_segments(self, segmented):
+        client, db, b = segmented
+        client.post(f"/admin/books/{b.id}/set-cursor", data={"chapter_index": "1"})
+        db.refresh(b)
+        assert b.cursor_chapter_index == 1
+
+    def test_rewind_still_clamps_to_the_floor_without_segments(self, ctx):
+        client, db = ctx
+        b = _book(db, "Plain", total_chapters=20, cursor_chapter_index=9, cursor_floor=4)
+        client.post(f"/admin/books/{b.id}/set-cursor", data={"chapter_index": "1"})
+        db.refresh(b)
+        assert b.cursor_chapter_index == 4
+
+    def test_cursor_latest_uses_the_unified_count(self, segmented):
+        client, db, b = segmented
+        client.post(f"/admin/books/{b.id}/cursor-latest")
+        db.refresh(b)
+        assert b.cursor_chapter_index == 10 and b.total_chapters == 10
