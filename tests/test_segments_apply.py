@@ -193,3 +193,15 @@ def test_stub_retry_does_not_duplicate_the_segment(in_memory_db, stub_files):
     _apply(in_memory_db, b, raw, stub_files)
 
     assert [s.calibre_id for s in b.segments] == [10] and b.cursor_chapter_index == 5
+
+
+def test_legacy_stub_remap_matches_chapters_across_a_changed_slug(in_memory_db):
+    from app.fetch.client import _apply_stub_by_identity
+    b = _book(in_memory_db, 20, cursor=3, tracked=True)
+    rr = lambda slug, i: f"https://www.royalroad.com/fiction/1/{slug}/chapter/{100 + i}/c"  # noqa: E731
+    old = [rr("old", i) for i in range(5)]
+    new = [rr("new", i) for i in (2, 3, 4)]
+
+    _apply_stub_by_identity(b, old, new)
+
+    assert b.cursor_chapter_index == 1      # chapter 3 survives at new index 1

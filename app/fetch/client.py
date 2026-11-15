@@ -300,6 +300,10 @@ def _apply_stub(book: Book, stub: StubInfo) -> None:
 
 def _apply_stub_by_identity(book: Book, old_urls: list[str], new_urls: list[str]) -> None:
     """Rebuild `label_map` and remap the cursor by matching chapters on their canonical URL."""
+    from app.ongoing.story_key import chapter_key
+    # chapter identity, not the raw URL: a renamed story slug must not make every chapter "new"
+    old_urls = [chapter_key(u) or u for u in old_urls]
+    new_urls = [chapter_key(u) or u for u in new_urls]
     old_index = {u: i for i, u in enumerate(old_urls)}
     new_index = {u: i for i, u in enumerate(new_urls)}
     new_len = len(new_urls)

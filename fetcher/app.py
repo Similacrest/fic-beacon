@@ -540,8 +540,8 @@ def _search_ids(query: str) -> list[int]:
     return [int(t) for t in re.split(r"[,\s]+", out) if t.isdigit()]
 
 
-def _identifier_urls(ids: list[int]) -> dict[int, str] | None:
-    """{id: its `url:` identifier} for `ids`, or None if calibredb's listing can't be read.
+def _identifier_urls(ids: list[int], scheme: str = "url") -> dict[int, str] | None:
+    """{id: its `<scheme>:` identifier (default `url:`)} for `ids`, or None if calibredb's listing can't be read.
 
     `--for-machine` gives JSON where `identifiers` is a `{scheme: value}` dict (older builds: a
     `scheme:value,…` string), so both shapes are accepted.
@@ -562,7 +562,7 @@ def _identifier_urls(ids: list[int]) -> dict[int, str] | None:
         if isinstance(ident, str):
             ident = dict(p.split(":", 1) for p in ident.split(",") if ":" in p)
         if isinstance(row.get("id"), int) and isinstance(ident, dict):
-            out[row["id"]] = str(ident.get("url") or "")
+            out[row["id"]] = str(ident.get(scheme) or "")
     # A listing that doesn't account for every id asked about is a shape we don't understand, not
     # "none of them match": report unreadable so callers don't filter every hit away.
     return out if all(i in out for i in ids) else None
@@ -990,7 +990,18 @@ def _real_count(epub: Path) -> int:
 def _find_archive(epub: Path, url: str) -> int | None:
     """Id of the `url-archive:` entry for this story that already holds a byte-identical EPUB, so a
     retried stub does not pile up duplicate archives (None if there is none)."""
+    # By story identity, like the live lookup: the archive's identifier may carry another slug than
+    # `url` (Royal Road renames them), which made the exact-string search miss and a retry add a
+    # second, byte-identical archive.
+    key = _story_key(url)
     ids = _search_ids(f'identifiers:"=url-archive:{_quote(url)}"')
+    needle = key.split("|", 1)[1] if key else ""
+    if needle:
+        ids += [i for i in _search_ids(f'identifiers:"=url-archive:{_quote(needle)}"') if i not in ids]
+    if ids and key:
+        urls = _identifier_urls(ids, "url-archive")
+        if urls is not None:
+            ids = [i for i in ids if _story_key(urls.get(i)) == key]
     if not ids:
         return None
     want = _sha256(epub)

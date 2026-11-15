@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from app.config import settings
 from app.epub.chapterizer import Chapter, chapterize
 from app.models import Book, absolute_chapter_number
+from app.ongoing.story_key import chapter_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def build_unified(segments: list[tuple[int, list[Chapter]]], ratio: float) -> li
     A chapter whose URL was already seen in an earlier segment keeps its position; the later copy
     replaces it unless its word count is `< ratio ×` or `> (1/ratio) ×` the earlier one (a truncated
     or bloated re-render), in which case the earlier copy stays and is flagged `short_live`.
-    Chapters with no URL have no identity and are always appended. In a later EPUB the first
+    Identity is `chapter_key` (the site's chapter id, so a renamed slug still matches). Chapters with no URL have no identity and are always appended. In a later EPUB the first
     occurrence of a URL wins; the first EPUB is kept verbatim.
     """
     out: list[UChapter] = []
@@ -57,12 +58,12 @@ def build_unified(segments: list[tuple[int, list[Chapter]]], ratio: float) -> li
     for seg_no, (cid, chapters) in enumerate(segments):
         seen_here: set[str] = set()
         for c in chapters:
-            u = c.source_url
+            u = chapter_key(c.source_url)   # identity, not the raw URL: slugs get renamed
             if u and seg_no > 0:
                 if u in seen_here:
                     continue
                 seen_here.add(u)
-            new = UChapter(len(out), c.title, c.html, c.word_count, u, cid, c.index, seg_no)
+            new = UChapter(len(out), c.title, c.html, c.word_count, c.source_url, cid, c.index, seg_no)
             pos = by_url.get(u) if u else None
             if pos is None or seg_no == 0:
                 # the first EPUB is taken verbatim (positions == physical indices, so an existing

@@ -60,3 +60,37 @@ def normalize_story_url(url: str) -> str:
     if m:
         return m.group(1) + "/"
     return url
+
+
+_CHAPTER_ID_PATTERNS = (
+    (re.compile(r"/chapter/(\d+)", re.IGNORECASE), "chapter"),            # Royal Road
+    (re.compile(r"/chapters/(\d+)", re.IGNORECASE), "chapter"),           # AO3
+    (re.compile(r"/post-(\d+)", re.IGNORECASE), "post"),                  # XenForo
+)
+_FFN_CHAPTER_RE = re.compile(r"^/s/(\d+)/(\d+)", re.IGNORECASE)
+
+
+def chapter_key(url: str | None) -> str | None:
+    """A chapter's identity that survives a renamed story/chapter slug.
+
+    Royal Road renames the slug when an author retitles a story, so the raw chapter URLs of an old
+    EPUB and the live one never match although the numeric chapter id does. Keyed on the site's
+    chapter id where it has one (`host|chapter|<id>`, XenForo `post-<id>`, FFN story+chapter number),
+    else the normalised URL (no scheme, `www.`/`m.`, query, fragment or trailing slash).
+    """
+    if not url or not url.strip():
+        return None
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    path = parsed.path
+    ffn = _FFN_CHAPTER_RE.match(path)
+    if ffn:
+        return f"{host}|s|{ffn.group(1)}|{ffn.group(2)}"
+    for pattern, kind in _CHAPTER_ID_PATTERNS:
+        m = pattern.search(path) or (pattern.search("/" + parsed.fragment) if parsed.fragment else None)
+        if m:
+            return f"{host}|{kind}|{m.group(1)}"
+    return f"{host}|{path.rstrip('/').lower()}"

@@ -144,3 +144,13 @@ def test_loader_without_segments_matches_the_live_epub(in_memory_db):
     b = _book(s, calibre_id=20)
     res = load_unified(b, _FakeAdapter({20: _epub(4, "b")}))
     assert [c.position for c in res.chapters] == [0, 1, 2, 3] and res.unreadable == []
+
+
+def test_chapters_match_across_a_changed_url_slug():
+    def rr(slug, i):
+        return f"https://www.royalroad.com/fiction/1/{slug}/chapter/{1000 + i}/c{i}"
+    arch = [ch(i, rr("old-slug", i)) for i in range(5)]
+    live = [ch(i, rr("new-slug", i)) for i in range(3, 7)]
+    res = build_unified([(10, arch), (20, live)], 0.5)
+    assert len(res) == 7                                   # 5 archive + chapters 5,6 new
+    assert [c.calibre_id for c in res[3:5]] == [20, 20]    # shared chapters 3,4 served from live

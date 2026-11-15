@@ -1033,3 +1033,15 @@ def test_stale_partial_is_discarded_and_the_download_restarts(chunked, tmp_path)
 
     assert fetcher._fresh_download(RR, work, entry).returncode == 0
     assert "-b" in site.calls[0]                              # started over, not resumed
+
+
+def test_archive_is_found_even_when_its_identifier_has_another_slug(calibre):
+    fake = calibre({4657: {"url-archive": RR + "/b2-stubbing-nov-10th-new-life"}})
+    live = Path(__file__).parent / "_live3.epub"
+    _chapters(live, 5)
+    try:
+        fake.files[4657] = live.read_bytes()
+        found = fetcher._find_archive(live, RR + "/new-life-as-a-max-level-archmage")
+    finally:
+        live.unlink()
+    assert found == 4657

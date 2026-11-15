@@ -14,13 +14,37 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.epub.chapterizer import chapterize
 from app.epub.unified import load_unified
+from app.ongoing.story_key import chapter_key
 from app.models import Book, BookSegment, Drop
 from app.state import get_value, set_value
 
 logger = logging.getLogger(__name__)
 
 REPORT_KEY = "segment_backfill_report"
+VERSION_KEY = "segment_backfill_version"
+VERSION = "2"   # 1 = 0.26.0/0.26.1 (raw-URL matching, duplicate archives kept)
+
+
+def _distinct_archives(ids: list[int], adapter, book_id: int) -> list[int]:
+    """Drop archives whose chapter identities equal an earlier one's (a retried stub once added the
+    same EPUB twice): they'd occupy an ordinal and show as an empty segment."""
+    kept: list[int] = []
+    seen: set[tuple] = set()
+    for cid in ids:
+        try:
+            cb = adapter.get_book(cid)
+            sig = tuple(chapter_key(c.source_url) or c.title for c in chapterize(adapter.epub_path(cb)))
+        except Exception:
+            kept.append(cid)   # unreadable: let the unreadable check below decide
+            continue
+        if sig and sig in seen:
+            logger.warning("book %s: archive %s duplicates an earlier archive; skipped", book_id, cid)
+            continue
+        seen.add(sig)
+        kept.append(cid)
+    return kept
 
 
 def backfill_segments(session: Session, adapter) -> list[dict]:
@@ -35,6 +59,7 @@ def backfill_segments(session: Session, adapter) -> list[dict]:
         ids = [i for i in adapter.archive_ids(book.source_url) if i not in taken and i != book.calibre_id]
         if not ids:
             continue
+        ids = _distinct_archives(ids, adapter, book.id)
         for n, cid in enumerate(ids):
             book.segments.append(BookSegment(ordinal=n, calibre_id=cid))
         res = load_unified(book, adapter)
@@ -48,10 +73,10 @@ def backfill_segments(session: Session, adapter) -> list[dict]:
         position = {}
         for c in res.chapters:
             if c.source_url:
-                position.setdefault(c.source_url, c.position)
-        released = [position[d.source_url] + (d.chapter_end - d.chapter_start)
+                position.setdefault(chapter_key(c.source_url), c.position)
+        released = [position[chapter_key(d.source_url)] + (d.chapter_end - d.chapter_start)
                     for d in session.query(Drop).filter(Drop.book_id == book.id)
-                    if d.source_url in position]
+                    if d.source_url and chapter_key(d.source_url) in position]
         total = len(res.chapters)
         row = {"book_id": book.id, "title": book.title, "archive_ids": ids,
                "old_cursor": book.cursor_chapter_index,
@@ -81,7 +106,31 @@ def backfill_on_startup(session: Session) -> list[dict]:
         from app.calibre.adapter import CalibreAdapter
         from app.config import settings
         with session.begin_nested():  # a failure part-way rolls back this step only
-            return backfill_segments(session, CalibreAdapter(settings.calibre_library_path))
+            return backfill_with_repair(session, CalibreAdapter(settings.calibre_library_path))
     except Exception:
         logger.warning("segments backfill skipped", exc_info=True)
         return []
+
+
+def backfill_with_repair(session: Session, adapter) -> list[dict]:
+    """`backfill_segments`, first redoing the books the 0.26.0/0.26.1 backfill migrated.
+
+    That version matched chapters by raw URL (a renamed slug made every live chapter look new) and
+    kept duplicate archives, leaving wrong segments and cursors. Once (`VERSION_KEY`), the segments of
+    the books named in the old report are cleared and migrated again; the cursor is recomputed from
+    their drops. Later restarts leave them alone."""
+    if get_value(session, VERSION_KEY) != VERSION:
+        try:
+            old = json.loads(get_value(session, REPORT_KEY) or "[]")
+        except json.JSONDecodeError:
+            old = []
+        for row in old:
+            book = session.get(Book, row.get("book_id")) if isinstance(row, dict) else None
+            if book is not None and book.segments:
+                logger.warning("segments backfill: redoing book %s (migrated by an older version)", book.id)
+                for seg in list(book.segments):
+                    book.segments.remove(seg)
+        session.flush()
+    rows = backfill_segments(session, adapter)
+    set_value(session, VERSION_KEY, VERSION)
+    return rows

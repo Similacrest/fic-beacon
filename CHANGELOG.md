@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.26.2] — 2026-11-15
+
+### Fixed
+- **Segments mis-matched a stub whose URL slug changed** (ops memo, book 4). Royal Road renames the slug when a
+  story is retitled, so archive and live chapter URLs never matched although the chapter id did, and every
+  live chapter looked new. Chapters are now keyed by `chapter_key` (the site's chapter id: RR `/chapter/<id>`,
+  AO3 `/chapters/<id>`, XenForo `post-<id>`, FFN story+chapter; else the normalised URL) in the unified list,
+  the backfill's drop→position map and the legacy stub remap.
+- **Duplicate archives**: the fetcher's `_find_archive` now looks archives up by story identity (the old
+  exact-string search missed an archive whose identifier had another slug, so a retried stub added a second,
+  byte-identical archive), and the backfill skips an archive whose chapters equal an earlier one's.
+- **Books migrated by 0.26.0/0.26.1 are redone once** at startup (`app_state[segment_backfill_version]`): their
+  segments are cleared and rebuilt and the cursor is recomputed from their releases, so book 4 lands just
+  after its last read chapter. No manual step needed.
+
 ## [0.26.1] — 2026-11-15
 
 ### Changed

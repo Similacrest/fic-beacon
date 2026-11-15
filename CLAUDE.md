@@ -206,7 +206,7 @@ smallest — so the first release after upgrading is the same size and split as 
     live EPUB stays `book.calibre_id`) and **remaps nothing**: the planner, `apply_result`, the admin
     cursor controls and the story page read a **unified chapter list** (`app/epub/unified.py`) — archive
     chapters in order, then each later EPUB's chapters whose URL is new. An archive is the pre-stub EPUB,
-    so unified positions of its chapters equal the old physical indices: cursor, `label_map` and
+    so unified positions of its chapters equal the old physical indices (chapters are matched by `chapter_key`, the site's chapter id, never the raw URL — Royal Road renames slugs): cursor, `label_map` and
     `cursor_floor` stay valid. A chapter present in both copies is served from the live one unless its
     word count is `< ratio ×` or `> (1/ratio) ×` the archive's (`BEACON_SEGMENT_LENGTH_RATIO`, default
     0.5: a short placeholder keeps the archive copy). The first EPUB is taken verbatim (never deduped), later
@@ -216,7 +216,8 @@ smallest — so the first release after upgrading is the same size and split as 
     With segments `cursor_floor` does not apply (`segments_view.effective_cursor_floor` = 0): the user can
     rewind into the archives. The story page shows a segment-coloured progress bar with the author's
     chapter numbers at the boundaries (`app/segments_view.py`). Stories stubbed before segments existed
-    are migrated at startup by `app/segments_backfill.py` (archives found via `url-archive:` identifiers;
+    are migrated at startup by `app/segments_backfill.py` (skips an archive duplicating an earlier one; books
+    migrated by 0.26.0/0.26.1 are redone once, `segment_backfill_version`) (archives found via `url-archive:` identifiers;
     cursor = just after the last released chapter; label state reset; per-book report in
     `app_state[segment_backfill_report]`). Everything below describes the **legacy path**, used only when
     no archive id is reported.

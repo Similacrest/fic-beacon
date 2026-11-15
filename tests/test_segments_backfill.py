@@ -121,3 +121,66 @@ def test_startup_backfill_never_blocks_startup(in_memory_db, monkeypatch, tmp_pa
     _book(in_memory_db, 20)
 
     assert backfill_on_startup(in_memory_db) == []     # no metadata.db: logged, not raised
+
+
+# ---- slug-changed stub, duplicate archive, already-migrated books --------------------------------
+from tests.make_epub import make_epub  # noqa: E402
+
+RRB = "https://www.royalroad.com/fiction/118891/{slug}/chapter/{cid}/c{n}"
+
+
+def _rr_epub(ids, slug):
+    body = "<p>" + "word " * 500 + "</p>"
+    return make_epub([(f"C{n}", body, RRB.format(slug=slug, cid=4328000 + n, n=n)) for n in ids])
+
+
+@pytest.fixture
+def rr_files():
+    f = {10: _rr_epub(range(1, 9), "b2-stubbing-new-life"),
+         11: _rr_epub(range(1, 9), "b2-stubbing-new-life"),          # duplicate archive
+         20: _rr_epub(range(6, 11), "new-life")}                      # live: 6-8 shared, 9-10 new
+    yield f
+    for p in f.values():
+        os.unlink(p)
+
+
+def _rr_book(db, **kw):
+    b = _book(db, 20, **kw)
+    b.source_url = "https://www.royalroad.com/fiction/118891"
+    db.flush()
+    return b
+
+
+def test_slug_changed_stub_with_a_duplicate_archive_lands_the_cursor_after_the_last_read(in_memory_db, rr_files):
+    db = in_memory_db
+    b = _rr_book(db, cursor_chapter_index=65, cursor_floor=65)
+    _drop(db, b, RRB.format(slug="b2-stubbing-new-life", cid=4328008, n=8), 7, 7)   # read up to chapter 8
+    ad = Adapter(rr_files, {b.source_url: [10, 11]})
+
+    rows = backfill_segments(db, ad)
+
+    assert [s.calibre_id for s in b.segments] == [10] and [s.ordinal for s in b.segments] == [0]
+    assert b.total_chapters == 10                      # distinct chapter ids, nothing repeated
+    assert b.cursor_chapter_index == 8 and b.total_chapters - b.cursor_chapter_index == 2
+    assert rows[0]["archive_ids"] == [10]
+
+
+def test_books_migrated_by_the_first_backfill_are_redone_once(in_memory_db, rr_files):
+    from app.segments_backfill import backfill_with_repair
+    from app.state import set_value
+    db = in_memory_db
+    b = _rr_book(db, cursor_chapter_index=345, total_chapters=357)
+    db.add_all([BookSegment(book_id=b.id, ordinal=0, calibre_id=10), BookSegment(book_id=b.id, ordinal=1, calibre_id=11)])
+    _drop(db, b, RRB.format(slug="b2-stubbing-new-life", cid=4328008, n=8), 7, 7)
+    set_value(db, "segment_backfill_report", json.dumps([{"book_id": b.id, "archive_ids": [10, 11]}]))
+    db.flush()
+    db.refresh(b)
+    ad = Adapter(rr_files, {b.source_url: [10, 11]})
+
+    backfill_with_repair(db, ad)
+
+    assert [s.calibre_id for s in b.segments] == [10] and b.cursor_chapter_index == 8
+    assert get_value(db, "segment_backfill_version") == "2"
+    b.cursor_chapter_index = 9                         # a later reader move must survive a restart
+    backfill_with_repair(db, ad)
+    assert b.cursor_chapter_index == 9 and [s.calibre_id for s in b.segments] == [10]
