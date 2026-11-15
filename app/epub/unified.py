@@ -49,8 +49,8 @@ def build_unified(segments: list[tuple[int, list[Chapter]]], ratio: float) -> li
     A chapter whose URL was already seen in an earlier segment keeps its position; the later copy
     replaces it unless its word count is `< ratio ×` or `> (1/ratio) ×` the earlier one (a truncated
     or bloated re-render), in which case the earlier copy stays and is flagged `short_live`.
-    Chapters with no URL have no identity and are always appended. Within one EPUB the first
-    occurrence of a URL wins.
+    Chapters with no URL have no identity and are always appended. In a later EPUB the first
+    occurrence of a URL wins; the first EPUB is kept verbatim.
     """
     out: list[UChapter] = []
     by_url: dict[str, int] = {}
@@ -58,15 +58,17 @@ def build_unified(segments: list[tuple[int, list[Chapter]]], ratio: float) -> li
         seen_here: set[str] = set()
         for c in chapters:
             u = c.source_url
-            if u:
+            if u and seg_no > 0:
                 if u in seen_here:
                     continue
                 seen_here.add(u)
             new = UChapter(len(out), c.title, c.html, c.word_count, u, cid, c.index, seg_no)
             pos = by_url.get(u) if u else None
-            if pos is None:
+            if pos is None or seg_no == 0:
+                # the first EPUB is taken verbatim (positions == physical indices, so an existing
+                # cursor never shifts); a repeated URL there keeps pointing at its first row
                 if u:
-                    by_url[u] = new.position
+                    by_url.setdefault(u, new.position)
                 out.append(new)
                 continue
             old = out[pos]

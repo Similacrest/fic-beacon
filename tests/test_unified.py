@@ -71,9 +71,16 @@ def test_overlap_uses_archive_when_live_is_short():
     assert c.html == "<p>old</p>" and c.calibre_id == 10 and c.short_live and c.segment == 0
 
 
-def test_duplicate_url_inside_one_epub_counts_once():
-    res = build_unified([(7, [ch(0, "x", html="<p>first</p>"), ch(1, "x", html="<p>dup</p>"), ch(2, "y")])], 0.5)
-    assert urls(res) == ["x", "y"] and res[0].html == "<p>first</p>"
+def test_duplicate_url_inside_a_later_epub_counts_once():
+    live = [ch(0, "a0"), ch(1, "x", html="<p>first</p>"), ch(2, "x", html="<p>dup</p>"), ch(3, "y")]
+    res = build_unified([(10, [ch(0, "a0")]), (20, live)], 0.5)
+    assert urls(res) == ["a0", "x", "y"] and res[1].html == "<p>first</p>"
+
+
+def test_first_epub_is_taken_verbatim_so_positions_equal_physical_indices():
+    # an unsegmented story (and the oldest archive) must never shift under an existing cursor
+    res = build_unified([(7, [ch(0, "x"), ch(1, "x"), ch(2, "y")])], 0.5)
+    assert urls(res) == ["x", "x", "y"] and [c.physical_index for c in res] == [0, 1, 2]
 
 
 def test_epub_without_chapter_urls_appends_live_whole():

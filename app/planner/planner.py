@@ -36,7 +36,8 @@ from sqlalchemy.orm import Session
 
 from app.calibre.adapter import CalibreAdapter, CalibreBook
 from app.config import settings
-from app.epub.chapterizer import Chapter, chapterize, materialize_image_urls
+from app.epub.chapterizer import materialize_image_urls
+from app.epub.unified import UChapter, load_unified
 from app.models import (
     Book, BookStatus, BudgetMode, Channel, Config, Drop, FeedbackAction,
     FeedbackEvent, Schedule, utcnow,
@@ -69,6 +70,7 @@ class Unit:
     word_count: int
     source_url: str | None
     index: int
+    calibre_id: int | None = None   # the EPUB serving this chapter (None → the book's live EPUB)
 
 
 @dataclass
@@ -113,7 +115,7 @@ def _remaining_units(book: Book, adapter: CalibreAdapter) -> list[Unit] | None:
         return None
     return [
         Unit(title=c.title, html=c.html, word_count=c.word_count,
-             source_url=c.source_url, index=c.index)
+             source_url=c.source_url, index=c.index, calibre_id=c.calibre_id)
         for c in _get_chapters(calibre_book, adapter, book)
     ]
 
@@ -686,17 +688,38 @@ def _set_aside_empty_backlog(
     return emptied
 
 
+_ARCHIVE_NOTE = "Archive EPUB"
+
+
 def _get_chapters(
     calibre_book: CalibreBook, adapter: CalibreAdapter, book: Book
-) -> list[Chapter]:
-    epub_path = adapter.epub_path(calibre_book)
-    if not epub_path.exists():
-        logger.warning(
-            "EPUB file for '%s' (calibre %s) is missing at %s — skipping this cycle",
-            book.title, book.calibre_id, epub_path,
-        )
+) -> list[UChapter]:
+    from sqlalchemy.orm import object_session
+    from app.state import BOOK_NOTE_PREFIX, delete_value, get_value, set_value
+
+    res = load_unified(book, adapter)
+    session = object_session(book)
+    note_key = f"{BOOK_NOTE_PREFIX}{book.id}"
+    if res.unreadable:
+        archives = [i for i in res.unreadable if i != book.calibre_id]
+        if archives:
+            # Positions after an unreadable archive are unknowable: hold the story rather than
+            # guess, and say why. total_chapters stays as it was.
+            if session is not None:
+                set_value(session, note_key,
+                          f"{_ARCHIVE_NOTE} (calibre id {archives[0]}) is missing or unreadable — "
+                          "this story is held until it is back in Calibre.")
+        else:
+            logger.warning(
+                "EPUB file for '%s' (calibre %s) is missing — skipping this cycle",
+                book.title, book.calibre_id,
+            )
         return []
-    all_chapters = chapterize(epub_path)
+    if session is not None:
+        note = get_value(session, note_key)
+        if note and note.startswith(_ARCHIVE_NOTE):
+            delete_value(session, note_key)
+    all_chapters = res.chapters
     # Keep total_chapters honest for *every* active source we look at each broadcast — not just
     # the ones we emit (see _advance_cursor). A caught-up source (cursor at the end) is never
     # selected, so if its EPUB later shrinks — e.g. an author unpublishes chapters, common with
@@ -712,13 +735,13 @@ def _materialise(session: Session, plan: PlannedDrop, channel_id: int) -> Drop |
 
     first = plan.chapters[0]
     last = plan.chapters[-1]
+    # Resolve in-EPUB image references per chapter to the read-only image route of the EPUB that
+    # serves it (an archive for old chapters) so the stored HTML is self-contained and byte-stable.
     combined_html = "\n".join(
-        f'<section class="chapter">\n{ch.html}\n</section>' for ch in plan.chapters
-    )
-    # Resolve in-EPUB image references to this book's read-only image route so the
-    # stored HTML is self-contained (and byte-stable for WebSub).
-    combined_html = materialize_image_urls(
-        combined_html, plan.book.calibre_id, settings.base_url
+        '<section class="chapter">\n'
+        + materialize_image_urls(ch.html, ch.calibre_id or plan.book.calibre_id, settings.base_url)
+        + "\n</section>"
+        for ch in plan.chapters
     )
     titles = "; ".join(ch.title for ch in plan.chapters)
 
@@ -748,13 +771,10 @@ def _advance_cursor(
     cfg: Config,
 ) -> None:
     book = plan.book
-    calibre_book = adapter.get_book(book.calibre_id)
-    if calibre_book is None:
+    res = load_unified(book, adapter)
+    if res.unreadable:
         return
-    epub_path = adapter.epub_path(calibre_book)
-    if not epub_path.exists():
-        return
-    all_chapters = chapterize(epub_path)
+    all_chapters = res.chapters
     new_cursor = book.cursor_chapter_index + len(plan.chapters)
     book.total_chapters = len(all_chapters)
     if new_cursor >= len(all_chapters):
