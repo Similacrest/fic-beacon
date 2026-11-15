@@ -22,7 +22,7 @@ import httpx
 from sqlalchemy.orm import object_session
 
 from app.config import settings
-from app.models import Book, label_offset_at, utcnow
+from app.models import Book, BookSegment, label_offset_at, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,9 @@ class StubInfo:
     new: int
     old_urls: list[str] | None = None
     new_urls: list[str] | None = None
+    # Calibre id of the archive entry the fetcher kept for the pre-stub EPUB; with it the app keeps
+    # that EPUB as a segment of the book instead of remapping the cursor.
+    archive_calibre_id: int | None = None
 
 
 @dataclass
@@ -126,6 +129,7 @@ def _to_result(raw: dict) -> FetchResult:
         stub=StubInfo(
             old=int(stub["old"]), new=int(stub["new"]),
             old_urls=stub.get("old_urls"), new_urls=stub.get("new_urls"),
+            archive_calibre_id=stub.get("archive_calibre_id"),
         ) if stub else None,
     )
 
@@ -166,8 +170,13 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
     if result.story_status:
         book.story_status = result.story_status
     old_total = book.total_chapters  # the EPUB's chapter count as of the last broadcast
+    as_segment = bool(result.stub and result.stub.old > result.stub.new
+                      and result.stub.archive_calibre_id is not None
+                      and result.stub.archive_calibre_id != book.calibre_id)
+    if as_segment:
+        _apply_stub_as_segment(book, result.stub)  # before the count: the unified list includes it
     count = _epub_chapter_count(book)  # beacon's own chapterizer count of the EPUB it reads
-    if count is None:
+    if count is None and not book.segments:  # a segmented book's spine count would be live-only
         count = result.chapter_count  # EPUB unreadable here; fall back to the fetcher's spine count
     if count is not None:
         # Chapters that arrive by an *update* are fresh (they jump the stochastic roll). Not the
@@ -184,7 +193,10 @@ def apply_result(book: Book, raw: dict) -> FetchResult:
         result.new_chapters = count > 0 and (old_total is None or count > old_total)
         book.total_chapters = count
 
-    if result.stub and result.stub.old > result.stub.new:
+    if as_segment:
+        book.last_fetch_status = f"ok (stub {result.stub.old}→{result.stub.new}, kept as segment)"
+        result.new_chapters = True
+    elif result.stub and result.stub.old > result.stub.new:
         _apply_stub(book, result.stub)
         book.fresh_from_index = None  # indices were remapped; the flag no longer points anywhere
         result.new_chapters = True  # the site changed under us — the trigger has been acted on
@@ -210,13 +222,9 @@ def _epub_chapter_count(book: Book) -> int | None:
     if book.calibre_id is None:
         return None
     try:
-        from app.epub.chapterizer import chapterize
-        adapter = _calibre_adapter()
-        cbook = adapter.get_book(book.calibre_id)
-        if cbook is None:
-            return None
-        path = adapter.epub_path(cbook)
-        return len(chapterize(path)) if path.exists() else None
+        from app.epub.unified import load_unified
+        res = load_unified(book, _calibre_adapter())
+        return None if res.unreadable else len(res.chapters)
     except Exception:
         logger.debug("Could not chapterize the EPUB of calibre %s", book.calibre_id, exc_info=True)
         return None
@@ -256,6 +264,16 @@ def _adopt_canonical_url(book: Book, story_url: str | None) -> None:
     ).first() is not None:
         return
     book.source_url = story_url
+
+
+def _apply_stub_as_segment(book: Book, stub: StubInfo) -> None:
+    """Keep the pre-stub EPUB (the fetcher's archive entry) as the next segment of this book.
+
+    The archive's chapters sit at the same positions the old EPUB had, so the cursor, `label_map`
+    and `cursor_floor` stay valid untouched — nothing is remapped. Idempotent per archive id (a
+    retried stub reports the same archive)."""
+    if all(s.calibre_id != stub.archive_calibre_id for s in book.segments):
+        book.segments.append(BookSegment(ordinal=len(book.segments), calibre_id=stub.archive_calibre_id))
 
 
 def _apply_stub(book: Book, stub: StubInfo) -> None:
