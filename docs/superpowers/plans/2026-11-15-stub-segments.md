@@ -20,7 +20,7 @@
 - Segment length rule: live copy of a chapter present in both EPUBs is used unless its word count is `< ratio ×` or `> (1/ratio) ×` the archive's; `ratio = settings.segment_length_ratio`, default `0.5`, env `BEACON_SEGMENT_LENGTH_RATIO`.
 - Author label of unified position `p` = `p + label_offset_at(book, p) + 1` (today's `absolute_chapter_number`, applied to unified positions). The progress-bar boundary numbers and everything user-visible use it.
 - A non-stubbed story (no segments) behaves byte-for-byte as today and shows no segment UI.
-- Never start subagents on `fable`; reviewers use `opus`. Stop Gradle/daemons n/a. Bundle/tag/push only on the user's request.
+- Never start subagents on `fable`; reviewers use `opus`. Bundle/tag/push only on the user's request.
 
 ## Review Focus
 
@@ -82,7 +82,7 @@
 - Produces:
   - `@dataclass UChapter(position: int, title: str, html: str, word_count: int, source_url: str | None, calibre_id: int, physical_index: int, segment: int, short_live: bool)` — `segment` is the index into the ordered segment list (archives…, live last); `short_live` true when a live copy exists but the archive copy was chosen by the length rule.
   - `build_unified(segments: list[tuple[int, list[Chapter]]], ratio: float) -> list[UChapter]` — pure; `segments` ordered archives first, live last, each `(calibre_id, chapters)`.
-  - `load_unified(book: Book, adapter: CalibreAdapter) -> UnifiedResult` with `UnifiedResult(chapters: list[UChapter], unreadable: list[int])`; reads `book.segments` + `book.calibre_id`, chapterizes each (mtime-cached already), keeps a small LRU keyed by the tuple of `(calibre_id, mtime)` of all segments; a missing/unreadable archive id goes in `unreadable` and `chapters` is truncated **at the first unreadable segment's position** is NOT allowed — instead return the chapters of readable segments and positions of the unreadable segment's chapters are unknowable, so `load_unified` returns `chapters` only up to that segment and `unreadable=[ids]` (callers hold the story).
+  - `load_unified(book: Book, adapter: CalibreAdapter) -> UnifiedResult` with `UnifiedResult(chapters: list[UChapter], unreadable: list[int])`; reads `book.segments` + `book.calibre_id`, chapterizes each (mtime-cached already), keeps a small LRU keyed by the tuple of `(calibre_id, mtime)` of all segments; an archive that is missing from Calibre or whose EPUB is unreadable goes in `unreadable`, and `chapters` then holds only the segments *before* it (positions of later chapters are unknowable, so callers hold the story rather than guess).
   - `chapter_label(book: Book, position: int) -> int` = `absolute_chapter_number(book, position)` (thin alias so views import one name).
 
 - [ ] **Step 1: Failing tests** (synthetic `Chapter` objects, `src(n)` helper giving URLs):
