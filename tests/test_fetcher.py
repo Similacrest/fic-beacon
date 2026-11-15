@@ -727,3 +727,36 @@ def test_unwritable_ini_fails_clearly_instead_of_running_direct(flare, tmp_path,
     res = _run_ff(tmp_path)
     assert flare["flare"] == [] and res.via_flare is False
     assert "could not be written" in res.stderr and "read-only" in res.stderr
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Existing epub contains 150 chapters, web site only has 139", (150, 139)),
+    ("./a.epub contains 151 chapters, more than source: 65.", (151, 65)),
+    ("a.epub contains 151 chapters, more than the source: 65", (151, 65)),
+    ("contains 151 chapters, more than web site has 65", (151, 65)),
+    ("Existing epub contains 10 chapters, web site only has 12", None),   # growth is not a stub
+    ("./a.epub already contains 151 chapters.", None),
+])
+def test_stub_counts_wordings(text, expected):
+    assert fetcher._stub_counts(text) == expected
+
+
+def test_unrecognised_chapter_message_with_no_write_fails_loudly(calibre, monkeypatch):
+    fake = calibre({4629: {"url": RR}})
+
+    def fanficfare(*args, cwd):
+        return subprocess.CompletedProcess(args, 0, stdout="a.epub has 9 chapters; source differs: 3", stderr="")
+    monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
+    real = fetcher._calibredb
+
+    def calibredb(*args):
+        if args[0] == "export":
+            _fff_epub(Path(args[args.index("--to-dir") + 1]) / "book.epub", RR, "In-Progress")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return real(*args)
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and "unrecognised FanFicFare chapter message" in result["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)

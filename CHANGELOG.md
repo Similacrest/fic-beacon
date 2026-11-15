@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.5] — 2026-11-15
+
+### Fixed
+- **A stub story whose FanFicFare message used the other wording no longer stalls as `ok`.** FanFicFare
+  also says `X.epub contains 151 chapters, more than source: 65.`; only `Existing epub contains N
+  chapters, web site only has M` was recognised, so the stub path never ran and the unchanged EPUB was
+  re-added as `ok`. The match is now structural (epub count, then a smaller source count) and only
+  accepted when old > new.
+- A chapter-count message we still don't recognise, with the EPUB left unchanged, now fails with
+  `unrecognised FanFicFare chapter message: …` instead of `ok`.
+
 ## [0.25.4] — 2026-11-01
 
 ### Fixed

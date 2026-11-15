@@ -43,6 +43,7 @@ import logging
 import hmac
 import os
 import posixpath
+import hashlib
 import re
 import subprocess
 import threading
@@ -108,7 +109,26 @@ app = FastAPI(title="fic-beacon-fetcher")
 
 # A "needs force" message from FanFicFare. The chapter-shrink variant (a true *stub*) is the
 # common case; the generic guidance covers metadata/chapter mismatches that also want force.
-_STUB_RE = re.compile(r"Existing epub contains (\d+) chapters?, web site only has (\d+)")
+# FanFicFare words the "site has fewer chapters than the EPUB" case more than one way:
+#   "Existing epub contains 150 chapters, web site only has 139"
+#   "./a.epub contains 151 chapters, more than source: 65."
+# Match the structure (epub count … source count), not the phrasing; accepted only if old > new.
+_STUB_RE = re.compile(
+    r"contains\s+(\d+)\s+chapters?\b[^\n\d]*?"
+    r"(?:only\s+has|more\s+than(?:\s+the)?\s+(?:source|web\s?site)|than\s+(?:the\s+)?(?:web\s?site|source)(?:\s+has)?)"
+    r"\s*:?\s*(\d+)", re.IGNORECASE)
+# Looser net for a future wording: a chapters line that mentions the source/site.
+_CHAPTER_MISMATCH_RE = re.compile(r"^.*\bchapters?\b.*\b(?:source|web\s?site|site\s+only)\b.*$",
+                                  re.IGNORECASE | re.MULTILINE)
+
+
+def _stub_counts(text: str):
+    """(old, new) chapter counts if FanFicFare says the site has fewer chapters, else None."""
+    for m in _STUB_RE.finditer(text):
+        old, new = int(m.group(1)), int(m.group(2))
+        if old > new:
+            return old, new
+    return None
 _NEEDS_FORCE_RE = re.compile(r"force_update_epub_always|Use Overwrite or", re.IGNORECASE)
 # FanFicFare's writer refuses to overwrite an output file whose mtime *date* is later than the
 # story's last-updated date ("File(x.epub) Updated(…) more recently than Story(…) - Skipping"). It
@@ -889,15 +909,16 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
         if epub is None:
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
+        before = hashlib.sha256(epub.read_bytes()).hexdigest()
         upd = _fanficfare_update(epub, cwd=str(work), url=url)
         if getattr(upd, "via_flare", False):
             entry["via"] = "flaresolverr"
         combined = (upd.stdout or "") + (upd.stderr or "")
 
         stub = None
-        m = _STUB_RE.search(combined)
-        if m:  # site dropped chapters → archive old EPUB, then force a clean re-download
-            old, new = int(m.group(1)), int(m.group(2))
+        counts = _stub_counts(combined)
+        if counts:  # site dropped chapters → archive old EPUB, then force a clean re-download
+            old, new = counts
             _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
             forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
@@ -919,6 +940,12 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             if _transient(combined):
                 return entry, combined  # the forced re-run hit a transient error: retry
             return entry, _fail(entry, "fanficfare update failed: " + _tail(combined))
+        if not stub and not _NEEDS_FORCE_RE.search(combined) and _CHAPTER_MISMATCH_RE.search(combined) \
+                and hashlib.sha256(epub.read_bytes()).hexdigest() == before:
+            # A chapter-count complaint we don't recognise and nothing written: adding the unchanged
+            # EPUB back as `ok` is the silent stall this guard exists to prevent.
+            return entry, _fail(entry, "unrecognised FanFicFare chapter message: "
+                                + _tail(_CHAPTER_MISMATCH_RE.search(combined).group(0)))
         if not stub and _SKIPPED_RE.search(combined):
             # New chapters were found but not written. Reporting the unchanged EPUB as `ok` is what
             # hid this — fail loudly instead, and leave the Calibre entry as it was.
