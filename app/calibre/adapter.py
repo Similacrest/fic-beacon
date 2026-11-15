@@ -120,6 +120,21 @@ class CalibreAdapter:
                 read=_is_yes(reads.get(calibre_id)),
             )
 
+    def archive_ids(self, story_url: str | None) -> list[int]:
+        """Calibre ids of the stub archives (`url-archive:` identifiers) of a story, oldest first.
+
+        The fetcher keeps a story's pre-stub EPUB as its own entry and moves its URL off `url:`;
+        matching is by story identity (`story_key`), never the exact string."""
+        from app.ongoing.story_key import story_key
+        want = story_key(story_url)
+        if not want:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT book, val FROM identifiers WHERE type='url-archive' ORDER BY book"
+            ).fetchall()
+        return sorted({r["book"] for r in rows if story_key(r["val"]) == want})
+
     def epub_path(self, book: CalibreBook) -> Path:
         return self.library_path / book.path / f"{book.epub_name}.epub"
 

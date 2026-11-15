@@ -116,6 +116,9 @@ def init_db() -> None:
         pruned = prune_subscriptions(session)
         if pruned:
             logger.warning("Pruned %d stale/token-free WebSub subscription(s)", pruned)
+        from app.segments_backfill import backfill_on_startup
+
+        backfill_on_startup(session)  # stubbed stories from before segments existed
         session.commit()
 
 
