@@ -198,6 +198,23 @@ class Book(Base):
     )
 
     drops: Mapped[list["Drop"]] = relationship("Drop", back_populates="book")
+    # Archive EPUBs of a stubbed story, oldest first; the live EPUB stays `calibre_id`.
+    segments: Mapped[list["BookSegment"]] = relationship(
+        "BookSegment", order_by="BookSegment.ordinal", cascade="all, delete-orphan"
+    )
+
+
+class BookSegment(Base):
+    """One archive EPUB of a stubbed story (the pre-stub copy the fetcher kept as its own Calibre entry)."""
+    __tablename__ = "book_segment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("book.id"), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    calibre_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class Drop(Base):

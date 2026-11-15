@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Book, BudgetMode, Channel, Config, Drop, FeedbackEvent, Schedule
+from app.models import Book, BookSegment, BudgetMode, Channel, Config, Drop, FeedbackEvent, Schedule
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ def delete_book_cascade(session: Session, book: Book) -> None:
         [f"{BOOK_NOTE_PREFIX}{book.id}", f"{TRIGGER_RETRY_PREFIX}{book.id}",
          f"{CURSOR_UNDO_PREFIX}{book.id}"]
     )).delete(synchronize_session=False)
+    session.query(BookSegment).filter(BookSegment.book_id == book.id).delete(synchronize_session=False)
+    session.expire(book, ["segments"])
     drop_ids = [d.id for d in session.query(Drop.id).filter(Drop.book_id == book.id)]
     if drop_ids:
         session.query(FeedbackEvent).filter(FeedbackEvent.drop_id.in_(drop_ids)).delete(

@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Misc
     feed_item_limit: int = 50
 
+    # Stubbed stories: a live copy of a chapter also present in an archive EPUB is used unless its
+    # word count is < ratio × or > (1/ratio) × the archive's (then the fuller archive copy wins).
+    segment_length_ratio: float = 0.5
+
     # Root log level for the app's own loggers (e.g. "DEBUG" to trace the WebSub
     # subscribe/verify/push flow). Anything Python's logging accepts: DEBUG/INFO/WARNING/…
     log_level: str = "INFO"
