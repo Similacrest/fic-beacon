@@ -18,9 +18,11 @@ book comes from.
 1. A stub story is an ordered list of **segments**, each a Calibre EPUB: the archive(s) kept on a stub
    (v0.25.6 already adds `url-archive:` entries), then the live EPUB.
 2. One **unified chapter list** and one cursor over it. After a stub the user sees the old chapters
-   unchanged and new site chapters appended (book 4: archive 1–151, new live chapters 152, 153).
+   unchanged and new site chapters appended (book 4: archive positions 1–151, new live chapters at positions 152, 153 whose author labels are about 219, 220).
 3. Rewinding or re-reading at any position serves that chapter from whichever EPUB holds it.
-4. The story page's progress bar and cursor/rewind control are drawn in segment colours with small
+4. **Author's chapter labels are what the user sees everywhere**: feed item titles, `/read/`, the story
+   page, the cursor box and the progress-bar boundary numbers. The unified position is internal only.
+   The story page's progress bar and cursor/rewind control are drawn in segment colours with small
    boundary chapter numbers (mockup: `~/outbox/mockup-stub-segments-progress.html`).
 5. Existing stub behaviour is preserved, not replaced: `label_map` author labels, URL-identity cursor
    remapping and `cursor_floor` semantics keep working, extended across segments.
@@ -68,7 +70,7 @@ book comes from.
   availability, `_get_chapters` and the reader's prev/next must go through the unified list;
   `/img/{calibre_id}/…` already takes the EPUB id, so images follow the chapter's source EPUB.
 - **Story page:** segmented progress bar and cursor/rewind control with colours and boundary numbers
-  (unified numbers only, per the user); a compact "Sources" block with both Calibre ids and chapter
+  (author labels, per the user); a compact "Sources" block with both Calibre ids and chapter
   counts. Colours distinguish: archive-only, archive-where-live-is-a-short-stub, live. Text must not rely
   on colour alone (labels/legend); works on a tablet.
 - **Dashboard:** unchanged except attention items for unreadable segments.
@@ -81,6 +83,19 @@ book comes from.
   (`drop.chapter_start/end` are existing unified/physical positions — builder to confirm which and
   migrate if needed so old `/read/` links keep working).
 - Memory budget is tight (6 GiB shared); chapterizing several EPUBs must stay mtime-cached and lazy.
+
+## Decisions after the builder check
+
+- *My call:* `cursor_floor` applies only to a story that stubbed with no archive; with segments it is 0 so
+  the user can rewind into the archive.
+- *My call:* an unreadable segment holds the story at its first unreadable chapter with a dashboard
+  attention item; unified positions never shift when a segment is temporarily missing.
+- *My call:* the fetcher refuses to replace the live entry with an EPUB having fewer chapter URLs unless
+  it goes through the stub path.
+- `drop.chapter_start/end` need no migration (old releases serve their stored `content_html`).
+- A chapter that is new by URL is appended at the end even if the site puts it mid-story (rare, accepted).
+- **Open (user to answer):** on migrating book 4, release the archive chapters the old stub skipped, or
+  carry today's cursor across unchanged.
 
 ## Left to the builder
 
