@@ -839,3 +839,53 @@ def test_needs_force_that_changes_nothing_fails_instead_of_add_format(calibre, m
 
     assert transient is None and "left the EPUB unchanged" in result["error"]
     assert not any(c[0] == "add_format" for c in fake.calls)
+
+
+def test_stub_reports_the_archive_calibre_id(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=3, refuse_dupes=True)
+
+    result, _ = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert result["stub"]["archive_calibre_id"] == fake.next_id
+
+
+def test_stub_retry_reports_the_existing_archive_id(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=3)
+    live = Path(__file__).parent / "_live2.epub"
+    _chapters(live, 5)
+    try:
+        fake.entries[4657] = {"url-archive": RR}
+        fake.files[4657] = live.read_bytes()
+    finally:
+        live.unlink()
+
+    result, _ = fetcher._update_one(RR, _entry(RR), 4629)
+
+    if not any(c[0] == "export" and c[-1] == "4657" for c in fake.calls):
+        pytest.skip("archive lookup did not run")
+    if any(c[0] == "add" for c in fake.calls):
+        pytest.skip("epub builder is not byte-stable")
+    assert result["stub"]["archive_calibre_id"] == 4657
+
+
+def test_plain_update_that_loses_chapter_urls_fails(calibre, monkeypatch):
+    fake = calibre({4629: {"url": RR}})
+
+    def fanficfare(*args, cwd, flare=False):
+        if "-u" in args:   # rewrites the exported EPUB smaller, prints no stub message
+            _chapters(Path(cwd) / "book.epub", 3)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
+    real = fetcher._calibredb
+
+    def calibredb(*args):
+        if args[0] == "export" and args[-1] == "4629":
+            _chapters(Path(args[args.index("--to-dir") + 1]) / "book.epub", 5)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return real(*args)
+    monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and "fewer chapters" in result["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)

@@ -861,12 +861,12 @@ def _real_count(epub: Path) -> int:
     return len(_chapter_urls(epub)) or _count_chapters(epub)
 
 
-def _archive_exists(epub: Path, url: str) -> bool:
-    """True if a `url-archive:` entry for this story already holds a byte-identical EPUB, so a retried
-    stub does not pile up duplicate archives."""
+def _find_archive(epub: Path, url: str) -> int | None:
+    """Id of the `url-archive:` entry for this story that already holds a byte-identical EPUB, so a
+    retried stub does not pile up duplicate archives (None if there is none)."""
     ids = _search_ids(f'identifiers:"=url-archive:{_quote(url)}"')
     if not ids:
-        return False
+        return None
     want = _sha256(epub)
     for i in ids:
         with tempfile.TemporaryDirectory() as tmp:
@@ -874,11 +874,11 @@ def _archive_exists(epub: Path, url: str) -> bool:
                        "--single-dir", "--formats", "epub", str(i))
             got = _only_epub(Path(tmp))
             if got is not None and _sha256(got) == want:
-                return True
-    return False
+                return i
+    return None
 
 
-def _archive_copy(epub: Path, url: str) -> None:
+def _archive_copy(epub: Path, url: str) -> int | None:
     """Keep the pre-stub EPUB as its own Calibre entry, findable but never mistaken for the story.
 
     `-d` matters: the archive has the same title+author as the live entry, which a plain
@@ -886,19 +886,21 @@ def _archive_copy(epub: Path, url: str) -> None:
     then moved from `url:` to `url-archive:` so a later `url:` lookup can't land on it and update
     the archive instead of the live book.
     """
-    if _archive_exists(epub, url):
+    existing = _find_archive(epub, url)
+    if existing is not None:
         logger.info("stub archive of %s already present; not adding another", url)
-        return
+        return existing
     add = _calibredb("add", "-d", str(epub))
     archive_id = _added_id(add)
     if add.returncode != 0 or archive_id is None:
         logger.warning("stub archive of %s was not added: %s", url,
                        _tail((add.stdout or "") + (add.stderr or "")))
-        return
+        return None
     tag = _calibredb("set_metadata", str(archive_id), "--field", f"identifiers:url-archive:{url}")
     if tag.returncode != 0:
         logger.warning("could not tag archive %s of %s as url-archive: %s", archive_id, url,
                        _tail((tag.stdout or "") + (tag.stderr or "")))
+    return archive_id
 
 
 def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[dict, str | None]:
@@ -939,6 +941,7 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
         before = _sha256(epub)
+        count_before = _real_count(epub)
         upd = _fanficfare_update(epub, cwd=str(work), url=url)
         if getattr(upd, "via_flare", False):
             entry["via"] = "flaresolverr"
@@ -966,11 +969,12 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
                 # shrink) and never add_format something that is not a rebuilt, smaller book.
                 return entry, _fail(entry, f"stub re-download did not rebuild the EPUB "
                                     f"({_real_count(fresh)} chapters, was {_real_count(epub)}): " + _tail(out))
-            _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
+            archive_id = _archive_copy(epub, _epub_source_url(epub) or url)  # backup of the pre-stub EPUB
             old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the replacement
             epub = fresh
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
-            stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
+            stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls,
+                    "archive_calibre_id": archive_id}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
             forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
             combined = (forced.stdout or "") + (forced.stderr or "")
@@ -998,6 +1002,12 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             return entry, _fail(entry, "fanficfare found new chapters but skipped writing them: "
                                 + _tail(combined))
 
+        if not stub and _real_count(epub) < count_before:
+            # The update rewrote the book smaller without a stub report: add_format would silently
+            # lose chapters with no archive kept.
+            return entry, _fail(entry, f"update would shrink the book ({count_before} → {_real_count(epub)} "
+                                "chapters, no stub reported) — it has fewer chapters than before: "
+                                + _tail(combined))
         _calibredb("add_format", str(calibre_id), str(epub))
         entry["calibre_id"] = calibre_id
         entry["chapter_count"] = _count_chapters(epub)
