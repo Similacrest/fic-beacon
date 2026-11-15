@@ -94,8 +94,14 @@ book comes from.
   it goes through the stub path.
 - `drop.chapter_start/end` need no migration (old releases serve their stored `content_html`).
 - A chapter that is new by URL is appended at the end even if the site puts it mid-story (rare, accepted).
-- **Open (user to answer):** on migrating book 4, release the archive chapters the old stub skipped, or
-  carry today's cursor across unchanged.
+- **Cursor across a stub (user's rule):** the cursor keeps its place in the unified list, so it is never
+  moved forward past unread archive chapters. Caught up before the stub → only chapters new by URL release;
+  behind → the removed-but-unread archive chapters still release in order. This replaces the old
+  "first surviving live chapter" remap for segmented stories.
+- **Migrating already-stubbed books (book 4):** the pre-stub cursor is not recoverable, so set the cursor
+  to the unified position just after the last chapter actually released (match the drops' chapter URLs
+  into the unified list). Limitation: a manual skip-ahead that never produced a release is not reflected.
+  Report the computed cursor per migrated book so ops can sanity-check it.
 
 ## Left to the builder
 
