@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.26.1] — 2026-11-15
+
+### Changed
+- **Long FlareSolverr downloads are chunked and resumable** (ops memo). A new story fetched alone, and the stub
+  re-download, now fetch `FETCHER_CHUNK_CHAPTERS` (20) chapters per FanFicFare run and keep the partial EPUB
+  in `/state/partial`; a failed or challenge-timed-out chunk retries alone with backoff and a later attempt
+  resumes where it stopped, instead of redoing ~15-25 min of work. The job `phase` shows
+  `chunk N (chapters a-b, n so far)`; a story that can't finish reports which chunk failed and how many
+  chapters were kept. A final unbounded `-U` pass means only a complete EPUB is ever added to Calibre.
+- `flaresolverr proxy server failed` and `Error solving the challenge` are retryable errors.
+
 ## [0.26.0] — 2026-11-15
 
 ### Added

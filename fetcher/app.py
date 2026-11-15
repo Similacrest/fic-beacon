@@ -44,6 +44,7 @@ import hmac
 import os
 import posixpath
 import hashlib
+import shutil
 import re
 import subprocess
 import threading
@@ -83,6 +84,17 @@ FLARE_TIMEOUT = float(os.environ.get("FETCHER_FLARESOLVERR_TIMEOUT", "5400"))
 FLARE_AFTER = int(os.environ.get("FETCHER_FLARESOLVERR_AFTER", "2"))
 FLARE_PROBE_SECONDS = float(os.environ.get("FETCHER_FLARESOLVERR_PROBE_SECONDS", "86400"))
 STATE_DIR = Path(os.environ.get("FETCHER_STATE_DIR", "/state"))
+
+# Chunked, resumable fresh downloads (see `_fresh_download`). A long story fetched through FlareSolverr
+# (~12 s/chapter) used to be ONE FanFicFare run: one challenge timeout at chapter 50 of 65 threw
+# everything away. Now at most CHUNK_CHAPTERS chapters are fetched per run and the partial EPUB is kept
+# in STATE_DIR/partial, so a failure retries only that chunk. 0 disables chunking.
+CHUNK_CHAPTERS = int(os.environ.get("FETCHER_CHUNK_CHAPTERS", "20"))
+CHUNK_RETRIES = int(os.environ.get("FETCHER_CHUNK_RETRIES", "3"))            # tries per chunk
+CHUNK_PAUSE_SECONDS = float(os.environ.get("FETCHER_CHUNK_PAUSE_SECONDS", "15"))        # breather between chunks
+CHUNK_BACKOFF_SECONDS = float(os.environ.get("FETCHER_CHUNK_BACKOFF_SECONDS", "30"))    # after a failed chunk
+CHALLENGE_BACKOFF_SECONDS = float(os.environ.get("FETCHER_CHALLENGE_BACKOFF_SECONDS", "90"))  # after a challenge timeout
+PARTIAL_TTL_SECONDS = float(os.environ.get("FETCHER_PARTIAL_TTL_SECONDS", "86400"))     # stale partials are discarded
 
 FETCHER_TOKEN = os.environ.get("FETCHER_TOKEN", "")
 
@@ -137,7 +149,8 @@ _NEEDS_FORCE_RE = re.compile(r"force_update_epub_always|Use Overwrite or", re.IG
 _SKIPPED_RE = re.compile(r"more recently than Story\(.*?\)\s*-\s*Skipping", re.IGNORECASE)
 # Transient site/network failures worth a retry (vs. a permanent "no such story" error).
 _TRANSIENT_RE = re.compile(
-    r"\b(50[234]|429|timed? ?out|timeout|connection|temporarily|rate.?limit|reset by peer)\b",
+    r"\b(50[234]|429|timed? ?out|timeout|connection|temporarily|rate.?limit|reset by peer"
+    r"|flaresolverr proxy server failed|error solving the challenge)\b",
     re.IGNORECASE,
 )
 
@@ -379,6 +392,116 @@ def _fanficfare_update(epub: Path, *opts: str, cwd: str, url: str) -> subprocess
     bring it back. Re-backdated before every call: a previous pass wrote the file at mtime=now."""
     os.utime(epub, (0, 0))
     return _ff([url], "-u", f"./{epub.name}", "-o", "always_overwrite=true", *opts, cwd=cwd)
+
+
+def _on_flare(url: str) -> bool:
+    """True while this story's host is flagged for FlareSolverr and its direct-probe window hasn't
+    elapsed — i.e. `_ff` would route a run through FlareSolverr (the slow case worth chunking)."""
+    if not Path(FLARE_INI).exists():
+        return False
+    with _state_lock:
+        rec = _state_load().get(_host_key(url), {})
+    return bool(rec.get("flare")) and time.time() - rec.get("probed_at", 0) < FLARE_PROBE_SECONDS
+
+
+def _partial_dir(url: str) -> Path:
+    return STATE_DIR / "partial" / hashlib.sha1(_story_key(url).encode()).hexdigest()[:16]
+
+
+def _fresh_download(url: str, dest: Path, entry: dict) -> subprocess.CompletedProcess:
+    """Download a whole story from scratch into `dest` (the EPUB lands there on success).
+
+    Through FlareSolverr this is chunked and resumable (`_chunked_download`); otherwise it is the
+    plain single FanFicFare run. The result carries `.via_flare`; its `stderr` explains a failure."""
+    if CHUNK_CHAPTERS > 0 and _on_flare(url):
+        return _chunked_download(url, dest, entry)
+    res = _ff([url], "--", url, cwd=str(dest))
+    if getattr(res, "via_flare", False):
+        entry["via"] = "flaresolverr"
+    return res
+
+
+def _chunked_download(url: str, dest: Path, entry: dict) -> subprocess.CompletedProcess:
+    """Fetch a story CHUNK_CHAPTERS chapters per FanFicFare run, keeping the partial EPUB.
+
+    The partial (`part.epub` + `progress.json`) lives in STATE_DIR/partial/<story>; a failed or
+    timed-out chunk is retried alone (CHUNK_RETRIES tries, backing off longer after a challenge
+    timeout), and a later call resumes from where this one stopped (partials older than
+    PARTIAL_TTL_SECONDS are discarded). Chunks grow the EPUB with `-u … -e <end>`; the loop stops once a
+    chunk adds nothing, then one unbounded `-U` pass fetches whatever is left and rewrites the
+    metadata — so a story is only ever published whole, whatever the chunks did. The finished EPUB is
+    moved into `dest`; on failure nothing is, and `stderr` says how far it got."""
+    pdir = _partial_dir(url)
+    pdir.mkdir(parents=True, exist_ok=True)
+    part, prog = pdir / "part.epub", pdir / "progress.json"
+    # (the partial's own mtime is backdated for the writer, so staleness is read off progress.json)
+    stamp = prog if prog.exists() else part
+    if part.exists() and time.time() - stamp.stat().st_mtime > PARTIAL_TTL_SECONDS:
+        shutil.rmtree(pdir, ignore_errors=True)
+        pdir.mkdir(parents=True, exist_ok=True)
+    try:
+        end = int(json.loads(prog.read_text())["end"]) if part.exists() else 0
+    except (OSError, ValueError, KeyError):
+        end = _real_count(part) if part.exists() else 0
+    last: subprocess.CompletedProcess | None = None
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        nonlocal last
+        last = _ff([url], *args, cwd=str(pdir))
+        if getattr(last, "via_flare", False):
+            entry["via"] = "flaresolverr"
+        return last
+
+    def fail(msg: str) -> subprocess.CompletedProcess:
+        have = _real_count(part) if part.exists() else 0
+        out = f"{msg} ({have} chapters kept for resume)"
+        r = subprocess.CompletedProcess([], 1, stdout="", stderr=out)
+        r.via_flare = bool(getattr(last, "via_flare", True))
+        return r
+
+    chunk = end // CHUNK_CHAPTERS if CHUNK_CHAPTERS else 0
+    while True:
+        chunk += 1
+        nxt = end + CHUNK_CHAPTERS
+        res = None
+        for attempt in range(max(CHUNK_RETRIES, 1)):
+            have = _real_count(part) if part.exists() else 0
+            entry["phase"] = f"chunk {chunk} (chapters {end + 1}-{nxt}, {have} so far)"
+            if part.exists():
+                os.utime(part, (0, 0))  # the writer skips a file whose mtime is later than the story's
+                res = run("-u", "./part.epub", "-o", "always_overwrite=true", "-e", str(nxt))
+            else:
+                res = run("-b", "1", "-e", str(nxt))
+                made = _only_epub(pdir)
+                if res.returncode == 0 and made is not None and made != part:
+                    made.replace(part)
+            out = (res.stdout or "") + (res.stderr or "")
+            if res.returncode == 0 and part.exists():
+                break
+            if attempt < max(CHUNK_RETRIES, 1) - 1:
+                delay = (CHALLENGE_BACKOFF_SECONDS if re.search(r"challenge|flaresolverr", out, re.I)
+                         else CHUNK_BACKOFF_SECONDS)
+                logger.warning("chunk %d of %s failed (%s); retry in %.0fs", chunk, url, _tail(out), delay)
+                time.sleep(delay)
+        else:
+            return fail(f"chunk {chunk} failed after {max(CHUNK_RETRIES, 1)} tries: {_tail(out)}")
+        count = _real_count(part)
+        _write_atomic(prog, json.dumps({"end": nxt}))
+        if count < nxt:  # the story ran out inside this chunk
+            break
+        end = nxt
+        time.sleep(CHUNK_PAUSE_SECONDS)
+
+    entry["phase"] = f"finishing ({_real_count(part)} chapters)"
+    os.utime(part, (0, 0))
+    res = run("-U", "./part.epub", "-o", "always_overwrite=true")
+    if res.returncode != 0 or not part.exists():
+        return fail(f"final pass failed: {_tail((res.stdout or '') + (res.stderr or ''))}")
+    shutil.move(str(part), str(dest / "story.epub"))
+    shutil.rmtree(pdir, ignore_errors=True)
+    done = subprocess.CompletedProcess([], 0, stdout=res.stdout or "", stderr=res.stderr or "")
+    done.via_flare = bool(getattr(res, "via_flare", True))
+    return done
 
 
 def _with_retry(label: str, fn):
@@ -753,7 +876,10 @@ def _download_new(urls: list[str], by_url: dict[str, dict]) -> str:
         work = Path(tmp)
         infile = work / "urls.txt"
         infile.write_text("\n".join(urls) + "\n")
-        res = _ff(urls, "-i", str(infile), cwd=str(work))
+        if len(urls) == 1 and CHUNK_CHAPTERS > 0 and _on_flare(urls[0]):
+            res = _fresh_download(urls[0], work, by_url[urls[0]])  # chunked + resumable
+        else:
+            res = _ff(urls, "-i", str(infile), cwd=str(work))
         if getattr(res, "via_flare", False):
             for u in urls:
                 by_url[u]["via"] = "flaresolverr"
@@ -956,9 +1082,7 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
             # into an empty dir instead of updating the old file.
             fresh_dir = work / "fresh"
             fresh_dir.mkdir()
-            res = _ff([url], "--", url, cwd=str(fresh_dir))
-            if getattr(res, "via_flare", False):
-                entry["via"] = "flaresolverr"
+            res = _fresh_download(url, fresh_dir, entry)
             out = (res.stdout or "") + (res.stderr or "")
             fresh = _only_epub(fresh_dir)
             if fresh is None:

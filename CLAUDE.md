@@ -588,6 +588,21 @@ broadcast or an admin request.
   on the dashboard, then `apply_result(book, raw)` folds calibre_id / chapter_count / stub into the
   row. **Freshly fetched chapters land in the *next* broadcast**, not the one that triggered them —
   and there they take the deterministic *fresh pass* (see Drop Planner), not the stochastic roll.
+- **Chunked, resumable fresh downloads (FlareSolverr).** A whole-story FanFicFare run through FlareSolverr
+  (~12 s/chapter) used to be all-or-nothing: one challenge timeout at chapter 50/65 discarded everything,
+  and each retry restarted. For a **new** story submitted alone, and for the **stub** re-download, when the
+  host is currently on FlareSolverr (`_on_flare`) `_fresh_download` → `_chunked_download` fetches
+  `FETCHER_CHUNK_CHAPTERS` (default 20; 0 = off) chapters per run (`-b 1 -e N`, then `-u ./part.epub -e N`),
+  keeping `part.epub` + `progress.json` in `STATE_DIR/partial/<story>`. A failed chunk retries alone
+  (`FETCHER_CHUNK_RETRIES`, backing off `FETCHER_CHALLENGE_BACKOFF_SECONDS` after a challenge timeout,
+  `FETCHER_CHUNK_BACKOFF_SECONDS` otherwise; `FETCHER_CHUNK_PAUSE_SECONDS` between chunks); an exhausted
+  retry returns a visible error saying which chunk and how many chapters were kept, and the next attempt
+  resumes there (partials older than `FETCHER_PARTIAL_TTL_SECONDS`, 24 h, are dropped). The loop ends when a
+  chunk finds the story exhausted, then one unbounded `-U` pass fetches anything left and rewrites the
+  metadata — so a story is only ever published whole even if `-u -e` doesn't grow the EPUB. The job's
+  `phase` shows `chunk N (chapters a-b, n so far)` → `finishing`. Updates of an existing story (`-u`) and
+  multi-URL `-i` batches are unchanged. Jobs already run one at a time (single worker), so only one
+  FlareSolverr-backed story is in flight.
 - **XenForo threadmark ordering is a fetcher-config concern.** SB/SV/QQ threads group threadmarks by
   *category* (Story/Threadmarks, Sidestory, Apocrypha, Omake, Media, Informational, Staff Post) in a
   fixed, non-chronological order, so a new Story chapter inserts *mid-EPUB* and shifts the trailing

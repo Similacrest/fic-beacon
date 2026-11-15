@@ -75,6 +75,7 @@ def test_chapter_urls_unreadable_returns_empty(tmp_path):
 
 import json  # noqa: E402
 import subprocess  # noqa: E402
+import time  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -889,3 +890,146 @@ def test_plain_update_that_loses_chapter_urls_fails(calibre, monkeypatch):
 
     assert transient is None and "fewer chapters" in result["error"]
     assert not any(c[0] == "add_format" for c in fake.calls)
+
+
+# ---- chunked, resumable fresh downloads (long FlareSolverr fetches) ----------------------------
+class ChunkSite:
+    """Fake FanFicFare for a `site`-chapter story: `-b 1 -e N` writes a fresh N-chapter epub, `-u
+    ./part.epub -e N` grows it cumulatively, `-U ./part.epub` (no end) completes it. `fail_at` is a
+    set of call numbers (0-based) that fail the way FlareSolverr does."""
+
+    def __init__(self, site=65, fail_at=(), entry=None):
+        self.site, self.fail_at, self.entry = site, set(fail_at), entry
+        self.calls: list[tuple] = []
+        self.phases: list[str] = []
+
+    def __call__(self, urls, *args, cwd):
+        n = len(self.calls)
+        self.calls.append(args)
+        if self.entry is not None:
+            self.phases.append(self.entry["phase"])
+        res = lambda rc=0, out="": _cp(args, rc, out)  # noqa: E731
+        if n in self.fail_at:
+            return res(1, "FailedToDownload: Connection to flaresolverr proxy server failed")
+        end = int(args[args.index("-e") + 1]) if "-e" in args else self.site
+        k = min(end, self.site)
+        if "-b" in args:
+            _chapters(Path(cwd) / ("Story (Ch 1-%d).epub" % k), k)
+        else:
+            _chapters(Path(cwd) / "part.epub", k)
+        return res()
+
+    def ends(self):
+        return [int(a[a.index("-e") + 1]) for a in self.calls if "-e" in a]
+
+
+def _cp(args, rc, out):
+    r = subprocess.CompletedProcess(args, rc, stdout=out, stderr="")
+    r.via_flare = True
+    return r
+
+
+@pytest.fixture
+def chunked(monkeypatch, tmp_path):
+    monkeypatch.setattr(fetcher, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(fetcher, "CHUNK_CHAPTERS", 20)
+    for name in ("CHUNK_PAUSE_SECONDS", "CHUNK_BACKOFF_SECONDS", "CHALLENGE_BACKOFF_SECONDS"):
+        monkeypatch.setattr(fetcher, name, 0)
+    monkeypatch.setattr(fetcher, "_on_flare", lambda url: True)
+
+    def install(**kw):
+        entry = _entry(RR)
+        site = ChunkSite(entry=entry, **kw)
+        monkeypatch.setattr(fetcher, "_ff", site)
+        return site, entry
+    return install
+
+
+def test_chunked_download_builds_the_whole_story_in_order(chunked, tmp_path):
+    site, entry = chunked()
+    work = tmp_path / "work"
+    work.mkdir()
+
+    res = fetcher._fresh_download(RR, work, entry)
+
+    assert res.returncode == 0
+    (epub,) = list(work.glob("*.epub"))
+    assert fetcher._chapter_urls(epub) == [f"https://s/c{i}" for i in range(1, 66)]
+    assert site.ends() == [20, 40, 60, 80]                 # last chunk finds the story exhausted
+    assert "-U" in site.calls[-1] and "-e" not in site.calls[-1]   # unbounded completing pass
+    assert any(p.startswith("chunk 2") for p in site.phases)
+    assert not list((tmp_path / "partial").glob("*/*"))     # partial state cleaned up
+
+
+def test_failed_chunk_retries_only_that_chunk(chunked, tmp_path):
+    site, entry = chunked(fail_at={2})                      # the 3rd FanFicFare call (chunk 3) fails once
+    work = tmp_path / "work"
+    work.mkdir()
+
+    res = fetcher._fresh_download(RR, work, entry)
+
+    assert res.returncode == 0
+    ends = site.ends()
+    assert ends.count(20) == 1 and ends.count(40) == 1     # chunks 1-2 never refetched
+    assert ends.count(60) == 2                              # chunk 3 attempted twice
+    (epub,) = list(work.glob("*.epub"))
+    assert len(fetcher._chapter_urls(epub)) == 65
+
+
+def test_resumes_from_the_partial_epub_after_giving_up(chunked, tmp_path, monkeypatch):
+    monkeypatch.setattr(fetcher, "CHUNK_RETRIES", 1)
+    site, entry = chunked(fail_at={2, 3, 4})
+    work = tmp_path / "work"
+    work.mkdir()
+
+    res = fetcher._fresh_download(RR, work, entry)
+
+    assert res.returncode != 0 and not list(work.glob("*.epub"))
+    assert "chunk 3" in res.stderr and "40 chapters" in res.stderr    # how far it got
+    assert fetcher._transient(res.stderr)
+    site.fail_at = set()
+    before = len(site.calls)
+    res2 = fetcher._fresh_download(RR, work, entry)       # a later retry resumes at chunk 3
+    assert res2.returncode == 0
+    resumed = site.calls[before:]
+    assert resumed[0][resumed[0].index("-e") + 1] == "60"   # picks up at chunk 3, not chunk 1
+    assert not any("-b" in c for c in resumed)
+
+
+def test_download_new_exhausted_chunk_retries_is_a_visible_error_never_ok(chunked, calibre, monkeypatch):
+    monkeypatch.setattr(fetcher, "CHUNK_RETRIES", 1)
+    monkeypatch.setattr(fetcher, "RETRY_BASE_SECONDS", 0)
+    fake = calibre({})
+    site, entry = chunked(fail_at=set(range(2, 100)))
+    by_url = {RR: entry}
+
+    fetcher._process_new_batch([RR], by_url)
+
+    assert entry["phase"] == "error" and entry["error"] and "chunk 3" in entry["error"]
+    assert not any(c[0] in ("add", "add_format") for c in fake.calls)
+
+
+def test_challenge_timeouts_count_as_transient():
+    assert fetcher._transient("Error solving the challenge. Timeout after 59.0 seconds.")
+    assert fetcher._transient("FailedToDownload: Connection to flaresolverr proxy server failed")
+
+
+def test_chunking_is_off_unless_the_host_is_on_flaresolverr(monkeypatch, tmp_path):
+    monkeypatch.setattr(fetcher, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(fetcher, "FLARE_INI", str(tmp_path / "missing.ini"))
+    assert fetcher._on_flare(RR) is False
+
+
+def test_stale_partial_is_discarded_and_the_download_restarts(chunked, tmp_path):
+    site, entry = chunked()
+    pdir = fetcher._partial_dir(RR)
+    pdir.mkdir(parents=True)
+    _chapters(pdir / "part.epub", 20)
+    (pdir / "progress.json").write_text('{"end": 20}')
+    old = time.time() - fetcher.PARTIAL_TTL_SECONDS - 10
+    os.utime(pdir / "progress.json", (old, old))
+    work = tmp_path / "work"
+    work.mkdir()
+
+    assert fetcher._fresh_download(RR, work, entry).returncode == 0
+    assert "-b" in site.calls[0]                              # started over, not resumed
