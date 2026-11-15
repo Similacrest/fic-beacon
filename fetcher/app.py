@@ -852,6 +852,32 @@ def _no_epub(entry: dict, output: str, transient: bool, attempts: int | None = N
     entry["phase"] = "error"
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _real_count(epub: Path) -> int:
+    """Chapters by identity (chapterurl) when the EPUB carries them, else the rough spine count."""
+    return len(_chapter_urls(epub)) or _count_chapters(epub)
+
+
+def _archive_exists(epub: Path, url: str) -> bool:
+    """True if a `url-archive:` entry for this story already holds a byte-identical EPUB, so a retried
+    stub does not pile up duplicate archives."""
+    ids = _search_ids(f'identifiers:"=url-archive:{_quote(url)}"')
+    if not ids:
+        return False
+    want = _sha256(epub)
+    for i in ids:
+        with tempfile.TemporaryDirectory() as tmp:
+            _calibredb("export", "--dont-save-cover", "--dont-write-opf", "--to-dir", tmp,
+                       "--single-dir", "--formats", "epub", str(i))
+            got = _only_epub(Path(tmp))
+            if got is not None and _sha256(got) == want:
+                return True
+    return False
+
+
 def _archive_copy(epub: Path, url: str) -> None:
     """Keep the pre-stub EPUB as its own Calibre entry, findable but never mistaken for the story.
 
@@ -860,6 +886,9 @@ def _archive_copy(epub: Path, url: str) -> None:
     then moved from `url:` to `url-archive:` so a later `url:` lookup can't land on it and update
     the archive instead of the live book.
     """
+    if _archive_exists(epub, url):
+        logger.info("stub archive of %s already present; not adding another", url)
+        return
     add = _calibredb("add", "-d", str(epub))
     archive_id = _added_id(add)
     if add.returncode != 0 or archive_id is None:
@@ -909,7 +938,7 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
         if epub is None:
             return entry, _fail(entry, f"could not export book {calibre_id}: {exp.stderr.strip()[:300]}")
 
-        before = hashlib.sha256(epub.read_bytes()).hexdigest()
+        before = _sha256(epub)
         upd = _fanficfare_update(epub, cwd=str(work), url=url)
         if getattr(upd, "via_flare", False):
             entry["via"] = "flaresolverr"
@@ -917,20 +946,37 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
 
         stub = None
         counts = _stub_counts(combined)
-        if counts:  # site dropped chapters → archive old EPUB, then force a clean re-download
+        if counts:  # site dropped chapters → fresh download, archive the old EPUB, replace the live one
             old, new = counts
+            # `-u` + force does NOT rebuild an EPUB that has more chapters than the site (the "more than
+            # source" branch just prints and leaves the file alone), so download the story from scratch
+            # into an empty dir instead of updating the old file.
+            fresh_dir = work / "fresh"
+            fresh_dir.mkdir()
+            res = _ff([url], "--", url, cwd=str(fresh_dir))
+            if getattr(res, "via_flare", False):
+                entry["via"] = "flaresolverr"
+            out = (res.stdout or "") + (res.stderr or "")
+            fresh = _only_epub(fresh_dir)
+            if fresh is None:
+                return entry, out if _transient(out) else _fail(
+                    entry, "stub re-download produced no epub: " + _tail(out))
+            if _real_count(fresh) >= _real_count(epub) or _sha256(fresh) == before:
+                # Never report a stub (the app would move cursor/labels against an EPUB that did not
+                # shrink) and never add_format something that is not a rebuilt, smaller book.
+                return entry, _fail(entry, f"stub re-download did not rebuild the EPUB "
+                                    f"({_real_count(fresh)} chapters, was {_real_count(epub)}): " + _tail(out))
             _archive_copy(epub, _epub_source_url(epub) or url)  # standalone backup of the pre-stub EPUB
-            old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the overwrite
-            forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
-            if _SKIPPED_RE.search((forced.stdout or "") + (forced.stderr or "")):
-                return entry, _fail(entry, "fanficfare skipped writing the stub re-download: "
-                                    + _tail((forced.stdout or "") + (forced.stderr or "")))
+            old_urls = _chapter_urls(epub)  # per-chapter identity BEFORE the replacement
+            epub = fresh
             new_urls = _chapter_urls(epub)  # …and AFTER, so the app can diff by URL
             stub = {"old": old, "new": new, "old_urls": old_urls, "new_urls": new_urls}
         elif _NEEDS_FORCE_RE.search(combined):  # non-shrink mismatch → just force, no archive
             forced = _fanficfare_update(epub, "-o", "force_update_epub_always=true", cwd=str(work), url=url)
             combined = (forced.stdout or "") + (forced.stderr or "")
             upd = forced  # the exit status that matters is the forced run's
+            if upd.returncode == 0 and _sha256(epub) == before:
+                return entry, _fail(entry, "forced update left the EPUB unchanged: " + _tail(combined))
         elif upd.returncode != 0 and _transient(combined):
             return entry, combined  # retryable
         if not stub and upd.returncode != 0 and not _SKIPPED_RE.search(combined):
@@ -941,7 +987,7 @@ def _update_one(url: str, entry: dict, calibre_id: int | None = None) -> tuple[d
                 return entry, combined  # the forced re-run hit a transient error: retry
             return entry, _fail(entry, "fanficfare update failed: " + _tail(combined))
         if not stub and not _NEEDS_FORCE_RE.search(combined) and _CHAPTER_MISMATCH_RE.search(combined) \
-                and hashlib.sha256(epub.read_bytes()).hexdigest() == before:
+                and _sha256(epub) == before:
             # A chapter-count complaint we don't recognise and nothing written: adding the unchanged
             # EPUB back as `ok` is the silent stall this guard exists to prevent.
             return entry, _fail(entry, "unrecognised FanFicFare chapter message: "

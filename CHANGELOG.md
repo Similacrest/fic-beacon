@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.6] — 2026-11-15
+
+### Fixed
+- **A stub now rebuilds the EPUB instead of re-running `-u` on it.** With the "more than source" wording
+  FanFicFare ignores `force_update_epub_always` and leaves the file alone, so 0.25.5 archived the old EPUB,
+  re-added the *unchanged* file as the live entry and reported a stub — the app then moved the cursor and
+  label offset against an EPUB that never shrank. The stub branch now downloads the story fresh into an
+  empty directory, checks it is smaller than the old EPUB and not byte-identical, and only then archives
+  the old one and `add_format`s the new one. A rebuild that did not happen is an error, with no `stub`.
+- A needs-force update that leaves the EPUB unchanged is an error, not `ok`.
+- The stub archive is idempotent: a `url-archive:` entry already holding byte-identical bytes is reused,
+  so a retry no longer creates a second archive.
+
 ## [0.25.5] — 2026-11-15
 
 ### Fixed

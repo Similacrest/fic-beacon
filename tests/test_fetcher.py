@@ -236,6 +236,7 @@ class FakeCalibre:
 
     def __init__(self, entries: dict[int, dict[str, str]], next_id: int = 5000, refuse_dupes=False):
         self.entries, self.next_id, self.refuse_dupes = entries, next_id, refuse_dupes
+        self.files: dict[int, bytes] = {}
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, *args: str) -> subprocess.CompletedProcess:
@@ -247,12 +248,18 @@ class FakeCalibre:
             if q.startswith("id:"):
                 n = int(q[3:])
                 return ok(str(n) if n in self.entries else "")
-            needle = q.split("=url:", 1)[1].rstrip('"')
-            hits = [str(i) for i, ident in sorted(self.entries.items()) if needle in ident.get("url", "")]
+            scheme = "url-archive" if "=url-archive:" in q else "url"
+            needle = q.split(f"={scheme}:", 1)[1].rstrip('"')
+            hits = [str(i) for i, ident in sorted(self.entries.items()) if needle in ident.get(scheme, "")]
             return ok(",".join(hits))
         if cmd == "list":
             ids = [int(t) for t in args[args.index("--search") + 1].replace("id:", "").split(" or ")]
             return ok(json.dumps([{"id": i, "identifiers": self.entries[i]} for i in ids if i in self.entries]))
+        if cmd == "export":  # only entries given bytes via `files` have an EPUB to export
+            i = int(args[-1])
+            if i in self.files:
+                (Path(args[args.index("--to-dir") + 1]) / "book.epub").write_bytes(self.files[i])
+            return ok()
         if cmd == "add":
             dup_ok = "-d" in args
             epub = Path(args[-1])
@@ -350,36 +357,98 @@ def test_job_looks_up_when_the_pinned_entry_is_gone(calibre, monkeypatch):
     assert seen == [4700]
 
 
-def test_stub_keeps_a_tagged_archive_that_cannot_win_the_lookup(calibre, monkeypatch, tmp_path):
-    # refuse_dupes: the archive has the live entry's title+author, so only `add -d` keeps it.
-    fake = calibre({4629: {"url": RR}}, refuse_dupes=True)
-    outputs = iter(["Existing epub contains 150 chapters, web site only has 139", ""])
+def _chapters(path: Path, n: int) -> None:
+    _make_epub(path, [(f"c{i}", f"c{i}.xhtml", f"https://s/c{i}") for i in range(1, n + 1)])
 
-    def fanficfare(*args, cwd):
-        return subprocess.CompletedProcess(args, 0, stdout=next(outputs, ""), stderr="")
+
+def _stub_env(calibre, monkeypatch, fresh_chapters, live_chapters=5, msg=None, **kw):
+    """Live entry 4629 exports a `live_chapters` EPUB; FanFicFare's `-u` run prints the stub message and
+    leaves it alone; a fresh (no `-u`) run writes `fresh_chapters` chapters (None → writes nothing)."""
+    fake = calibre({4629: {"url": RR}}, **kw)
+    msg = msg or f"./book.epub contains {live_chapters} chapters, more than source: 3."
+    runs = []
+
+    def fanficfare(*args, cwd, flare=False):
+        runs.append(args)
+        if "-u" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=msg, stderr="")
+        if fresh_chapters:
+            _chapters(Path(cwd) / "fresh.epub", fresh_chapters)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
     monkeypatch.setattr(fetcher, "_fanficfare", fanficfare)
-
-    real_calibredb = fetcher._calibredb
+    real = fetcher._calibredb
 
     def calibredb(*args):
-        if args[0] == "export":  # write the live EPUB into --to-dir
-            _fff_epub(Path(args[args.index("--to-dir") + 1]) / "book.epub", RR, "In-Progress")
+        if args[0] == "export" and args[-1] == "4629":
+            _chapters(Path(args[args.index("--to-dir") + 1]) / "book.epub", live_chapters)
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-        return real_calibredb(*args)
+        return real(*args)
     monkeypatch.setattr(fetcher, "_calibredb", calibredb)
+    return fake, runs
 
-    entry = _entry(RR)
-    result, transient = fetcher._update_one(RR, entry, 4629)
 
-    assert transient is None and result["stub"]["old"] == 150
-    assert result["calibre_id"] == 4629
+def test_stub_downloads_fresh_instead_of_updating_the_old_epub(calibre, monkeypatch):
+    # refuse_dupes: the archive has the live entry's title+author, so only `add -d` keeps it.
+    fake, runs = _stub_env(calibre, monkeypatch, fresh_chapters=3, refuse_dupes=True)
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and result.get("error") is None
+    assert result["stub"]["old"] == 5 and result["stub"]["new"] == 3
+    assert result["stub"]["old_urls"] == [f"https://s/c{i}" for i in range(1, 6)]
+    assert result["stub"]["new_urls"] == [f"https://s/c{i}" for i in range(1, 4)]
+    assert any("-u" not in r for r in runs)                       # a fresh run happened
+    assert result["calibre_id"] == 4629 and result["chapter_count"] == 3
     adds = [c for c in fake.calls if c[0] == "add"]
     assert len(adds) == 1 and "-d" in adds[0]
     archive_id = fake.next_id
     assert fake.entries[archive_id] == {"url-archive": RR}        # moved off `url:`
     assert fake.entries[4629] == {"url": RR}                      # live entry untouched
     assert fetcher._find_calibre_ids(RR) == [4629]                # …and only it is found by URL
-    assert any(c[0] == "add_format" and c[1] == "4629" for c in fake.calls)
+    added = [c for c in fake.calls if c[0] == "add_format" and c[1] == "4629"]
+    assert len(added) == 1 and Path(added[0][2]).name == "fresh.epub"
+
+
+def test_stub_whose_fresh_download_is_not_smaller_fails_and_reports_no_stub(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=5)   # same size: nothing was rebuilt
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and "did not rebuild" in result["error"]
+    assert not result.get("stub")
+    assert not any(c[0] in ("add_format", "add") for c in fake.calls)   # no archive, no overwrite
+
+
+def test_stub_with_no_fresh_epub_fails_loudly(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=None)
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and "no epub" in result["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)
+
+
+def test_stub_retry_does_not_add_a_second_archive(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=3)
+    live = Path(__file__).parent / "_live.epub"
+    _chapters(live, 5)
+    try:
+        fake.entries[4657] = {"url-archive": RR}
+        fake.files[4657] = live.read_bytes()      # an earlier attempt already archived these exact bytes
+        # `_make_epub` is not byte-stable across calls only if it embeds time; assert identity first.
+        probe = Path(__file__).parent / "_probe.epub"
+        _chapters(probe, 5)
+        same = probe.read_bytes() == live.read_bytes()
+        probe.unlink()
+    finally:
+        live.unlink()
+    if not same:
+        pytest.skip("epub builder is not byte-stable")
+
+    result, _ = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert result["stub"]["old"] == 5
+    assert not any(c[0] == "add" for c in fake.calls)
 
 
 def test_new_story_refused_as_duplicate_refreshes_the_existing_entry(calibre, fake_tools, monkeypatch):
@@ -759,4 +828,14 @@ def test_unrecognised_chapter_message_with_no_write_fails_loudly(calibre, monkey
     result, transient = fetcher._update_one(RR, _entry(RR), 4629)
 
     assert transient is None and "unrecognised FanFicFare chapter message" in result["error"]
+    assert not any(c[0] == "add_format" for c in fake.calls)
+
+
+def test_needs_force_that_changes_nothing_fails_instead_of_add_format(calibre, monkeypatch):
+    fake, _ = _stub_env(calibre, monkeypatch, fresh_chapters=None,
+                        msg="Use Overwrite or force_update_epub_always to update")
+
+    result, transient = fetcher._update_one(RR, _entry(RR), 4629)
+
+    assert transient is None and "left the EPUB unchanged" in result["error"]
     assert not any(c[0] == "add_format" for c in fake.calls)
