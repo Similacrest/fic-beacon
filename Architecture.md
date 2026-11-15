@@ -47,7 +47,7 @@ SQLite, Jinja + HTMX.
 | Slots & caps | **Backlog (untracked) books stream one-at-a-time per slot** → at most `N = parallel_slots` active per channel (extras stay queued; a slot may hold zero). **Tracked stories are uncapped**, never queued, never "complete", and load-balanced (sticky) across the N slots. |
 | Sources | One unified model: every source is a Calibre EPUB (`book.calibre_id`). A `tracked` flag (no `kind`) marks the ones that auto-update; `feed_url?` is an optional RSS trigger and `source_url` doubles as the FanFicFare fetch URL. All are weighted, votable, droppable, and live in a channel. |
 | Tracked stories | RSS = **trigger only** (feed bodies are never read). Just before each release, a changed newest-GUID drives a FanFicFare fetch into Calibre; feed-less (auth-gated) stories are refreshed by a daily sweep. Chapters then drop via the normal EPUB cursor path. |
-| Stubs | Site removed chapters → the fetcher archives the old EPUB, overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
+| Stubs | Site removed chapters → the fetcher archives the old EPUB (reporting its Calibre id; the app keeps it as a `book_segment` and reads one *unified* chapter list across archives + live, so nothing is remapped — see CLAUDE.md),  overwrites the book shorter, and returns both bodies' per-chapter canonical URLs. The app matches chapters by URL **identity**: a piecewise `label_map` keeps labels exact past any gap (composing across repeated stubs) and `cursor_chapter_index`/`cursor_floor` remap to the first surviving chapter (no unread chapter skipped). No per-chapter URLs → legacy linear `chapter_label_offset` fallback. |
 | Budgeting | **Per-release budget, split across channels by weight, then a per-channel slot round-robin.** A schedule's budget is the whole release's allowance, divided among the channels that have content in proportion to `weight`. The cycle rotates through a channel's occupied slots, dropping one weight-proportional source's whole unit per turn (stochastic near the budget mark); an idle slot spills its share to the others. Drops spread across slot feeds (diversity); `quota_weight` throttles share within a slot; a signed `budget_credit` carry-over makes the long-run mean track the budget. **Never split a unit.** |
 | Feedback | Tokenized GET links per released item: **🪝 extra (super-up) · 👍 up · 👎 down · ⏸ pause · ❌ drop (super-down) · ✓ read**. up/down/pause/read fire instantly (bare GET, idempotent); extra/drop use a one-tap confirm page. `extra` shows only when a next unit exists. 👎 down also imposes a one-broadcast cooldown (and a 👎 to weight 0 drops the source); weights are additive (vote/extra steps, cap 100), and 🪝-injected drops are born acknowledged; ⏸ pause removes a source until resumed from the dashboard; ✓ read (and any interaction) acknowledges the drop for soft read-gating. |
 | Realtime | **Self-hosted WebSub hub**; feeds declare `rel=hub`; push on each new drop. Works on InoReader free plan. |
@@ -162,8 +162,11 @@ C4Component
   `slot_index?` (pinned feed slot; unique per active backlog book, *shared* by tracked stories
   pinned to it), `queue_position`, `quota_weight`, `cursor_chapter_index` (physical EPUB index),
   `chapter_label_offset` (legacy scalar stub offset), `label_map?` (JSON piecewise stub offsets,
-  by-URL identity), `cursor_floor` (lowest rewindable index), `thumbs_up`,
-  `thumbs_down`, `added_at`.
+  by-URL identity), `cursor_floor` (lowest rewindable index; 0 in effect when the book has segments),
+  `thumbs_up`, `thumbs_down`, `added_at`.
+- **`book_segment`** — `id`, `book_id`, `ordinal`, `calibre_id` (unique), `created_at`: the archive EPUBs
+  of a stubbed story, oldest first (the live EPUB stays `book.calibre_id`). The unified chapter list
+  (`app/epub/unified.py`) concatenates them; `cursor_chapter_index` is a position in that list.
 - **`drop`** — `id`, `book_id`, `channel_id`, `feed_key` (`"1".."N"`, = source's pinned slot),
   `created_at`, `published_at`, `word_count`, `chapter_start`, `chapter_end`, `chapter_titles`,
   `source_url?`, `content_html`, `acknowledged_at?` (soft read-gating), `feedback_token`
@@ -221,8 +224,8 @@ the call is **asynchronous**: the fetcher returns a `job_id` (HTTP 202) and work
 pass; existing ones update per-story with force-detection + a 3-try backoff). The app marks the
 books `fetching…`, persists the `job→book` map in `app_state`, and a transient `fetch_poll_{id}`
 interval job polls `GET /fetch/{job_id}` — surfacing each book's live `phase` on the dashboard —
-until `done`, then folds each result (`apply_result`). On a **stub** (`old > new`) the fetcher also
-returns the ordered per-chapter URLs of both bodies; the app matches chapters by URL identity to
+until `done`, then folds each result (`apply_result`). On a **stub** (`old > new`) the fetcher also reports the archive entry's Calibre id (kept as a
+`book_segment`, no remap) and the ordered per-chapter URLs of both bodies; without an archive id, the app matches chapters by URL identity to
 build a piecewise `label_map` (labels exact past any gap, composing across repeated stubs) and to
 remap `cursor_chapter_index`/`cursor_floor` to the first surviving chapter — preserving unread
 chapters. It falls back to bumping the scalar `chapter_label_offset` by `old − new` (cursor/floor →

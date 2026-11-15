@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-11-15
+
+### Added
+- **A stubbed story is one book across several EPUBs.** The fetcher reports the Calibre id of the archive it
+  keeps for the pre-stub EPUB; the app records it in the new `book_segment` table (migration) and reads a
+  *unified chapter list* (archives, then new-by-URL live chapters; length rule `BEACON_SEGMENT_LENGTH_RATIO`,
+  default 0.5). A stub no longer remaps the cursor or labels, and you can rewind into the archived chapters.
+- The story page shows a segment-coloured progress bar with the author's chapter numbers at the
+  boundaries, a legend, and the Calibre ids of each source. A plain story shows none of it.
+- Already-stubbed books are migrated at startup (`url-archive:` entries become segments; the cursor is set
+  just after the last released chapter; old label state is reset). Per-book report in
+  `app_state[segment_backfill_report]` and the log.
+- An unreadable archive EPUB holds its story with a ⚠ note instead of shifting positions.
+
+### Changed
+- The fetcher refuses a plain update that would shrink the book without reporting a stub.
+
 ## [0.25.6] — 2026-11-15
 
 ### Fixed

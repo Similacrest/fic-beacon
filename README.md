@@ -109,6 +109,7 @@ There is no single "all" feed — subscribe to each channel/slot feed you want.
 | `FETCHER_FLARESOLVERR_PROBE_SECONDS` | How often a FlareSolverr source is tried directly again; a direct success switches it back (**fetcher**) | `86400` |
 | `FETCHER_STATE_DIR` | Where the fetcher keeps its per-host 403 counters and `flaresolverr-sites.ini` (**fetcher**) | `/state` |
 | `FETCHER_CALIBREDB_TIMEOUT` | Per-`calibredb`-call wall-clock cap, seconds (set in the **fetcher** container) | `600` |
+| `BEACON_SEGMENT_LENGTH_RATIO` | Stubbed stories: a live copy of a chapter also in an archive EPUB is used unless its word count is below this fraction (or above its inverse) of the archive's | `0.5` |
 | `BEACON_LOG_LEVEL` | App log level; set `DEBUG` to trace the WebSub flow | `INFO` |
 
 Generate a feed secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.

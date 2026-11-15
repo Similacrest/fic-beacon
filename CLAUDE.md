@@ -201,6 +201,25 @@ smallest — so the first release after upgrading is the same size and split as 
   the chapterizer uses for physical indices. `apply_result` matches chapters by URL **identity**, so
   a removal *anywhere* (front, middle, tail), a mid-work gap where labels jump (4 → 73), and
   **repeated** stubs are all handled:
+  - **Segments (preferred path):** when the fetcher also returns `stub.archive_calibre_id` (the Calibre
+    entry it kept for the pre-stub EPUB), the app records it as a `book_segment` (ordered archives; the
+    live EPUB stays `book.calibre_id`) and **remaps nothing**: the planner, `apply_result`, the admin
+    cursor controls and the story page read a **unified chapter list** (`app/epub/unified.py`) — archive
+    chapters in order, then each later EPUB's chapters whose URL is new. An archive is the pre-stub EPUB,
+    so unified positions of its chapters equal the old physical indices: cursor, `label_map` and
+    `cursor_floor` stay valid. A chapter present in both copies is served from the live one unless its
+    word count is `< ratio ×` or `> (1/ratio) ×` the archive's (`BEACON_SEGMENT_LENGTH_RATIO`, default
+    0.5: a short placeholder keeps the archive copy). The first EPUB is taken verbatim (never deduped), later
+    ones keep the first occurrence of a URL; chapters with no URL are appended. Each chapter's `/img/` URLs
+    use the id of the EPUB that serves it. An unreadable/missing **archive** holds the story (positions
+    after it are unknowable) with a `book_note` ⚠; an unreadable live EPUB keeps the old warn-and-skip.
+    With segments `cursor_floor` does not apply (`segments_view.effective_cursor_floor` = 0): the user can
+    rewind into the archives. The story page shows a segment-coloured progress bar with the author's
+    chapter numbers at the boundaries (`app/segments_view.py`). Stories stubbed before segments existed
+    are migrated at startup by `app/segments_backfill.py` (archives found via `url-archive:` identifiers;
+    cursor = just after the last released chapter; label state reset; per-book report in
+    `app_state[segment_backfill_report]`). Everything below describes the **legacy path**, used only when
+    no archive id is reported.
   - **Labels — piecewise `book.label_map`:** a JSON list of `[physical_index, cumulative_offset]`
     breakpoints from the URL diff, so `absolute_chapter_number` keeps each surviving chapter's
     original author label and **composes** across successive stubs. `chapter_label_offset` is the
@@ -218,7 +237,7 @@ smallest — so the first release after upgrading is the same size and split as 
     (front matter included, and of whichever Calibre entry it touched) is only a fallback when the EPUB
     can't be read here. Mixing the two produced a phantom "N waiting" that never released.
   - **`total_chapters` is kept honest every broadcast**, not only when a source is selected:
-    `planner._get_chapters` writes `book.total_chapters = len(chapterize(epub))` for *every* active
+    `planner._get_chapters` writes `book.total_chapters = len(unified chapter list)` for *every* active
     source it inspects. A caught-up source is never selected, so if its EPUB later shrinks (e.g. an
     author unpublishes chapters — common on RoyalRoad) a stale `total_chapters` would otherwise show
     a phantom "N waiting" on the dashboard forever.
@@ -492,7 +511,7 @@ redirects (`app/websub/safety.py`) — never loosen these. `/img` serves only `i
 `config.feed_secret` is authoritative over `BEACON_FEED_SECRET`.
 
 ### Calibre access
-Open `metadata.db` read-only. Books, authors, identifiers (`url:` source), **tags**, and the custom
+Open `metadata.db` read-only. Stub archives are `url-archive:` identifiers (`CalibreAdapter.archive_ids`). Books, authors, identifiers (`url:` source), **tags**, and the custom
 columns **`#genre_manual`**/**`#genre`** (channel routing), **`#status`** (publication state →
 import routing + fetch-skip), and **`#read`** (caught-up → cursor placement) come from there; EPUB
 paths derive from the library folder structure. Missing custom columns degrade gracefully (empty).
@@ -583,7 +602,7 @@ broadcast or an admin request.
 
 ## Data model (summary)
 
-`channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `weight`,
+`book_segment` (`book_id`, `ordinal`, `calibre_id` unique — a stubbed story's archive EPUBs, oldest first) · `channel` (`name`, `slug`, `genre_match`, `parallel_slots`, `weight`,
 `budget_credit`, `queue_order`, `feed_item_limit`) · `schedule` (`name`, `cron`, `budget`,
 `budget_mode`, `enabled`, `sort_order`) · `book` (`calibre_id`, `tracked`, `fresh_from_index?`, `story_status?`, `feed_url?`,
 `last_seen_guid?`, `last_fetch_at?`, `last_fetch_status?`, `source_url?`, `status`
